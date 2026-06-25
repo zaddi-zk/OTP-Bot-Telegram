@@ -78,4 +78,9 @@ git push origin main
 - `conf/` is also ignored, because it contains runtime configuration and temporary bot state.
 - Do not commit `conf/settings.txt` or any secret-bearing files to the repository.
 
-If you want, I can also help you create a second workflow that verifies the service health after deployment.
+## Workflow selection
+
+- Use `.github/workflows/deploy.yml` when you want a simple deploy-only pipeline.
+- Use `.github/workflows/deploy-and-check.yml` when you want deploy plus automatic post-deploy verification.
+
+If you want, I can also help you extend the verification workflow with additional health checks.
