@@ -96,25 +96,49 @@ else
   echo "WARNING: $SERVICE_FILE not found; service file not installed."
 fi
 
-cat <<'EOF'
+echo
+echo "=== Bootstrap complete ==="
+echo
+echo "Next manual steps:"
+echo "1) Edit $APP_DIR/.env and fill in all required production values."
+echo "2) Add the deploy private key contents from $DEPLOY_KEY to GitHub secret SERVER_SSH_KEY."
+echo "3) Add the server host key entry to GitHub secret SERVER_KNOWN_HOSTS."
+echo "4) Start the service after .env is ready:"
+echo "   sudo systemctl start telegram-bot.service"
+echo
 
-=== Bootstrap complete ===
+echo "=== GitHub secret values ==="
+echo
+if [ -f "$DEPLOY_KEY" ]; then
+  echo "SERVER_SSH_KEY (copy the block below):"
+  echo "-----BEGIN SERVER_SSH_KEY-----"
+  cat "$DEPLOY_KEY"
+  echo "-----END SERVER_SSH_KEY-----"
+  echo
+else
+  echo "ERROR: Deploy key file not found: $DEPLOY_KEY"
+fi
 
-Next manual steps:
-1) Edit $APP_DIR/.env and fill in all required production values.
-2) Add the deploy private key contents from $DEPLOY_KEY to GitHub secret SERVER_SSH_KEY.
-3) Add the result of ssh-keyscan -p 22 $SERVER_HOST to GitHub secret SERVER_KNOWN_HOSTS.
-4) Start the service after .env is ready:
-   systemctl start telegram-bot.service
+echo "SERVER_KNOWN_HOSTS (copy the line below or use the command shown):"
+if command -v ssh-keyscan >/dev/null 2>&1; then
+  if hostname -f >/dev/null 2>&1; then
+    ssh-keyscan -t ed25519,rsa "$(hostname -f)" 2>/dev/null || true
+  fi
+  ssh-keyscan -t ed25519,rsa localhost 2>/dev/null || true
+else
+  echo "# ssh-keyscan not available"
+fi
 
-Bootstrap details:
-- app directory: $APP_DIR
-- deploy user: $USER
-- deploy key: $DEPLOY_KEY
-- public key: $DEPLOY_KEY.pub
-- .env placeholder: $ENV_FILE
+echo
+if command -v ssh-keyscan >/dev/null 2>&1; then
+  echo "If the output above does not match your public server host, run this on a trusted machine:"
+  echo "  ssh-keyscan -p 22 YOUR_SERVER_HOST"
+fi
 
-Use the following command on your local machine to get the host key entry:
-  ssh-keyscan -p 22 YOUR_SERVER_HOST
-
-EOF
+echo
+echo "Bootstrap details:"
+echo "- app directory: $APP_DIR"
+echo "- deploy user: $USER"
+echo "- deploy key: $DEPLOY_KEY"
+echo "- public key: $DEPLOY_KEY.pub"
+echo "- .env placeholder: $ENV_FILE"
