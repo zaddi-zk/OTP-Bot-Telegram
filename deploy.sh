@@ -29,6 +29,11 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 
 echo "Restarting systemd service: $SERVICE_NAME"
-sudo systemctl restart "$SERVICE_NAME"
+if sudo -n true 2>/dev/null; then
+  sudo systemctl restart "$SERVICE_NAME"
+else
+  echo "ERROR: sudo requires a password. Configure passwordless sudo for the deploy user or run this script as root."
+  exit 1
+fi
 
 echo "Deployment complete."
