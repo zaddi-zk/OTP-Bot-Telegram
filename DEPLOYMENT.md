@@ -21,6 +21,9 @@
 - `.github/workflows/deploy.yml`
   - GitHub Actions workflow to SSH deploy on `push` to `main`
 
+- `.github/workflows/deploy-and-check.yml`
+  - SSH deploy + post-deploy verification workflow
+
 - `.gitignore`
   - ignores Python artifacts, logs, venv, and IDE files
 
@@ -57,13 +60,15 @@ After you commit these files and push to `main`, GitHub Actions will:
 3. run `./deploy.sh main`
 4. restart the service
 
+If you want a stronger deployment path, use the `Deploy and verify OTP-Bot-Telegram` workflow in `.github/workflows/deploy-and-check.yml`, which also runs `./deploy_check.sh` after deployment.
+
 ## Manual commit and push
 
 From your local clone, stage the new deployment files and push them to `main`:
 
 ```bash
-git add deploy.sh install_service.sh telegram-bot.service .github/workflows/deploy.yml .gitignore DEPLOYMENT.md
-git commit -m "Add production deployment automation"
+git add deploy.sh deploy_check.sh install_service.sh telegram-bot.service .github/workflows/deploy.yml .github/workflows/deploy-and-check.yml .gitignore DEPLOYMENT.md
+git commit -m "Add production deployment automation and verification workflow"
 git push origin main
 ```
 
