@@ -1,0 +1,19 @@
+[Unit]
+Description=OTP-Bot-Telegram Telegram bot service
+After=network.target
+
+[Service]
+Type=simple
+User=zaddi-zk
+WorkingDirectory=/home/zaddi-zk/OTP-Bot-Telegram
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/home/zaddi-zk/OTP-Bot-Telegram/.env
+ExecStart=/home/zaddi-zk/OTP-Bot-Telegram/.venv/bin/python /home/zaddi-zk/OTP-Bot-Telegram/bot.py
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30
+StandardOutput=append:/home/zaddi-zk/OTP-Bot-Telegram/bot.log
+StandardError=append:/home/zaddi-zk/OTP-Bot-Telegram/bot-error.log
+
+[Install]
+WantedBy=multi-user.target

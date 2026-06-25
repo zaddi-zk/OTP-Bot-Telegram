@@ -1,0 +1,32 @@
+# Python
+*.py[cod]
+__pycache__/
+*.so
+*.egg
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+.env/
+
+# Logs
+*.log
+bot.log
+bot-error.log
+bot_stdout.log
+bot_stderr.log
+ngrok5000_stdout.log
+ngrok5000_stderr.log
+ngrok5001_stdout.log
+ngrok5001_stderr.log
+
+# IDE files
+.vscode/
+
+# macOS
+.DS_Store
