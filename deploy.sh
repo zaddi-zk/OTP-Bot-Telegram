@@ -10,12 +10,13 @@ SERVICE_NAME="telegram-bot.service"
 VENV_DIR="$DEPLOY_DIR/.venv"
 BRANCH="${1:-main}"
 
-cd "$DEPLOY_DIR"
+cd "$DEPLOY_DIR" || exit 1
 
 echo "=== Deploying OTP-Bot-Telegram ==="
 
-echo "Pulling latest code from Git branch '$BRANCH'..."
-git pull origin "$BRANCH"
+echo "Fetching latest code from Git branch '$BRANCH'..."
+git fetch origin "$BRANCH"
+git reset --hard "origin/$BRANCH"
 
 if [ ! -d "$VENV_DIR" ]; then
   echo "Virtual environment not found at $VENV_DIR"
@@ -23,8 +24,14 @@ if [ ! -d "$VENV_DIR" ]; then
   python3 -m venv "$VENV_DIR"
 fi
 
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "ERROR: python3 is required on the server. Install Python 3 and retry."
+  exit 1
+fi
+
 # Activate venv and install requirements
 source "$VENV_DIR/bin/activate"
+echo "Using Python: $(python --version)"
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 

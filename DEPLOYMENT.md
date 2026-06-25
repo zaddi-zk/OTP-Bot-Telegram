@@ -59,14 +59,18 @@ After you commit these files and push to `main`, GitHub Actions will:
 
 ## Manual commit and push
 
-This workspace does not contain a Git repository metadata folder (`.git`) and cannot push from here.
-
-From your local clone, run:
+From your local clone, stage the new deployment files and push them to `main`:
 
 ```bash
 git add deploy.sh install_service.sh telegram-bot.service .github/workflows/deploy.yml .gitignore DEPLOYMENT.md
 git commit -m "Add production deployment automation"
 git push origin main
 ```
+
+## Notes on sensitive data
+
+- `.env` is intentionally ignored and should store your production secrets on the server only.
+- `conf/` is also ignored, because it contains runtime configuration and temporary bot state.
+- Do not commit `conf/settings.txt` or any secret-bearing files to the repository.
 
 If you want, I can also help you create a second workflow that verifies the service health after deployment.
