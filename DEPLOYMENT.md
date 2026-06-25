@@ -45,11 +45,27 @@ chmod +x install_service.sh deploy.sh
 
 Add these secrets to your GitHub repository:
 
-- `SERVER_HOST`
-- `SERVER_USER`
-- `SERVER_SSH_KEY`
-- `SERVER_SSH_PORT`
-- `SERVER_KNOWN_HOSTS`
+- `SERVER_HOST` — the SSH hostname or IP of your deployment server
+- `SERVER_USER` — the Linux user that owns `/home/zaddi-zk/OTP-Bot-Telegram`
+- `SERVER_SSH_KEY` — the private key for SSH access to the server
+- `SERVER_SSH_PORT` — the SSH port, usually `22`
+- `SERVER_KNOWN_HOSTS` — the server SSH host key entry
+
+To generate `SERVER_KNOWN_HOSTS`, run from a trusted machine:
+
+```bash
+ssh-keyscan -p 22 your.server.example.com
+```
+
+Copy the resulting line into the secret value.
+
+If you need a private key for deploy, generate one with:
+
+```bash
+ssh-keygen -t ed25519 -f deploy_key -N ''
+```
+
+Then place the public key in `/home/zaddi-zk/.ssh/authorized_keys` on the server.
 
 ## Push-to-deploy
 
