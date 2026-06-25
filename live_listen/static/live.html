@@ -1,0 +1,95 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Live Listen</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px }
+    #status { font-size: 18px; margin-bottom: 10px }
+    button { padding: 8px 12px; font-size: 16px }
+  </style>
+</head>
+<body>
+  <div id="status">Status: <span id="state">🔴 Disconnected</span></div>
+  <div>Call ID: <span id="call_id"></span></div>
+  <button id="connect">Connect</button>
+  <script>
+    // Simple player assuming 16-bit PCM 8000Hz mono from server
+    let ws;
+    let callId = new URLSearchParams(window.location.search).get('call_id');
+    document.getElementById('call_id').innerText = callId || '(none)';
+    const stateEl = document.getElementById('state');
+    const btn = document.getElementById('connect');
+
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    let sourceNode;
+
+    function pcm16ToFloat32(buffer) {
+      const l = buffer.length / 2;
+      const floats = new Float32Array(l);
+      for (let i = 0; i < l; i++) {
+        const int = buffer[2*i] | (buffer[2*i+1] << 8);
+        const val = int < 0 ? int / 32768 : int / 32767;
+        floats[i] = val;
+      }
+      return floats;
+    }
+
+    function playPCM16(bytes) {
+      const floats = pcm16ToFloat32(bytes);
+      const buf = audioCtx.createBuffer(1, floats.length, 8000);
+      buf.getChannelData(0).set(floats);
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      src.connect(audioCtx.destination);
+      src.start();
+    }
+
+    async function connect() {
+      if (!callId) {
+        alert('Missing call_id in URL');
+        return;
+      }
+      const url = new URL(window.location.origin.replace(/^http/, 'ws') + '/ws/live');
+      url.searchParams.set('call_id', callId);
+      ws = new WebSocket(url.href);
+      ws.binaryType = 'arraybuffer';
+      ws.onopen = () => {
+        stateEl.innerText = '🟢 Connected (waiting for stream)';
+      };
+      ws.onmessage = (ev) => {
+        if (typeof ev.data === 'string') {
+          try {
+            const msg = JSON.parse(ev.data);
+            if (msg.type === 'session') {
+              const s = msg.data;
+              stateEl.innerText = s.state === 'in-progress' ? '🟢 Live Listen Active' : '🔴 ' + s.state;
+            }
+          } catch(e) {
+            console.warn('text message', ev.data);
+          }
+          return;
+        }
+        // binary audio frame
+        const bytes = new Uint8Array(ev.data);
+        playPCM16(bytes);
+      };
+      ws.onclose = () => {
+        stateEl.innerText = '🔴 Disconnected';
+      };
+      ws.onerror = (e) => {
+        console.error(e);
+        stateEl.innerText = '🔴 Error';
+      };
+    }
+
+    btn.addEventListener('click', () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      } else {
+        connect();
+      }
+    });
+  </script>
+</body>
+</html>
