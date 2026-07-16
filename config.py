@@ -85,15 +85,15 @@ FREE_TRIAL_TOTAL = int(_get("FREE_TRIAL_CALLS", "5"))
 
 # Payment addresses
 PAYMENT_ADDRESSES = {
-    "BTC": _get("PAYMENT_BTC", "bc1q_your_btc_address_here"),
-    "ETH": _get("PAYMENT_ETH", "0x_your_eth_address_here"),
-    "LTC": _get("PAYMENT_LTC", "ltc1q_your_ltc_address_here"),
-    "USDT_ERC20": _get("PAYMENT_USDT", "0x_your_usdt_address_here"),
+    "BTC": _get("PAYMENT_BTC", "YOUR_WALLET_ADDRESS_HERE"),
+    "ETH": _get("PAYMENT_ETH", "YOUR_WALLET_ADDRESS_HERE"),
+    "LTC": _get("PAYMENT_LTC", "YOUR_WALLET_ADDRESS_HERE"),
+    "USDT_ERC20": _get("PAYMENT_USDT", "YOUR_WALLET_ADDRESS_HERE"),
 }
 
 # ElevenLabs
-ELEVENLABS_API_KEY = _get("ELEVENLABS_API_KEY", "")
-DEFAULT_ELEVENLABS_VOICE_ID = _get("DEFAULT_ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMaL")
+ELEVENLABS_API_KEY = _get("ELEVENLABS_API_KEY", "YOUR_ELEVENLABS_API_KEY_HERE")
+DEFAULT_ELEVENLABS_VOICE_ID = _get("DEFAULT_ELEVENLABS_VOICE_ID", "")
 
 # Live Listen URL (defaults to NGROK_URL)
 LIVE_LISTEN_URL = _get("LIVE_LISTEN_URL", NGROK_URL)
@@ -172,7 +172,7 @@ SMS_API_KEY = _get("SMS_API_KEY", "")
 # =============================================================================
 
 # Default voice for new users
-DEFAULT_VOICE_ID = _get("DEFAULT_VOICE_ID", "EXAVITQu4vr4xnSDxMaL")
+DEFAULT_VOICE_ID = _get("DEFAULT_VOICE_ID", "")
 DEFAULT_VOICE_KEY = _get("DEFAULT_VOICE_KEY", "1")
 
 # Voice settings for human-like speech
