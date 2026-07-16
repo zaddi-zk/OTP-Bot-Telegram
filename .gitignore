@@ -12,6 +12,7 @@ ENV/
 .env
 .env.local
 .env.*
+!.env.example
 
 # Sensitive runtime data
 conf/
