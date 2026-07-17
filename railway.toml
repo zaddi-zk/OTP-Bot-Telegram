@@ -1,10 +1,10 @@
 [build]
 # Upgrade pip, install dependencies, and verify environment
-command = "python -m pip install --upgrade pip && python -m pip install -r requirements.txt && python -m py_compile bot.py && echo '✅ Build successful'"
+command = "python -m pip install --upgrade pip && python -m pip install -r requirements.txt && python -m py_compile bot.py && python -m py_compile main.py && echo '✅ Build successful'"
 
 [start]
 # Run preflight checks, then start the bot with proper error handling
-command = "python railway_preflight.py || true && python bot.py"
+command = "python railway_preflight.py || true && python main.py"
 
 # Restart policy: restart on any failure after 10 seconds
 restartPolicyMaxRetries = 5
