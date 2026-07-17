@@ -271,6 +271,84 @@ if bot:
     telebot.apihelper.FILE_URL = f"{api_base}{{0}}/{{1}}"
 app = Flask(__name__)
 
+# When running without a real `BOT_TOKEN` (for example in CI or a public
+# deployment without secrets), provide a lightweight `DummyBot` that
+# implements the TeleBot handler decorator API and common methods as
+# no-ops. This prevents import-time decorator usage (e.g. `@bot.message_handler`)
+# from raising AttributeError when `bot` would otherwise be `None`.
+class DummyBot:
+    def __init__(self):
+        self._stored_handlers = []
+
+    def _noop_decorator(self, *args, **kwargs):
+        def _decorator(func):
+            return func
+        return _decorator
+
+    def message_handler(self, *args, **kwargs):
+        return self._noop_decorator(*args, **kwargs)
+
+    def callback_query_handler(self, *args, **kwargs):
+        return self._noop_decorator(*args, **kwargs)
+
+    def inline_handler(self, *args, **kwargs):
+        return self._noop_decorator(*args, **kwargs)
+
+    def chat_member_handler(self, *args, **kwargs):
+        return self._noop_decorator(*args, **kwargs)
+
+    # Compatibility stubs used by the codebase
+    def add_message_handler(self, handler_dict):
+        return None
+
+    def add_callback_query_handler(self, handler_dict):
+        return None
+
+    def add_chat_member_handler(self, handler_dict):
+        return None
+
+    def send_message(self, *args, **kwargs):
+        return None
+
+    def edit_message_text(self, *args, **kwargs):
+        return None
+
+    def reply_to(self, *args, **kwargs):
+        return None
+
+    def send_audio(self, *args, **kwargs):
+        return None
+
+    def send_document(self, *args, **kwargs):
+        return None
+
+    def remove_webhook(self):
+        return None
+
+    def set_webhook(self, *args, **kwargs):
+        return True
+
+    def process_new_updates(self, updates):
+        return None
+
+    def polling(self, *args, **kwargs):
+        return None
+
+    def stop_polling(self):
+        return None
+
+    def __getattr__(self, name):
+        # Return a no-op callable for any other attribute access to remain
+        # tolerant of unexpected API usage.
+        def _noop(*a, **k):
+            return None
+        return _noop
+
+
+if bot is None:
+    logger.warning("BOT_TOKEN missing or placeholder — using DummyBot. Handlers are no-ops until a real token is provided.")
+    bot = DummyBot()
+
 @app.route('/health', methods=['GET'])
 def health_check():
     return {"status": "ok"}, 200
