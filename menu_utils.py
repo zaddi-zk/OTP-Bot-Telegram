@@ -4,6 +4,7 @@ Utilities for building consistent, styled Telegram menus with icons,
 voice selection keyboards, and rich text formatting.
 """
 import html
+from dataclasses import dataclass
 from typing import Dict, List, Mapping, Optional, Sequence
 
 from telebot import types
@@ -169,8 +170,8 @@ def build_voice_selection_keyboard(
 if __name__ == "__main__":
     # Test voice keyboard
     test_mapping = {
-        "1": {"name": "Hannah", "id": "EXAVITQu4vr4xnSDxMaL"},
-        "2": {"name": "Joyce", "id": "FGY2WhTYWx7l1Z2bX9Y1"},
+        "1": {"name": "Hannah", "id": "TEST_VOICE_ID_1"},
+        "2": {"name": "Joyce", "id": "TEST_VOICE_ID_2"},
     }
-    kb = build_voice_selection_keyboard(test_mapping, "EXAVITQu4vr4xnSDxMaL")
+    kb = build_voice_selection_keyboard(test_mapping, test_mapping["1"]["id"])
     print(kb)

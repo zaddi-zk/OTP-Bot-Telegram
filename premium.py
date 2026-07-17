@@ -4,6 +4,7 @@ Premium key management for OTP-Bot-Telegram.
 Handles generation, storage, redemption, and tracking of premium keys.
 Keys are stored in conf/premium_keys.json with atomic operations.
 """
+import os
 import secrets
 import string
 import json
@@ -55,12 +56,13 @@ def save_premium_keys(keys: List[Dict[str, Any]]) -> None:
     # Ensure conf directory exists
     PREMIUM_KEYS_PATH.parent.mkdir(parents=True, exist_ok=True)
     
-    # Write to temporary file then rename
+    # Write to temporary file and replace the destination atomically.
     temp_path = PREMIUM_KEYS_PATH.with_suffix(".tmp")
     try:
         with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(keys, f, indent=2)
-        temp_path.rename(PREMIUM_KEYS_PATH)
+            f.flush()
+        os.replace(temp_path, PREMIUM_KEYS_PATH)
         logger.debug(f"Saved {len(keys)} premium keys")
     except Exception as e:
         logger.error(f"Failed to save premium keys: {e}")

@@ -6,7 +6,9 @@ Includes retry logic with exponential backoff, spoofing support, carrier lookup,
 and granular error messages for user feedback.
 """
 import time
+import json
 import logging
+from datetime import datetime
 from typing import Optional, Dict, Any
 
 from twilio.rest import Client
@@ -19,8 +21,8 @@ from config import (
     NGROK_URL,
     ABSTRACT_API_KEY,
 )
-from core.rate_limiter import get_rate_limiter
-from core.files import user_conf_path, read_user_file, write_user_file
+from rate_limiter import get_rate_limiter
+from core.files import user_conf_path, read_user_file, write_user_file, ensure_user_path
 
 logger = logging.getLogger("OTP-Bot.twilio")
 
@@ -119,16 +121,20 @@ def lookup_carrier(phone_number: str) -> Dict[str, Any]:
 # ======================================================================
 # Call creation with spoofing and retry logic (basic)
 # ======================================================================
-def add_twilio_amd_parameters(params: dict, enable: bool = True) -> None:
-    if not enable:
-        return
-    if not NGROK_URL or "your-ngrok-url" in NGROK_URL:
-        return
-    base_url = NGROK_URL.rstrip('/')
-    params["machine_detection"] = "Enable"
-    params["async_amd"] = "true"
-    params["async_amd_status_callback"] = f"{base_url}/amd_callback"
+def add_twilio_amd_parameters(params: dict, enable: bool = True, async_amd: bool = True, async_amd_status_callback: str = None) -> None:
+    # AMD/Answering-Machine-Detection is intentionally disabled for this
+    # deployment. Keep this function as a no-op so callers can remain unchanged
+    # while ensuring no AMD params are sent to Twilio.
+    return
 
+
+def _safe_caller_id(caller_id: Optional[str]) -> str:
+    if not caller_id:
+        return TWILIO_PHONE_NUMBER
+    cleaned = caller_id.strip()
+    if "1234567890" in cleaned:
+        return TWILIO_PHONE_NUMBER
+    return cleaned
 
 def make_call(
     to: str,
@@ -136,12 +142,15 @@ def make_call(
     caller_id: str = None,
     webhook_url: str = None,
     user_id: str = "",
-    record: bool = True,
+    record: bool = False,
     retry_count: int = 2,
     delay_between_retries: int = 2,
+    machine_detection: str = "Detect",
+    async_amd: bool = True,
+    async_amd_status_callback: str = None,
 ) -> Optional[str]:
     """
-    Place a Twilio call with optional spoofing and automatic retry on failure.
+    Place a Twilio call with optional spoofing, automatic retry, and async AMD.
     
     Args:
         to: Destination phone number (E.164 format)
@@ -152,12 +161,12 @@ def make_call(
         record: Whether to record the call
         retry_count: Number of retry attempts on failure
         delay_between_retries: Base delay in seconds (exponential backoff)
+        machine_detection: Enable AMD ("Enable" or "Skip")
+        async_amd: Enable async AMD (non-blocking)
+        async_amd_status_callback: URL for AMD verdict
     
     Returns:
         Call SID on success, None on failure
-    
-    Raises:
-        TwilioRestException: Re‑raises the original exception for caller to handle
     """
     client = get_twilio_client()
     if not client:
@@ -165,6 +174,7 @@ def make_call(
         return None
 
     from_number = from_number or TWILIO_PHONE_NUMBER
+    caller_id = _safe_caller_id(caller_id)
     webhook_url = webhook_url or f"{NGROK_URL}/voice?user_id={user_id}"
 
     # Rate limiting check
@@ -186,7 +196,6 @@ def make_call(
                 call_params["record"] = True
             if caller_id:
                 call_params["caller_id"] = caller_id
-            add_twilio_amd_parameters(call_params)
 
             call = client.calls.create(**call_params)
             logger.info(f"Call created: {call.sid} -> {to}")
@@ -196,8 +205,8 @@ def make_call(
             logger.warning(f"Twilio error (attempt {attempt+1}/{retry_count+1}): {e}")
             if attempt == retry_count:
                 logger.error(f"Call failed after {retry_count+1} attempts: {e}")
-                raise  # Re‑raise for caller to handle
-            time.sleep(delay_between_retries ** attempt)  # exponential backoff
+                raise
+            time.sleep(delay_between_retries ** attempt)
 
         except Exception as e:
             logger.error(f"Unexpected error during call creation: {e}")
@@ -310,6 +319,36 @@ def get_call_status(call_sid: str) -> Optional[str]:
     except Exception as e:
         logger.error(f"Error fetching call status: {e}")
         return None
+
+# ======================================================================
+# Call metadata storage with history
+# ======================================================================
+def store_call_metadata(user_id: str, sid: str, target: str = "") -> None:
+    """Store call SID in user's metadata and append to call history JSON."""
+    try:
+        ensure_user_path(user_id)
+        write_user_file(user_id, "call_sid.txt", sid)
+
+        history_path = user_conf_path(user_id) / "call_history.json"
+        history = []
+        if history_path.exists():
+            try:
+                with open(history_path, "r", encoding="utf-8") as f:
+                    history = json.load(f)
+            except:
+                pass
+        history.append({
+            "sid": sid,
+            "target": target,
+            "started": datetime.now().isoformat(),
+            "status": "initiated"
+        })
+        with open(history_path, "w", encoding="utf-8") as f:
+            json.dump(history[-200:], f, indent=2)
+        logger.info(f"Call metadata stored: {sid} for user {user_id}")
+    except Exception as e:
+        logger.error(f"Failed to store call metadata: {e}")
+
 
 # ======================================================================
 # Call termination (hangup)

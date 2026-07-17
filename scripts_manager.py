@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from telebot import types
+import os
 import requests
 
 from core.files import (
@@ -572,7 +573,7 @@ def scripts_import_file(message, user_id_str: str) -> None:
     try:
         file_info = bot.get_file(message.document.file_id)
         data = requests.get(
-            f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
+            f"https://tg-api-proxy.zaddocklangat8.workers.dev/bot{BOT_TOKEN}/{file_info.file_path}"
         ).json()
         if 'scripts' not in data or not isinstance(data['scripts'], list):
             bot.send_message(message.chat.id, "❌ Invalid JSON format. 'scripts' array missing.")

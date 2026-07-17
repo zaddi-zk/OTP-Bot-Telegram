@@ -47,7 +47,9 @@ def migrate_user_conf_dir(user_id: str) -> None:
             continue
         if file_path.name != target_path.name:
             try:
-                file_path.rename(target_path)
+                if target_path.exists():
+                    target_path.unlink()
+                shutil.move(str(file_path), str(target_path))
                 logger.info(f"Migrated legacy file {file_path.name} -> {target_path.name}")
             except Exception as e:
                 logger.error(f"Failed to migrate {file_path.name} for user {user_id}: {e}")

@@ -31,6 +31,7 @@ from urllib.parse import quote_plus
 from twilio.rest import Client
 from config import ACCOUNT_SID, AUTH_TOKEN, NGROK_URL
 from live_listen.manager import manager
+from services.tts_service import get_default_voice_id
 
 # ElevenLabs client (optional) - bot.py also may expose a client; we create our own if available
 eleven_client = None
@@ -123,7 +124,7 @@ async def stt_transcribe(audio_bytes: bytes) -> str:
 
 def get_user_voice_id(user_id: Optional[str]) -> str:
     if not user_id:
-        return VOICE_FALLBACK_VOICE
+        return get_default_voice_id()
     path = os.path.join('conf', str(user_id), 'Voice.txt')
     try:
         if os.path.exists(path):
@@ -133,13 +134,13 @@ def get_user_voice_id(user_id: Optional[str]) -> str:
                     return voice_id
     except Exception:
         pass
-    return VOICE_FALLBACK_VOICE
+    return get_default_voice_id()
 
 
 def _resolve_conversation_voice_id(voice_id: Optional[str]) -> str:
     if voice_id:
         return voice_id
-    return VOICE_FALLBACK_VOICE
+    return get_default_voice_id()
 
 
 async def generate_tts_and_publish(call_sid: str, text: str, filename_prefix: str = 'tts', voice_id: Optional[str] = None) -> Optional[str]:
@@ -178,8 +179,8 @@ async def generate_tts_and_publish(call_sid: str, text: str, filename_prefix: st
                 return url
             except Exception as e:
                 print('TTS generation attempt failed:', e)
-                if attempt == 0 and voice_id != VOICE_FALLBACK_VOICE:
-                    voice_id = VOICE_FALLBACK_VOICE
+                if attempt == 0 and voice_id != get_default_voice_id():
+                    voice_id = get_default_voice_id()
                     continue
                 return None
     except Exception as e:
@@ -189,10 +190,12 @@ async def generate_tts_and_publish(call_sid: str, text: str, filename_prefix: st
 
 # Lightweight prefetch filler audio management
 FILLER_CACHE = {}
-VOICE_FALLBACK_VOICE = 'EXAVITQu4vr4xnSDxMaL'  # default voice id (Hannah)
+VOICE_FALLBACK_VOICE = ''
 
-async def prefetch_filler(voice_id: str = VOICE_FALLBACK_VOICE):
+async def prefetch_filler(voice_id: str = ''):
     """Ensure a set of short filler audios exist to reduce perceived latency."""
+    if not voice_id:
+        voice_id = get_default_voice_id()
     # Examples: 'uh', 'okay', 'no problem', 'one moment'
     fillers = {
         'uh': 'Uh... hold on a second',
@@ -227,7 +230,7 @@ async def play_with_filler(call_sid: str, primary_text: str, voice_id: Optional[
 
     # Use provided voice ID or user's default
     if not voice_id:
-        voice_id = get_user_voice_id(session.user_id) or DEFAULT_VOICE_ID
+        voice_id = get_user_voice_id(session.user_id)
 
     # Generate TTS with human settings
     url = await generate_tts_and_publish(

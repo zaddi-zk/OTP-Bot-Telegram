@@ -10,7 +10,7 @@ from typing import Optional
 from telebot import types
 
 from core.files import write_user_file, read_user_file
-from services.language_service import (
+from language_service import (
     SUPPORTED_LANGUAGES,
     get_supported_languages_list,
     set_user_language,
@@ -18,7 +18,7 @@ from services.language_service import (
     get_language_selection_keyboard,
     CALL_TEMPLATES,
 )
-from handlers.menu import send_main_menu
+from menu import send_main_menu
 
 logger = logging.getLogger("OTP-Bot.language_handler")
 

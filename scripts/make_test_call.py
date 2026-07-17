@@ -38,13 +38,13 @@ def main():
 
     client = Client(ACCOUNT_SID, AUTH_TOKEN)
     try:
+        # AMD disabled: do not pass machine_detection parameters
         call = client.calls.create(
             to=to,
             from_=TWILIO_PHONE_NUMBER,
             url=url,
             method="POST",
             record=True,
-            machine_detection="DetectMessageEnd"
         )
         logger.info(f"Call placed. SID: {call.sid}")
     except TwilioRestException as e:

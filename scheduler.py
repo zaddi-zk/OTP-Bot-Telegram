@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 
 from config import NGROK_URL, TWILIO_PHONE_NUMBER
-from services.twilio_service import make_call_with_retry
+from twilio_service import make_call_with_retry
 from services.tts_service import prepare_call_audio
 from core.files import (
     user_conf_path, ensure_user_path, read_user_file, write_user_file

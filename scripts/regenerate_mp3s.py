@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.files import read_user_file
-from services.tts_service import generate_ai
+from services.tts_service import generate_ai, get_default_voice_id
 
 
 def regenerate_all_mp3s():
@@ -33,7 +33,7 @@ def regenerate_all_mp3s():
         voice_id = read_user_file(user_id, "Voice.txt", "")
         if not voice_id:
             print("  ⚠️  No voice ID, using default")
-            voice_id = "EXAVITQu4vr4xnSDxMaL"
+            voice_id = get_default_voice_id()
         
         for page in ["checkifhuman", "explain", "askdigits"]:
             mp3_path = user_dir / f"{page}.mp3"

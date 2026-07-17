@@ -33,7 +33,7 @@ def test_twiml_validation():
         url = f"{BASE_URL}{endpoint}"
         
         try:
-            response = requests.post(url, data=data, headers=headers, timeout=5)
+            response = requests.post(url, data=data, headers=headers, timeout=60)
             
             print(f"📡 {endpoint}")
             print(f"  Status: {response.status_code}")

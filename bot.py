@@ -271,6 +271,10 @@ if bot:
     telebot.apihelper.FILE_URL = f"{api_base}{{0}}/{{1}}"
 app = Flask(__name__)
 
+@app.route('/health', methods=['GET'])
+def health_check():
+    return {"status": "ok"}, 200
+
 # Polling health state
 _polling_thread = None
 _polling_watchdog_thread = None
@@ -5940,6 +5944,13 @@ def handle_chat_member(update):
 # ======================================================================
 # START BACKGROUND THREADS
 # ======================================================================
+def get_runtime_mode(bot_client=None) -> str:
+    if bot_client is None:
+        logger.warning("Telegram bot not configured. Continuing in web-only mode without Telegram polling.")
+        return "web-only"
+    return "full"
+
+
 def start_background_threads():
     start_rate_limiter_cleanup()
     start_scheduler()
@@ -6087,16 +6098,14 @@ if __name__ == "__main__":
     Path("conf").mkdir(exist_ok=True)
     start_background_threads()
 
-    if bot is None:
-        logger.error("Telegram bot not configured. Check BOT_TOKEN environment variable.")
-        sys.exit(1)
+    runtime_mode = get_runtime_mode(bot)
+    logger.info(f"Starting application in {runtime_mode} mode.")
 
-    TARGET_PORT = 5000
-    logging.info(f"Standardizing on Port {TARGET_PORT} everywhere. Listening now.")
+    TARGET_PORT = int(os.getenv("PORT", os.getenv("FLASK_PORT", "5000")))
+    logging.info(f"Starting Flask web server on port {TARGET_PORT}.")
 
     def run_flask():
         try:
-            # Flask main event loop, standardized on port 5000.
             app.run(host='0.0.0.0', port=TARGET_PORT, debug=False, use_reloader=False)
         except Exception as e:
             logger.error(f"Flask failed: {e}")
@@ -6106,11 +6115,12 @@ if __name__ == "__main__":
             import subprocess, os
             env = os.environ.copy()
             env["PYTHONPATH"] = str(Path(__file__).parent)
+            fastapi_port = int(os.getenv("FASTAPI_PORT", "5001"))
             result = subprocess.run([
                 sys.executable, "-m", "uvicorn",
                 "live_listen.server:app",
                 "--host", "0.0.0.0",
-                "--port", "5001",
+                "--port", str(fastapi_port),
                 "--log-level", "info"
             ], cwd=str(Path(__file__).parent), env=env, capture_output=True, text=True)
             if result.returncode != 0:
@@ -6125,48 +6135,46 @@ if __name__ == "__main__":
 
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-    logger.info(f"Flask server started on {FLASK_HOST}:{FLASK_PORT}")
+    logger.info(f"Flask server started on 0.0.0.0:{TARGET_PORT}")
     
     fastapi_thread = threading.Thread(target=run_fastapi, daemon=True)
     fastapi_thread.start()
-    logger.info("FastAPI server started on 0.0.0.0:5001")
+    logger.info(f"FastAPI server started on 0.0.0.0:{os.getenv('FASTAPI_PORT', '5001')}")
     
     time.sleep(2)
 
-    if USE_WEBHOOK:
-        if set_telegram_webhook():
-            logger.info("Running in Telegram webhook mode. Polling disabled because webhook is active.")
+    logger.info("Main process entering keepalive loop while background services run.")
+
+    if runtime_mode == "full":
+        if USE_WEBHOOK:
+            if set_telegram_webhook():
+                logger.info("Running in Telegram webhook mode. Polling disabled because webhook is active.")
+            else:
+                logger.warning("Telegram webhook mode enabled but webhook setup failed. Falling back to polling.")
+                mark_webhook_mode(False)
+                start_bot_polling(allowed_updates=["message", "callback_query", "chat_member"])
         else:
-            logger.warning("Telegram webhook mode enabled but webhook setup failed. Falling back to polling.")
+            # Ensure any existing Telegram webhook is removed on Telegram's side
+            try:
+                removed = False
+                try:
+                    bot.remove_webhook()
+                    removed = True
+                    logger.info("Telegram webhook removed via library before polling startup.")
+                except Exception as e:
+                    logger.debug(f"bot.remove_webhook() failed: {e}")
+                # Force-delete via HTTP API as a fallback
+                if not removed:
+                    if force_delete_telegram_webhook():
+                        logger.info("Telegram webhook removed via HTTP API fallback.")
+                    else:
+                        logger.warning("Could not remove webhook via API; continuing to start polling anyway.")
+            except Exception:
+                logger.exception("Unexpected error while attempting to clear Telegram webhook.")
             mark_webhook_mode(False)
             start_bot_polling(allowed_updates=["message", "callback_query", "chat_member"])
     else:
-        # Ensure any existing Telegram webhook is removed on Telegram's side
-        try:
-            removed = False
-            try:
-                bot.remove_webhook()
-                removed = True
-                logger.info("Telegram webhook removed via library before polling startup.")
-            except Exception as e:
-                logger.debug(f"bot.remove_webhook() failed: {e}")
-            # Force-delete via HTTP API as a fallback
-            if not removed:
-                if force_delete_telegram_webhook():
-                    logger.info("Telegram webhook removed via HTTP API fallback.")
-                else:
-                    logger.warning("Could not remove webhook via API; continuing to start polling anyway.")
-        except Exception:
-            logger.exception("Unexpected error while attempting to clear Telegram webhook.")
-        mark_webhook_mode(False)
-        start_bot_polling(allowed_updates=["message", "callback_query", "chat_member"])
-
-    try:
-        while True:
-            time.sleep(60)
-    except KeyboardInterrupt:
-        logger.info("Shutdown requested by user. Stopping polling and exiting.")
-        stop_bot_polling()
+        logger.info("Skipping Telegram webhook and polling startup because the bot is not configured.")
 
     try:
         while True:
