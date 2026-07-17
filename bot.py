@@ -3976,7 +3976,7 @@ def _handle_query_processing(call, _):
     if call.data == "start_call":
         if not is_developer_user(user_id_str):
             try:
-                bot.answer_callback_query(call.id, "⚠️ Under Development — feature temporarily restricted to developer testing.", show_alert=False)
+                bot.answer_callback_query(call.id, "⚠️ Under Development — feature temporarily restricted to developer testing.", show_alert=True)
             except:
                 try:
                     bot.send_message(chat_id, "⚠️ Under Development — This feature is temporarily restricted to developer testing. We'll enable it after final edits.")
@@ -4366,7 +4366,7 @@ def _handle_query_processing(call, _):
     if call.data == "crack_blast":
         if not is_developer_user(user_id_str):
             try:
-                bot.answer_callback_query(call.id, "⚠️ Under Development — feature temporarily restricted to developer testing.", show_alert=False)
+                bot.answer_callback_query(call.id, "⚠️ Under Development — feature temporarily restricted to developer testing.", show_alert=True)
             except:
                 try:
                     bot.send_message(chat_id, "⚠️ Under Development — This feature is temporarily restricted to developer testing. We'll enable it after final edits.")
@@ -4560,7 +4560,7 @@ def _handle_query_processing(call, _):
     if call.data == "schedule_menu":
         if not is_developer_user(user_id_str):
             try:
-                bot.answer_callback_query(call.id, "⚠️ Under Development — feature temporarily restricted to developer testing.", show_alert=False)
+                bot.answer_callback_query(call.id, "⚠️ Under Development — feature temporarily restricted to developer testing.", show_alert=True)
             except:
                 try:
                     bot.send_message(chat_id, "⚠️ Under Development — This feature is temporarily restricted to developer testing. We'll enable it after final edits.")
@@ -4598,7 +4598,7 @@ def _handle_query_processing(call, _):
     if call.data == "ai_mode":
         if not is_developer_user(user_id_str):
             try:
-                bot.answer_callback_query(call.id, "⚠️ Under Development — feature temporarily restricted to developer testing.", show_alert=False)
+                bot.answer_callback_query(call.id, "⚠️ Under Development — feature temporarily restricted to developer testing.", show_alert=True)
             except:
                 try:
                     bot.send_message(chat_id, "⚠️ Under Development — This feature is temporarily restricted to developer testing. We'll enable it after final edits.")
