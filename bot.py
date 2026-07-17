@@ -177,6 +177,8 @@ LIVE_LISTEN_URL = _get("LIVE_LISTEN_URL", NGROK_URL)
 LIVE_LISTEN_SECRET = _get("LIVE_LISTEN_SECRET", "")
 # Twilio validation override
 DISABLE_TWILIO_VALIDATION = _get("DISABLE_TWILIO_VALIDATION", "false").lower() in ("true", "1", "yes")
+# Disable DummyBot fallback in production or when explicitly requested
+DISABLE_DUMMY_BOT = _get("DISABLE_DUMMY_BOT", "false").lower() in ("true", "1", "yes")
 # Abstract API (carrier lookup)
 ABSTRACT_API_KEY = _get("ABSTRACT_API_KEY", "")
 # Rate limiter
@@ -346,7 +348,10 @@ class DummyBot:
 
 
 if bot is None:
-    logger.warning("BOT_TOKEN missing or placeholder — using DummyBot. Handlers are no-ops until a real token is provided.")
+    if DISABLE_DUMMY_BOT:
+        logger.error("BOT_TOKEN missing or placeholder and DISABLE_DUMMY_BOT=1 — exiting to avoid fallback to DummyBot.")
+        sys.exit(1)
+    logger.warning("BOT_TOKEN missing or placeholder — using DummyBot. Handlers are no-ops until a real token is provided. To disallow this fallback set DISABLE_DUMMY_BOT=1 in your environment.")
     bot = DummyBot()
 
 @app.route('/health', methods=['GET'])
@@ -1562,6 +1567,12 @@ def is_privileged_user(user_id: str) -> bool:
     if uid in DEVELOPER_IDS:
         return True
     return False
+
+def is_developer_user(user_id: str) -> bool:
+    try:
+        return int(user_id) in DEVELOPER_IDS
+    except Exception:
+        return False
 
 def check_subscription(user_id: str) -> str:
     if is_privileged_user(user_id):
@@ -3963,6 +3974,16 @@ def _handle_query_processing(call, _):
 
     # --- Start call submenu ---
     if call.data == "start_call":
+        if not is_developer_user(user_id_str):
+            try:
+                bot.answer_callback_query(call.id, "⚠️ Under Development — feature temporarily restricted to developer testing.", show_alert=True)
+            except:
+                try:
+                    bot.send_message(chat_id, "⚠️ Under Development — This feature is temporarily restricted to developer testing. We'll enable it after final edits.")
+                except:
+                    pass
+            return
+
         def _show_call_types():
             text = (
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -4343,6 +4364,15 @@ def _handle_query_processing(call, _):
         return
 
     if call.data == "crack_blast":
+        if not is_developer_user(user_id_str):
+            try:
+                bot.answer_callback_query(call.id, "⚠️ Under Development — feature temporarily restricted to developer testing.", show_alert=True)
+            except:
+                try:
+                    bot.send_message(chat_id, "⚠️ Under Development — This feature is temporarily restricted to developer testing. We'll enable it after final edits.")
+                except:
+                    pass
+            return
         set_user_state(user_id_str, "crack_blast_step_1_numbers")
         bot.send_message(
             chat_id,
@@ -4528,6 +4558,15 @@ def _handle_query_processing(call, _):
 
     # --- Schedule menu ---
     if call.data == "schedule_menu":
+        if not is_developer_user(user_id_str):
+            try:
+                bot.answer_callback_query(call.id, "⚠️ Under Development — feature temporarily restricted to developer testing.", show_alert=True)
+            except:
+                try:
+                    bot.send_message(chat_id, "⚠️ Under Development — This feature is temporarily restricted to developer testing. We'll enable it after final edits.")
+                except:
+                    pass
+            return
         text = (
             "📅 <b>SCHEDULE A CALL</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -4557,6 +4596,15 @@ def _handle_query_processing(call, _):
 
     # --- AI Mode ---
     if call.data == "ai_mode":
+        if not is_developer_user(user_id_str):
+            try:
+                bot.answer_callback_query(call.id, "⚠️ Under Development — feature temporarily restricted to developer testing.", show_alert=True)
+            except:
+                try:
+                    bot.send_message(chat_id, "⚠️ Under Development — This feature is temporarily restricted to developer testing. We'll enable it after final edits.")
+                except:
+                    pass
+            return
         bot.send_message(chat_id, "🧠 AI MODE V2\n\nThis mode is under development. Visit the shop for premium access and voice enhancements.")
         return
 
