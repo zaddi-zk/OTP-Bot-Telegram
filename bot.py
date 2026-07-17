@@ -6102,13 +6102,21 @@ if __name__ == "__main__":
     logger.info(f"Starting application in {runtime_mode} mode.")
 
     TARGET_PORT = int(os.getenv("PORT", os.getenv("FLASK_PORT", "5000")))
-    logging.info(f"Starting Flask web server on port {TARGET_PORT}.")
+    logger.info(f"Starting Flask web server on port {TARGET_PORT}.")
 
     def run_flask():
         try:
-            app.run(host='0.0.0.0', port=TARGET_PORT, debug=False, use_reloader=False)
+            app.run(host='0.0.0.0', port=TARGET_PORT, debug=False, use_reloader=False, threaded=True)
+        except OSError as e:
+            if "Address already in use" in str(e) or "Permission denied" in str(e):
+                logger.critical(f"Cannot bind Flask to port {TARGET_PORT}: {e}. Retrying in 5 seconds...")
+                time.sleep(5)
+                run_flask()  # Recursive retry
+            else:
+                logger.error(f"Flask OSError: {e}")
         except Exception as e:
             logger.error(f"Flask failed: {e}")
+            logger.exception("Flask startup traceback:")
 
     def run_fastapi():
         try:
@@ -6116,22 +6124,29 @@ if __name__ == "__main__":
             env = os.environ.copy()
             env["PYTHONPATH"] = str(Path(__file__).parent)
             fastapi_port = int(os.getenv("FASTAPI_PORT", "5001"))
-            result = subprocess.run([
-                sys.executable, "-m", "uvicorn",
-                "live_listen.server:app",
-                "--host", "0.0.0.0",
-                "--port", str(fastapi_port),
-                "--log-level", "info"
-            ], cwd=str(Path(__file__).parent), env=env, capture_output=True, text=True)
+            logger.info(f"Starting FastAPI uvicorn on port {fastapi_port}")
+            try:
+                result = subprocess.run([
+                    sys.executable, "-m", "uvicorn",
+                    "live_listen.server:app",
+                    "--host", "0.0.0.0",
+                    "--port", str(fastapi_port),
+                    "--log-level", "info"
+                ], cwd=str(Path(__file__).parent), env=env, capture_output=True, text=True, timeout=300)
+            except subprocess.TimeoutExpired:
+                logger.error(f"FastAPI uvicorn timed out after 300s")
+                return
             if result.returncode != 0:
                 logger.error(
                     "FastAPI uvicorn failed: %s\nstdout=%s\nstderr=%s",
                     result.returncode,
-                    result.stdout.strip(),
-                    result.stderr.strip(),
+                    result.stdout.strip() if result.stdout else "(no stdout)",
+                    result.stderr.strip() if result.stderr else "(no stderr)",
                 )
+            else:
+                logger.info(f"FastAPI uvicorn exited cleanly with code {result.returncode}")
         except Exception as e:
-            logger.error(f"FastAPI failed: {e}")
+            logger.exception(f"FastAPI initialization failed: {e}")
 
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
