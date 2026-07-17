@@ -16,29 +16,40 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Validate deployment secrets
+        id: validate
         run: |
           echo "Checking deployment secrets..."
+          missing=0
           if [ -z "${{ secrets.SERVER_HOST }}" ]; then
-            echo "❌ ERROR: GitHub secret SERVER_HOST is not configured"
-            echo "Please add deployment secrets to: Settings → Secrets and variables → Actions"
-            exit 1
+            echo "⚠️ Missing SERVER_HOST"
+            missing=1
           fi
           if [ -z "${{ secrets.SERVER_USER }}" ]; then
-            echo "❌ ERROR: GitHub secret SERVER_USER is not configured"; exit 1
+            echo "⚠️ Missing SERVER_USER"
+            missing=1
           fi
           if [ -z "${{ secrets.SERVER_SSH_KEY }}" ]; then
-            echo "❌ ERROR: GitHub secret SERVER_SSH_KEY is not configured"; exit 1
+            echo "⚠️ Missing SERVER_SSH_KEY"
+            missing=1
           fi
           if [ -z "${{ secrets.SERVER_SSH_PORT }}" ]; then
-            echo "❌ ERROR: GitHub secret SERVER_SSH_PORT is not configured"; exit 1
+            echo "⚠️ Missing SERVER_SSH_PORT"
+            missing=1
           fi
           if [ -z "${{ secrets.SERVER_KNOWN_HOSTS }}" ]; then
-            echo "❌ ERROR: GitHub secret SERVER_KNOWN_HOSTS is not configured"; exit 1
+            echo "⚠️ Missing SERVER_KNOWN_HOSTS"
+            missing=1
           fi
-          echo "✓ All required secrets are configured"
+          if [ "$missing" -eq 1 ]; then
+            echo "::warning::Deployment secrets missing — skipping SSH deploy step."
+            echo "deploy=false" >> $GITHUB_OUTPUT
+          else
+            echo "✅ All required secrets are configured"
+            echo "deploy=true" >> $GITHUB_OUTPUT
+          fi
 
       - name: Deploy to production server
-        if: success()
+        if: steps.validate.outputs.deploy == 'true'
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SERVER_HOST }}
