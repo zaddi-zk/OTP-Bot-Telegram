@@ -3934,6 +3934,20 @@ def handle_query(call):
     """Main callback handler - acknowledge immediately, then process in the background executor."""
     if not getattr(call, "id", None):
         return
+
+    user_id_str = str(call.from_user.id)
+    restricted_buttons = {"start_call", "ai_mode", "crack_blast", "schedule_menu"}
+    if call.data in restricted_buttons and not is_developer_user(user_id_str):
+        try:
+            bot.answer_callback_query(
+                call.id,
+                "⚠️ Under Development — This feature is temporarily restricted to developer testing.",
+                show_alert=True,
+            )
+        except Exception as e:
+            logger.debug(f"Failed to answer restricted callback: {e}")
+        return
+
     try:
         bot.answer_callback_query(call.id, "", show_alert=False, cache_time=1)
     except Exception as e:
