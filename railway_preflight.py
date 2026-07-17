@@ -11,10 +11,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import (
-    BOT_TOKEN, TWILIO_ACCOUNT_SID, AUTH_TOKEN, TWILIO_PHONE_NUMBER,
+    BOT_TOKEN, ACCOUNT_SID, AUTH_TOKEN, TWILIO_PHONE_NUMBER,
     NGROK_URL, MAIN_CHANNEL_ID, BACKUP_CHANNEL_ID, OWNER_ID,
     ELEVENLABS_API_KEY, LIVE_LISTEN_SECRET
 )
+
+TWILIO_ACCOUNT_SID = ACCOUNT_SID
 
 def check_critical_vars():
     """Check that critical environment variables are set."""
