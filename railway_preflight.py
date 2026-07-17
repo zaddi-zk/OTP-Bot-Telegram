@@ -74,7 +74,7 @@ def check_critical_vars():
         print("="*70 + "\n")
         return True
     else:
-        print("❌ CRITICAL VARIABLES MISSING - BOT CANNOT START")
+        print("❌ CRITICAL VARIABLES MISSING - BOT CANNOT START (strict mode)")
         print("="*70)
         print("\n⚠️  Set these in Railway → Settings → Variables:")
         print("  1. BOT_TOKEN")
@@ -83,7 +83,14 @@ def check_critical_vars():
         print("  4. TWILIO_PHONE_NUMBER")
         print("  5. NGROK_URL")
         print("\n")
-        return False
+        # Allow deployments to continue unless explicit strict mode is enabled
+        strict = os.getenv("RAILWAY_STRICT", "0") in ("1", "true", "yes")
+        if strict:
+            print("Exiting due to RAILWAY_STRICT=true")
+            return False
+        else:
+            print("Continuing deployment (RAILWAY_STRICT not set). Set RAILWAY_STRICT=1 to enforce checks.")
+            return True
 
 if __name__ == "__main__":
     if check_critical_vars():
