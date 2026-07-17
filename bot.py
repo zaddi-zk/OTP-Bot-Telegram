@@ -6095,6 +6095,25 @@ def start_polling_watchdog() -> None:
 # MAIN ENTRY
 # ======================================================================
 if __name__ == "__main__":
+    import signal
+    
+    def handle_shutdown(signum, frame):
+        """Gracefully shutdown on SIGTERM or SIGINT."""
+        logger.info(f"\n{'='*70}")
+        logger.info("⚠️  Shutdown signal received. Cleaning up...")
+        logger.info(f"{'='*70}")
+        try:
+            stop_bot_polling()
+            logger.info("✅ Bot polling stopped")
+        except Exception as e:
+            logger.warning(f"Error stopping polling: {e}")
+        logger.info("🛑 Exiting...")
+        sys.exit(0)
+    
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGTERM, handle_shutdown)
+    signal.signal(signal.SIGINT, handle_shutdown)
+    
     Path("conf").mkdir(exist_ok=True)
     start_background_threads()
 
@@ -6158,6 +6177,21 @@ if __name__ == "__main__":
     
     time.sleep(2)
 
+    # ========================================================================
+    # STARTUP BANNER
+    # ========================================================================
+    logger.info("\n" + "="*70)
+    logger.info("🚀 HOTTBOIIHITZZ PREMIUM OTP BOT v4.1 STARTED")
+    logger.info("="*70)
+    logger.info(f"Runtime Mode:          {runtime_mode.upper()}")
+    logger.info(f"Flask Port:            {TARGET_PORT}")
+    logger.info(f"FastAPI Port:          {os.getenv('FASTAPI_PORT', '5001')}")
+    logger.info(f"Telegram Polling:      {'ACTIVE' if runtime_mode == 'full' else 'DISABLED'}")
+    logger.info(f"Webhook Mode:          {USE_WEBHOOK}")
+    logger.info(f"Twilio Configured:     {'YES' if twilio_client else 'NO'}")
+    logger.info(f"ElevenLabs Configured: {'YES' if ELEVENLABS_API_KEY else 'NO'}")
+    logger.info("="*70 + "\n")
+    
     logger.info("Main process entering keepalive loop while background services run.")
 
     if runtime_mode == "full":
