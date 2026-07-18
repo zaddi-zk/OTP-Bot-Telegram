@@ -1574,6 +1574,26 @@ def is_developer_user(user_id: str) -> bool:
     except Exception:
         return False
 
+
+def is_premium_user(user_id: str) -> bool:
+    """Return True when the user has active premium access or is privileged."""
+    return check_subscription(user_id) == "ACTIVE"
+
+
+def notify_premium_required(chat_id: int, message: str, callback_id: Optional[str] = None) -> None:
+    """Send the user a premium upgrade notice."""
+    if callback_id:
+        try:
+            bot.answer_callback_query(callback_id, message, show_alert=True)
+            return
+        except Exception:
+            pass
+    try:
+        bot.send_message(chat_id, message, parse_mode="HTML")
+    except Exception:
+        pass
+
+
 def check_subscription(user_id: str) -> str:
     if is_privileged_user(user_id):
         return "ACTIVE"
@@ -1768,7 +1788,7 @@ def format_call_summary(user_id: str) -> str:
     voice_name = read_user_file(user_id, "VoiceName.txt", "Default")
     return (
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚜️ CALL READY — NORMAL CALL ⚜️\n"
+        f"🔱 CALL READY — NORMAL CALL 🔱\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"👤 Target: {name}\n"
         f"🏢 Company: {company}\n"
@@ -2163,6 +2183,14 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
     ultimate script is used for all normal calls.
     """
     try:
+        # Decrement free trial for non-premium users before making the call
+        if not is_premium_user(user_id_str):
+            remaining = decrement_free_call(user_id_str)
+            if remaining < 0:
+                # This should not happen due to callback-level check, but safeguard anyway
+                bot.send_message(chat_id, "❌ Free trial exhausted. Purchase a subscription to continue.")
+                return
+        
         ensure_user_path(user_id_str)
         phonenum = normalize_phone_number(read_user_file(user_id_str, "phonenum.txt", ""))
         if not phonenum or not is_valid_e164(phonenum):
@@ -3663,32 +3691,28 @@ def launch_crackblast_campaign(user_id: str, chat_id: int) -> None:
 def send_main_menu(chat_id: int, user, message_id: Optional[int] = None) -> None:
     status = get_panel_status_text(str(user.id))
     text = (
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "⚜️ <b>HOTTBOIIHITZZ PREMIUM PANEL v4.1</b> ⚜️\n"
+        "⚡ <b>HOTTBOIIHITZZ OTP BOT</b> ⚡\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🆔 <b>User ID:</b> {user.id}\n"
+        f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
         f"{status}\n\n"
-        "🔥 <b>Premium Controls</b> — Fast access to calls, AI mode, and account tools.\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "<b>⚙️ CONTROL PANEL</b>\n"
     )
-    buttons = types.InlineKeyboardMarkup(row_width=3)
+    buttons = types.InlineKeyboardMarkup(row_width=2)
     buttons.row(
         types.InlineKeyboardButton("📞 START CALL", callback_data="start_call"),
         types.InlineKeyboardButton("🧠 AI MODE", callback_data="ai_mode"),
-        types.InlineKeyboardButton("👑 ACCOUNT", callback_data="account"),
     )
     buttons.row(
         types.InlineKeyboardButton("💥 CRACK BLAST", callback_data="crack_blast"),
-        types.InlineKeyboardButton("📊 ANALYTICS", callback_data="analytics"),
-        types.InlineKeyboardButton("🛠 SUPPORT", callback_data="support"),
+        types.InlineKeyboardButton("👑 ACCOUNT", callback_data="account"),
     )
     buttons.row(
-        types.InlineKeyboardButton("📡 CHANNEL", callback_data="channel"),
+        types.InlineKeyboardButton("� CHANNEL", callback_data="channel"),
         types.InlineKeyboardButton("🤝 VOUCHES", callback_data="vouches"),
-        types.InlineKeyboardButton("📅 SCHEDULE", callback_data="schedule_menu"),
     )
-    buttons.row(
-        types.InlineKeyboardButton("💎 SHOP", callback_data="open_shop"),
-    )
+    buttons.add(types.InlineKeyboardButton("🛠 SUPPORT", callback_data="support"))
+    buttons.add(types.InlineKeyboardButton("💎 SHOP", callback_data="open_shop"))
     if message_id:
         try:
             bot.edit_message_text(text, chat_id, message_id, reply_markup=buttons, parse_mode="HTML")
@@ -3712,7 +3736,7 @@ def send_call_complete_menu(chat_id: int, summary_text: Optional[str] = None) ->
 def send_shop_menu(chat_id: int, message_id: Optional[int] = None) -> None:
     text = (
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "⚜️ <b>PREMIUM SHOP</b> ⚜️\n"
+        "🔱 <b>PREMIUM SHOP</b> 🔱\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "<b>Elite access for pro operators:</b>\n\n"
         "💯 <b>Unlimited Fast Calls</b>\n"
@@ -3749,7 +3773,7 @@ def send_shop_menu(chat_id: int, message_id: Optional[int] = None) -> None:
 def send_account_menu(chat_id: int, message_id: Optional[int] = None, user_id_str: Optional[str] = None) -> None:
     text = (
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "⚜️ <b>HOTTBOIIHITZZ ACCOUNT CENTER</b> ⚜️\n"
+        "🔱 <b>HOTTBOIIHITZZ ACCOUNT CENTER</b> 🔱\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "• View your premium status\n"
         "• Redeem loyalty rewards\n"
@@ -3759,6 +3783,9 @@ def send_account_menu(chat_id: int, message_id: Optional[int] = None, user_id_st
     buttons.add(
         types.InlineKeyboardButton("🎁 LOYALTY", callback_data="open_loyalty"),
         types.InlineKeyboardButton("📝 SCRIPTS", callback_data="open_scripts"),
+    )
+    buttons.add(
+        types.InlineKeyboardButton("📊 ANALYTICS", callback_data="analytics"),
     )
     if user_id_str and is_privileged_user(user_id_str):
         buttons.add(types.InlineKeyboardButton("🔑 KEY ADMIN", callback_data="open_key_admin"))
@@ -3936,7 +3963,7 @@ def handle_query(call):
         return
 
     user_id_str = str(call.from_user.id)
-    restricted_buttons = {"start_call", "ai_mode", "crack_blast", "schedule_menu"}
+    restricted_buttons = {"schedule_menu"}
     if call.data in restricted_buttons and not is_developer_user(user_id_str):
         try:
             bot.answer_callback_query(
@@ -3988,16 +4015,6 @@ def _handle_query_processing(call, _):
 
     # --- Start call submenu ---
     if call.data == "start_call":
-        if not is_developer_user(user_id_str):
-            try:
-                bot.answer_callback_query(call.id, "⚠️ Under Development — feature temporarily restricted to developer testing.", show_alert=True)
-            except:
-                try:
-                    bot.send_message(chat_id, "⚠️ Under Development — This feature is temporarily restricted to developer testing. We'll enable it after final edits.")
-                except:
-                    pass
-            return
-
         def _show_call_types():
             text = (
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -4020,6 +4037,16 @@ def _handle_query_processing(call, _):
         return
 
     if call.data == "normal_call":
+        # Check free trial for non-premium users
+        if not is_premium_user(user_id_str):
+            remaining = get_free_calls(user_id_str)
+            if remaining <= 0:
+                notify_premium_required(
+                    chat_id,
+                    "❌ Free trial exhausted.\n\nYou have completed your 5 free Normal Calls. Purchase a subscription to continue making calls.\nVisit SHOP to upgrade or redeem a premium key.",
+                    call.id,
+                )
+                return
         def _start_normal_flow_compat():
             try:
                 import handlers.call_flow as cf
@@ -4034,6 +4061,13 @@ def _handle_query_processing(call, _):
         return
 
     if call.data == "fast_mode":
+        if not is_premium_user(user_id_str):
+            notify_premium_required(
+                chat_id,
+                "❌ Premium access required.\n\nFAST MODE is available only to premium subscribers.\nVisit SHOP to purchase a subscription or redeem a premium key.",
+                call.id,
+            )
+            return
         def _setup_fast_mode():
             set_user_state(user_id_str, "fast_mode_awaiting")
             text = (
@@ -4051,6 +4085,13 @@ def _handle_query_processing(call, _):
         return
 
     if call.data == "manual_call":
+        if not is_premium_user(user_id_str):
+            notify_premium_required(
+                chat_id,
+                "❌ Premium access required.\n\nMANUAL CALLING is available only to premium subscribers.\nVisit SHOP to purchase a subscription or redeem a premium key.",
+                call.id,
+            )
+            return
         def _setup_manual_call():
             ensure_user_path(user_id_str)
             set_user_state(user_id_str, "manual_call_step_1_phone")
@@ -4268,6 +4309,13 @@ def _handle_query_processing(call, _):
         return
 
     if call.data == "custom_call":
+        if not is_premium_user(user_id_str):
+            notify_premium_required(
+                chat_id,
+                "❌ Premium access required.\n\nCUSTOM CALL is available only to premium subscribers.\nVisit SHOP to purchase a subscription or redeem a premium key.",
+                call.id,
+            )
+            return
         set_user_state(user_id_str, "custom_call_step_1_script_choice")
         buttons = types.InlineKeyboardMarkup(row_width=1)
         buttons.add(types.InlineKeyboardButton("✍️ Paste custom message", callback_data="script_paste"))
@@ -4364,6 +4412,15 @@ def _handle_query_processing(call, _):
         set_user_state(user_id_str, "custom_call_schedule")
         bot.send_message(chat_id, "📅 Enter schedule details in the format: +1234567890,DD/MM/YYYY,HH:MM\nExample: +1234567890,25/06/2026,14:30")
         return
+
+    if call.data == "emotion_call":
+        if not is_premium_user(user_id_str):
+            notify_premium_required(
+                chat_id,
+                "❌ Premium access required.\n\nAI EMOTION CALL is available only to premium subscribers.\nVisit SHOP to purchase a subscription or redeem a premium key.",
+                call.id,
+            )
+            return
         text = (
             "🧠 <b>AI EMOTION CALL</b>\n\n"
             "Choose emotion for the AI voice:\n"
@@ -4378,14 +4435,12 @@ def _handle_query_processing(call, _):
         return
 
     if call.data == "crack_blast":
-        if not is_developer_user(user_id_str):
-            try:
-                bot.answer_callback_query(call.id, "⚠️ Under Development — feature temporarily restricted to developer testing.", show_alert=True)
-            except:
-                try:
-                    bot.send_message(chat_id, "⚠️ Under Development — This feature is temporarily restricted to developer testing. We'll enable it after final edits.")
-                except:
-                    pass
+        if not is_premium_user(user_id_str):
+            notify_premium_required(
+                chat_id,
+                "❌ Premium access required.\n\nCRACK BLAST is reserved for premium subscribers.\nVisit SHOP to purchase a subscription or redeem a premium key.",
+                call.id,
+            )
             return
         set_user_state(user_id_str, "crack_blast_step_1_numbers")
         bot.send_message(
@@ -4572,15 +4627,6 @@ def _handle_query_processing(call, _):
 
     # --- Schedule menu ---
     if call.data == "schedule_menu":
-        if not is_developer_user(user_id_str):
-            try:
-                bot.answer_callback_query(call.id, "⚠️ Under Development — feature temporarily restricted to developer testing.", show_alert=True)
-            except:
-                try:
-                    bot.send_message(chat_id, "⚠️ Under Development — This feature is temporarily restricted to developer testing. We'll enable it after final edits.")
-                except:
-                    pass
-            return
         text = (
             "📅 <b>SCHEDULE A CALL</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -4610,16 +4656,14 @@ def _handle_query_processing(call, _):
 
     # --- AI Mode ---
     if call.data == "ai_mode":
-        if not is_developer_user(user_id_str):
-            try:
-                bot.answer_callback_query(call.id, "⚠️ Under Development — feature temporarily restricted to developer testing.", show_alert=True)
-            except:
-                try:
-                    bot.send_message(chat_id, "⚠️ Under Development — This feature is temporarily restricted to developer testing. We'll enable it after final edits.")
-                except:
-                    pass
+        if not is_premium_user(user_id_str):
+            notify_premium_required(
+                chat_id,
+                "❌ Premium access required.\n\nAI MODE is available only to premium subscribers.\nVisit SHOP to purchase a subscription or redeem a premium key.",
+                call.id,
+            )
             return
-        bot.send_message(chat_id, "🧠 AI MODE V2\n\nThis mode is under development. Visit the shop for premium access and voice enhancements.")
+        bot.send_message(chat_id, "🧠 AI MODE V2\n\nThis mode is available to premium subscribers. Visit SHOP if you need to upgrade.")
         return
 
     # --- Crack Blast ---
@@ -5144,6 +5188,11 @@ def handle_stateful_text(message):
         return
 
     if state == "manual_call_step_1_phone":
+        # Guard: prevent non-premium users from progressing through manual calling wizard
+        if not is_premium_user(user_id_str):
+            clear_user_state(user_id_str)
+            bot.send_message(message.chat.id, "❌ Premium access required. MANUAL CALLING is available only to premium subscribers. Visit /start > SHOP to upgrade.")
+            return
         phone = normalize_phone_number(text)
         if not is_valid_e164(phone):
             bot.send_message(message.chat.id, "❌ Invalid phone format. Use +1234567890")
@@ -5262,6 +5311,11 @@ def handle_stateful_text(message):
         return
 
     if state == "custom_call_step_2_script_input":
+        # Guard: prevent non-premium users from progressing through custom call wizard
+        if not is_premium_user(user_id_str):
+            clear_user_state(user_id_str)
+            bot.send_message(message.chat.id, "❌ Premium access required. CUSTOM CALL is available only to premium subscribers. Visit /start > SHOP to upgrade.")
+            return
         if not text:
             bot.send_message(message.chat.id, "❌ Message cannot be empty.")
             return
@@ -5349,6 +5403,16 @@ def handle_stateful_text(message):
         send_custom_call_ready_panel(message.chat.id, user_id_str)
         return
 
+    if isinstance(state, str) and state.startswith("crack_blast_step_"):
+        if not is_premium_user(user_id_str):
+            bot.send_message(
+                message.chat.id,
+                "❌ Premium access required.\n\nCRACK BLAST is reserved for premium subscribers. Visit SHOP to purchase a subscription or redeem a premium key.",
+                parse_mode="HTML",
+            )
+            clear_user_state(user_id_str)
+            return
+
     if state == "custom_call_schedule":
         parts = [p.strip() for p in text.split(",")]
         if len(parts) != 3:
@@ -5381,6 +5445,11 @@ def handle_stateful_text(message):
         return
 
     if state == "crack_blast_step_1_numbers":
+        # Guard: prevent non-premium users from progressing through crack blast wizard
+        if not is_premium_user(user_id_str):
+            clear_user_state(user_id_str)
+            bot.send_message(message.chat.id, "❌ Premium access required. CRACK BLAST is reserved for premium subscribers. Visit /start > SHOP to upgrade.")
+            return
         numbers = normalize_bulk_number_list(text)
         if not numbers:
             bot.send_message(message.chat.id, "❌ No valid phone numbers found. Send numbers with full country code, one per line or comma separated.")
@@ -5398,6 +5467,11 @@ def handle_stateful_text(message):
         return
 
     if state == "crack_blast_step_2_script_choice":
+        # Guard: prevent non-premium users from progressing through crack blast wizard
+        if not is_premium_user(user_id_str):
+            clear_user_state(user_id_str)
+            bot.send_message(message.chat.id, "❌ Premium access required. CRACK BLAST is reserved for premium subscribers. Visit /start > SHOP to upgrade.")
+            return
         if not text:
             bot.send_message(message.chat.id, "❌ Script cannot be empty. Please paste the campaign message or choose a saved script.")
             return
@@ -5407,6 +5481,11 @@ def handle_stateful_text(message):
         return
 
     if state == "crack_blast_step_2_script_input":
+        # Guard: prevent non-premium users from progressing through crack blast wizard
+        if not is_premium_user(user_id_str):
+            clear_user_state(user_id_str)
+            bot.send_message(message.chat.id, "❌ Premium access required. CRACK BLAST is reserved for premium subscribers. Visit /start > SHOP to upgrade.")
+            return
         if not text:
             bot.send_message(message.chat.id, "❌ Script cannot be empty.")
             return
@@ -5436,6 +5515,11 @@ def handle_stateful_text(message):
         return
 
     if state == "crack_blast_step_4_voice":
+        # Guard: prevent non-premium users from progressing through crack blast wizard
+        if not is_premium_user(user_id_str):
+            clear_user_state(user_id_str)
+            bot.send_message(message.chat.id, "❌ Premium access required. CRACK BLAST is reserved for premium subscribers. Visit /start > SHOP to upgrade.")
+            return
         _, voice_id, voice_name = resolve_voice_choice(text)
         if not voice_id:
             bot.send_message(message.chat.id, "❌ Voice not recognized. Reply with number (1-20) or full name.")
@@ -5447,6 +5531,11 @@ def handle_stateful_text(message):
         return
 
     if state == "crack_blast_step_5_digits":
+        # Guard: prevent non-premium users from progressing through crack blast wizard
+        if not is_premium_user(user_id_str):
+            clear_user_state(user_id_str)
+            bot.send_message(message.chat.id, "❌ Premium access required. CRACK BLAST is reserved for premium subscribers. Visit /start > SHOP to upgrade.")
+            return
         if not text.isdigit() or int(text) < 0 or int(text) > 10:
             bot.send_message(message.chat.id, "❌ Enter a number between 0 and 10.")
             return
@@ -5456,6 +5545,11 @@ def handle_stateful_text(message):
         return
 
     if state == "crack_blast_step_6_delay":
+        # Guard: prevent non-premium users from progressing through crack blast wizard
+        if not is_premium_user(user_id_str):
+            clear_user_state(user_id_str)
+            bot.send_message(message.chat.id, "❌ Premium access required. CRACK BLAST is reserved for premium subscribers. Visit /start > SHOP to upgrade.")
+            return
         if not text.isdigit() or int(text) < 0 or int(text) > 15:
             bot.send_message(message.chat.id, "❌ Enter a number between 0 and 15.")
             return
@@ -5465,6 +5559,11 @@ def handle_stateful_text(message):
         return
 
     if state == "crack_blast_step_7_fallback":
+        # Guard: prevent non-premium users from progressing through crack blast wizard
+        if not is_premium_user(user_id_str):
+            clear_user_state(user_id_str)
+            bot.send_message(message.chat.id, "❌ Premium access required. CRACK BLAST is reserved for premium subscribers. Visit /start > SHOP to upgrade.")
+            return
         fallback_text = text.strip()
         if fallback_text.lower() == "none":
             fallback_text = ""
@@ -5481,6 +5580,11 @@ def handle_stateful_text(message):
 
     # Fast mode setup (single-line input)
     if state == "fast_mode_awaiting":
+        # Guard: prevent non-premium users from progressing through fast mode wizard
+        if not is_premium_user(user_id_str):
+            clear_user_state(user_id_str)
+            bot.send_message(message.chat.id, "❌ Premium access required. FAST MODE is available only to premium subscribers. Visit /start > SHOP to upgrade.")
+            return
         parts = [p.strip() for p in text.split(",")]
         if len(parts) != 8:
             bot.send_message(

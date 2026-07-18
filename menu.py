@@ -90,26 +90,30 @@ def send_main_menu(
     
     text = (
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "⚜️ <b>HOTTBOIIHITZZ PREMIUM PANEL v4.0</b> ⚜️\n"
+        "🔱 <b>HOTTBOIIHITZZ PREMIUM PANEL v4.0</b> 🔱\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
         f"{status_text}\n\n"
         "🔥 <b>Premium Controls</b> — Fast access to calls, AI mode, and account tools.\n"
     )
     
+    premium_active = check_subscription(str(user.id)) == "ACTIVE"
+    ai_label = f"{ICONS['ai']} AI MODE" if premium_active else f"{ICONS['ai']} AI MODE 🔒"
+    crack_label = f"{ICONS['crack']} CRACK BLAST" if premium_active else f"{ICONS['crack']} CRACK BLAST 🔒"
+
     buttons = types.InlineKeyboardMarkup(row_width=3)
     
     # Row 1: Call actions
     buttons.row(
         types.InlineKeyboardButton(f"{ICONS['call']} START CALL", callback_data="start_call"),
         types.InlineKeyboardButton(f"{ICONS['bulk']} BULK CALL", callback_data="bulk_call"),
-        types.InlineKeyboardButton(f"{ICONS['ai']} AI MODE", callback_data="ai_mode"),
+        types.InlineKeyboardButton(ai_label, callback_data="ai_mode"),
     )
     
     # Row 2: Account, Crack Blast, Analytics
     buttons.row(
         types.InlineKeyboardButton(f"{ICONS['account']} ACCOUNT", callback_data="account"),
-        types.InlineKeyboardButton(f"{ICONS['crack']} CRACK BLAST", callback_data="crack_blast"),
+        types.InlineKeyboardButton(crack_label, callback_data="crack_blast"),
         types.InlineKeyboardButton(f"{ICONS['analytics']} ANALYTICS", callback_data="analytics"),
     )
     

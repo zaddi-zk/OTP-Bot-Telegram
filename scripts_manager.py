@@ -243,7 +243,7 @@ def open_scripts_menu(chat_id: int, message_id: Optional[int] = None, user_id_st
         user_id_str = str(chat_id)
     script_count = len(db_get_scripts(user_id_str))
     text = (
-        "⚜️ <b>HOTTBOIIHITZZ · SCRIPTS MANAGER</b> ⚜️\n"
+        "🔱 <b>HOTTBOIIHITZZ · SCRIPTS MANAGER</b> 🔱\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"📊 <b>Your Scripts:</b> <code>{script_count}</code>\n\n"
         "<b>⚡ Premium Features:</b>\n"

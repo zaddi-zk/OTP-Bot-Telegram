@@ -158,7 +158,7 @@ def send_main_menu(chat_id: int, user, message_id: Optional[int] = None) -> None
     status_text = get_panel_status_text(str(user.id))
     text = (
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "⚜️ <b>HOTTBOIIHITZZ PREMIUM PANEL v4.0</b> ⚜️\n"
+        "🔱 <b>HOTTBOIIHITZZ PREMIUM PANEL v4.0</b> 🔱\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
         f"{status_text}\n\n"
