@@ -4464,10 +4464,10 @@ def _handle_query_processing(call, _):
 
     if call.data == "crack_blast":
         if not is_premium_user(user_id_str):
-            notify_premium_required(
-                chat_id,
-                "❌ Premium access required.\n\nCRACK BLAST is reserved for premium subscribers.\nVisit SHOP to purchase a subscription or redeem a premium key.",
+            bot.answer_callback_query(
                 call.id,
+                "💥 CRACK BLAST requires Premium Access\n\nUnlimited bulk campaigns with advanced targeting are exclusive to premium members.\n\nUpgrade in SHOP to unlock massive campaign capabilities.",
+                show_alert=True
             )
             return
         set_user_state(user_id_str, "crack_blast_step_1_numbers")
@@ -4685,10 +4685,10 @@ def _handle_query_processing(call, _):
     # --- AI Mode ---
     if call.data == "ai_mode":
         if not is_premium_user(user_id_str):
-            notify_premium_required(
-                chat_id,
-                "❌ Premium access required.\n\nAI MODE is available only to premium subscribers.\nVisit SHOP to purchase a subscription or redeem a premium key.",
+            bot.answer_callback_query(
                 call.id,
+                "🧠 AI MODE requires Premium Access\n\nAdvanced AI voice processing and intelligent conversation handling are exclusive to premium members.\n\nUpgrade in SHOP to unlock unlimited AI-powered calls.",
+                show_alert=True
             )
             return
         bot.send_message(chat_id, "🧠 AI MODE V2\n\nThis mode is available to premium subscribers. Visit SHOP if you need to upgrade.")
