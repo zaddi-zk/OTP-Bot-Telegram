@@ -3696,6 +3696,15 @@ def send_main_menu(chat_id: int, user, message_id: Optional[int] = None) -> None
         f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
         f"{status}\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🚀 <b>Premium Features</b>\n"
+        "💯 Unlimited Fast Mode Calls\n"
+        "🤖 AI Emotion Call Technology\n"
+        "💥 Crack Blast Campaigns\n"
+        "🎯 Custom Caller ID Masking\n"
+        "⚡ Priority Call Execution\n\n"
+        "<b>💎 Unlock Premium Access Now!</b>\n"
+        "Get unrestricted access to all advanced features.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "<b>⚙️ CONTROL PANEL</b>\n"
     )
     buttons = types.InlineKeyboardMarkup(row_width=2)
