@@ -3714,7 +3714,7 @@ def send_main_menu(chat_id: int, user, message_id: Optional[int] = None) -> None
         types.InlineKeyboardButton("📡 CHANNEL", callback_data="channel"),
         types.InlineKeyboardButton(
             "🤝 VOUCHES",
-            url="https://t.me/Hottboiihitzz_vouchesbot",
+            url="https://t.me/+DYfpnl23jxg1OGRk",
         ),
     )
     buttons.add(types.InlineKeyboardButton("🛠 SUPPORT", callback_data="support"))
