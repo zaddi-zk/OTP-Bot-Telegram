@@ -3695,6 +3695,9 @@ def send_main_menu(chat_id: int, user, message_id: Optional[int] = None) -> None
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
         f"{status}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "💎 <b>Unlock Premium Access Now!</b>\n"
+        "Get unrestricted access to all advanced features.\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "<b>⚙️ CONTROL PANEL</b>\n"
     )
