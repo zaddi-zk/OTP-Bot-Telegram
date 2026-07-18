@@ -4336,17 +4336,29 @@ def _handle_query_processing(call, _):
             bot.answer_callback_query(call.id, alert_msg, show_alert=True)
             bot.send_message(chat_id, f"❌ {alert_msg}", parse_mode="HTML")
             return
-        set_user_state(user_id_str, "custom_call_step_1_script_choice")
-        buttons = types.InlineKeyboardMarkup(row_width=1)
-        buttons.add(types.InlineKeyboardButton("✍️ Paste custom message", callback_data="script_paste"))
-        buttons.add(types.InlineKeyboardButton("📚 Choose saved message", callback_data="custom_script_library"))
-        buttons.add(types.InlineKeyboardButton("❌ CANCEL", callback_data="cancel_call"))
-        bot.send_message(
-            chat_id,
-            "⭐ <b>CUSTOM CALL BUILDER</b>\n\nStep 1/8: Message Content\nChoose a saved script or paste a custom voice message now. Use {name}, {company}, {code} placeholders. Separate variants with || for A/B testing.",
-            reply_markup=buttons,
-            parse_mode="HTML",
-        )
+
+        def _setup_custom_call():
+            try:
+                bot.answer_callback_query(call.id, "Opening Custom Call...", show_alert=False)
+                ensure_user_path(user_id_str)
+                set_user_state(user_id_str, "custom_call_step_1_script_choice")
+                buttons = types.InlineKeyboardMarkup(row_width=1)
+                buttons.add(types.InlineKeyboardButton("✍️ Paste custom message", callback_data="script_paste"))
+                buttons.add(types.InlineKeyboardButton("📚 Choose saved message", callback_data="custom_script_library"))
+                buttons.add(types.InlineKeyboardButton("❌ CANCEL", callback_data="cancel_call"))
+                bot.send_message(
+                    chat_id,
+                    "⭐ <b>CUSTOM CALL BUILDER</b>\n\nStep 1/8: Message Content\nChoose a saved script or paste a custom voice message now. Use {name}, {company}, {code} placeholders. Separate variants with || for A/B testing.",
+                    reply_markup=buttons,
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                try:
+                    bot.send_message(chat_id, f"❌ Failed to open Custom Call menu: {e}")
+                except:
+                    pass
+
+        run_callback_async(_setup_custom_call)
         return
 
     if call.data == "custom_call_preview_audio":
