@@ -4069,10 +4069,10 @@ def _handle_query_processing(call, _):
         if not is_premium_user(user_id_str):
             remaining = get_free_calls(user_id_str)
             if remaining <= 0:
-                notify_premium_required(
-                    chat_id,
-                    "❌ Free trial exhausted.\n\nYou have completed your 5 free Normal Calls. Purchase a subscription to continue making calls.\nVisit SHOP to upgrade or redeem a premium key.",
+                bot.answer_callback_query(
                     call.id,
+                    "📞 Free Trial Exhausted\n\nYou've completed your 5 complimentary Normal Calls. Premium subscribers enjoy unlimited access to all calling modes.\n\nUpgrade in SHOP to unlock enterprise-grade capabilities.",
+                    show_alert=True
                 )
                 return
         def _start_normal_flow_compat():
@@ -4090,10 +4090,10 @@ def _handle_query_processing(call, _):
 
     if call.data == "fast_mode":
         if not is_premium_user(user_id_str):
-            notify_premium_required(
-                chat_id,
-                "❌ Premium access required.\n\nFAST MODE is available only to premium subscribers.\nVisit SHOP to purchase a subscription or redeem a premium key.",
+            bot.answer_callback_query(
                 call.id,
+                "⚡ FAST MODE requires Premium Access\n\nHigh-speed one-line call deployment is exclusive to premium members.\n\nUpgrade in SHOP to launch calls in seconds.",
+                show_alert=True
             )
             return
         def _setup_fast_mode():
@@ -4114,10 +4114,10 @@ def _handle_query_processing(call, _):
 
     if call.data == "manual_call":
         if not is_premium_user(user_id_str):
-            notify_premium_required(
-                chat_id,
-                "❌ Premium access required.\n\nMANUAL CALLING is available only to premium subscribers.\nVisit SHOP to purchase a subscription or redeem a premium key.",
+            bot.answer_callback_query(
                 call.id,
+                "🔧 MANUAL CALLING requires Premium Access\n\nCustom multi-step call workflows with granular control are exclusive to premium members.\n\nUpgrade in SHOP to access professional-grade call crafting.",
+                show_alert=True
             )
             return
         def _setup_manual_call():
@@ -4338,10 +4338,10 @@ def _handle_query_processing(call, _):
 
     if call.data == "custom_call":
         if not is_premium_user(user_id_str):
-            notify_premium_required(
-                chat_id,
-                "❌ Premium access required.\n\nCUSTOM CALL is available only to premium subscribers.\nVisit SHOP to purchase a subscription or redeem a premium key.",
+            bot.answer_callback_query(
                 call.id,
+                "⭐ CUSTOM CALL requires Premium Access\n\nBuild and deploy personalized multi-step voice sequences with unlimited customization—exclusive to premium members.\n\nUpgrade in SHOP to create advanced campaigns.",
+                show_alert=True
             )
             return
         set_user_state(user_id_str, "custom_call_step_1_script_choice")
@@ -4443,10 +4443,10 @@ def _handle_query_processing(call, _):
 
     if call.data == "emotion_call":
         if not is_premium_user(user_id_str):
-            notify_premium_required(
-                chat_id,
-                "❌ Premium access required.\n\nAI EMOTION CALL is available only to premium subscribers.\nVisit SHOP to purchase a subscription or redeem a premium key.",
+            bot.answer_callback_query(
                 call.id,
+                "🎭 AI EMOTION CALL requires Premium Access\n\nAdvanced AI-driven emotion-based voice modulation is exclusive to premium subscribers.\n\nUpgrade in SHOP to unlock intelligent voice personas.",
+                show_alert=True
             )
             return
         text = (
