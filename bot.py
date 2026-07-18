@@ -4667,6 +4667,11 @@ def _handle_query_processing(call, _):
     # --- Initiate custom call ---
     if call.data == "initiate_custom_call":
         user_id_str = str(call.from_user.id)
+        if not is_premium_user(user_id_str):
+            alert_msg = "⭐ CUSTOM CALL requires Premium Access\n\nBuild and deploy personalized multi-step voice sequences with unlimited customization—exclusive to premium members.\n\nUpgrade in SHOP to create advanced campaigns."
+            bot.answer_callback_query(call.id, alert_msg, show_alert=True)
+            bot.send_message(chat_id, f"❌ {alert_msg}", parse_mode="HTML")
+            return
         phonenum = normalize_phone_number(read_user_file(user_id_str, "phonenum.txt", ""))
         script = read_user_file(user_id_str, "custom_script.txt", "")
         if not script or not phonenum:
