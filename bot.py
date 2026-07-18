@@ -3696,15 +3696,6 @@ def send_main_menu(chat_id: int, user, message_id: Optional[int] = None) -> None
         f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
         f"{status}\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🚀 <b>Premium Features</b>\n"
-        "💯 Unlimited Fast Mode Calls\n"
-        "🤖 AI Emotion Call Technology\n"
-        "💥 Crack Blast Campaigns\n"
-        "🎯 Custom Caller ID Masking\n"
-        "⚡ Priority Call Execution\n\n"
-        "<b>💎 Unlock Premium Access Now!</b>\n"
-        "Get unrestricted access to all advanced features.\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "<b>⚙️ CONTROL PANEL</b>\n"
     )
     buttons = types.InlineKeyboardMarkup(row_width=2)
@@ -3751,9 +3742,10 @@ def send_shop_menu(chat_id: int, message_id: Optional[int] = None) -> None:
         "💯 <b>Unlimited Fast Calls</b>\n"
         "— No daily limits, instant routing\n"
         "— Global reach with high delivery priority\n\n"
-        "🛡️ <b>Full Spoofing Suite</b>\n"
-        "— Custom caller IDs and identity masking\n"
-        "— Pro-grade header control for safer delivery\n\n"
+        "🎭 <b>Full Spoofing Suite</b>\n"
+        "— Custom Caller ID masking available\n"
+        "— Pro-grade header control for safer delivery\n"
+        "— Spoof with your choice of identities\n\n"
         "🤖 <b>AI MODE V2</b>\n"
         "— Advanced AI voice interaction\n"
         "— Natural conversation flow\n"
@@ -3761,8 +3753,8 @@ def send_shop_menu(chat_id: int, message_id: Optional[int] = None) -> None:
         "⚡ <b>Fast Response Engine</b>\n"
         "— One-click execution for instant launch\n"
         "— Optimized for speed and reliability\n\n"
-        "💎 Each plan purchase also counts toward a free loyalty premium key. Reach 5 purchases to claim your token.\n\n"
-        "Choose your plan:\n👇"
+        "💎 Each plan purchase counts toward a free loyalty premium key. Reach 5 purchases to claim your token.\n\n"
+        "<b>Choose your plan:</b>\n👇"
     )
     buttons = types.InlineKeyboardMarkup(row_width=1)
     buttons.add(types.InlineKeyboardButton("🎟️ 3 Hour Trial — $5", callback_data="plan_3hourtrial"))
