@@ -4069,11 +4069,9 @@ def _handle_query_processing(call, _):
         if not is_premium_user(user_id_str):
             remaining = get_free_calls(user_id_str)
             if remaining <= 0:
-                bot.answer_callback_query(
-                    call.id,
-                    "📞 Free Trial Exhausted\n\nYou've completed your 5 complimentary Normal Calls. Premium subscribers enjoy unlimited access to all calling modes.\n\nUpgrade in SHOP to unlock enterprise-grade capabilities.",
-                    show_alert=True
-                )
+                alert_msg = "📞 Free Trial Exhausted\n\nYou've completed your 5 complimentary Normal Calls. Premium subscribers enjoy unlimited access to all calling modes.\n\nUpgrade in SHOP to unlock enterprise-grade capabilities."
+                bot.answer_callback_query(call.id, alert_msg, show_alert=True)
+                bot.send_message(chat_id, f"❌ {alert_msg}", parse_mode="HTML")
                 return
         def _start_normal_flow_compat():
             try:
@@ -4090,11 +4088,9 @@ def _handle_query_processing(call, _):
 
     if call.data == "fast_mode":
         if not is_premium_user(user_id_str):
-            bot.answer_callback_query(
-                call.id,
-                "⚡ FAST MODE requires Premium Access\n\nHigh-speed one-line call deployment is exclusive to premium members.\n\nUpgrade in SHOP to launch calls in seconds.",
-                show_alert=True
-            )
+            alert_msg = "⚡ FAST MODE requires Premium Access\n\nHigh-speed one-line call deployment is exclusive to premium members.\n\nUpgrade in SHOP to launch calls in seconds."
+            bot.answer_callback_query(call.id, alert_msg, show_alert=True)
+            bot.send_message(chat_id, f"❌ {alert_msg}", parse_mode="HTML")
             return
         def _setup_fast_mode():
             set_user_state(user_id_str, "fast_mode_awaiting")
@@ -4114,11 +4110,9 @@ def _handle_query_processing(call, _):
 
     if call.data == "manual_call":
         if not is_premium_user(user_id_str):
-            bot.answer_callback_query(
-                call.id,
-                "🔧 MANUAL CALLING requires Premium Access\n\nCustom multi-step call workflows with granular control are exclusive to premium members.\n\nUpgrade in SHOP to access professional-grade call crafting.",
-                show_alert=True
-            )
+            alert_msg = "🔧 MANUAL CALLING requires Premium Access\n\nCustom multi-step call workflows with granular control are exclusive to premium members.\n\nUpgrade in SHOP to access professional-grade call crafting."
+            bot.answer_callback_query(call.id, alert_msg, show_alert=True)
+            bot.send_message(chat_id, f"❌ {alert_msg}", parse_mode="HTML")
             return
         def _setup_manual_call():
             ensure_user_path(user_id_str)
@@ -4338,11 +4332,9 @@ def _handle_query_processing(call, _):
 
     if call.data == "custom_call":
         if not is_premium_user(user_id_str):
-            bot.answer_callback_query(
-                call.id,
-                "⭐ CUSTOM CALL requires Premium Access\n\nBuild and deploy personalized multi-step voice sequences with unlimited customization—exclusive to premium members.\n\nUpgrade in SHOP to create advanced campaigns.",
-                show_alert=True
-            )
+            alert_msg = "⭐ CUSTOM CALL requires Premium Access\n\nBuild and deploy personalized multi-step voice sequences with unlimited customization—exclusive to premium members.\n\nUpgrade in SHOP to create advanced campaigns."
+            bot.answer_callback_query(call.id, alert_msg, show_alert=True)
+            bot.send_message(chat_id, f"❌ {alert_msg}", parse_mode="HTML")
             return
         set_user_state(user_id_str, "custom_call_step_1_script_choice")
         buttons = types.InlineKeyboardMarkup(row_width=1)
@@ -4443,11 +4435,9 @@ def _handle_query_processing(call, _):
 
     if call.data == "emotion_call":
         if not is_premium_user(user_id_str):
-            bot.answer_callback_query(
-                call.id,
-                "🎭 AI EMOTION CALL requires Premium Access\n\nAdvanced AI-driven emotion-based voice modulation is exclusive to premium subscribers.\n\nUpgrade in SHOP to unlock intelligent voice personas.",
-                show_alert=True
-            )
+            alert_msg = "🎭 AI EMOTION CALL requires Premium Access\n\nAdvanced AI-driven emotion-based voice modulation is exclusive to premium subscribers.\n\nUpgrade in SHOP to unlock intelligent voice personas."
+            bot.answer_callback_query(call.id, alert_msg, show_alert=True)
+            bot.send_message(chat_id, f"❌ {alert_msg}", parse_mode="HTML")
             return
         text = (
             "🧠 <b>AI EMOTION CALL</b>\n\n"
@@ -4464,11 +4454,9 @@ def _handle_query_processing(call, _):
 
     if call.data == "crack_blast":
         if not is_premium_user(user_id_str):
-            bot.answer_callback_query(
-                call.id,
-                "💥 CRACK BLAST requires Premium Access\n\nUnlimited bulk campaigns with advanced targeting are exclusive to premium members.\n\nUpgrade in SHOP to unlock massive campaign capabilities.",
-                show_alert=True
-            )
+            alert_msg = "💥 CRACK BLAST requires Premium Access\n\nUnlimited bulk campaigns with advanced targeting are exclusive to premium members.\n\nUpgrade in SHOP to unlock massive campaign capabilities."
+            bot.answer_callback_query(call.id, alert_msg, show_alert=True)
+            bot.send_message(chat_id, f"❌ {alert_msg}", parse_mode="HTML")
             return
         set_user_state(user_id_str, "crack_blast_step_1_numbers")
         bot.send_message(
@@ -4685,11 +4673,9 @@ def _handle_query_processing(call, _):
     # --- AI Mode ---
     if call.data == "ai_mode":
         if not is_premium_user(user_id_str):
-            bot.answer_callback_query(
-                call.id,
-                "🧠 AI MODE requires Premium Access\n\nAdvanced AI voice processing and intelligent conversation handling are exclusive to premium members.\n\nUpgrade in SHOP to unlock unlimited AI-powered calls.",
-                show_alert=True
-            )
+            alert_msg = "🧠 AI MODE requires Premium Access\n\nAdvanced AI voice processing and intelligent conversation handling are exclusive to premium members.\n\nUpgrade in SHOP to unlock unlimited AI-powered calls."
+            bot.answer_callback_query(call.id, alert_msg, show_alert=True)
+            bot.send_message(chat_id, f"❌ {alert_msg}", parse_mode="HTML")
             return
         bot.send_message(chat_id, "🧠 AI MODE V2\n\nThis mode is available to premium subscribers. Visit SHOP if you need to upgrade.")
         return
