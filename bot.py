@@ -2288,7 +2288,7 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                     webhook_url=webhook_url,
                     user_id=user_id_str,
                     chat_id=chat_id,
-                    call_record=True,
+                    call_record=False,
                 )
                 if not sid:
                     raise Exception("Failed to create normal call")
