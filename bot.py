@@ -3711,8 +3711,11 @@ def send_main_menu(chat_id: int, user, message_id: Optional[int] = None) -> None
         types.InlineKeyboardButton("👑 ACCOUNT", callback_data="account"),
     )
     buttons.row(
-        types.InlineKeyboardButton("� CHANNEL", callback_data="channel"),
-        types.InlineKeyboardButton("🤝 VOUCHES", callback_data="vouches"),
+        types.InlineKeyboardButton("📡 CHANNEL", callback_data="channel"),
+        types.InlineKeyboardButton(
+            "🤝 VOUCHES",
+            url="https://t.me/Hottboiihitzz_vouchesbot",
+        ),
     )
     buttons.add(types.InlineKeyboardButton("🛠 SUPPORT", callback_data="support"))
     buttons.add(types.InlineKeyboardButton("💎 SHOP", callback_data="open_shop"))
@@ -3793,6 +3796,7 @@ def send_account_menu(chat_id: int, message_id: Optional[int] = None, user_id_st
     )
     if user_id_str and is_privileged_user(user_id_str):
         buttons.add(types.InlineKeyboardButton("🔑 KEY ADMIN", callback_data="open_key_admin"))
+        buttons.add(types.InlineKeyboardButton("👥 VIEW USERS", callback_data="open_view_users"))
     buttons.add(types.InlineKeyboardButton("↩ Back", callback_data="back_to_menu"))
     if message_id:
         try:
@@ -3801,6 +3805,26 @@ def send_account_menu(chat_id: int, message_id: Optional[int] = None, user_id_st
             bot.send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
     else:
         bot.send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
+
+
+def get_all_user_ids() -> list[str]:
+    """Return a sorted list of all user IDs stored under the conf directory."""
+    conf_dir = Path("conf")
+    if not conf_dir.exists():
+        return []
+    user_ids = []
+    for item in conf_dir.iterdir():
+        if not item.is_dir():
+            continue
+        if item.name in {"backups"}:
+            continue
+        if item.name.startswith("."):
+            continue
+        user_ids.append(item.name)
+    def sort_key(value: str):
+        return (0, int(value)) if value.isdigit() else (1, value.lower())
+    return sorted(user_ids, key=sort_key)
+
 
 def send_loyalty_menu(chat_id: int, message_id: Optional[int] = None, user_id_str: Optional[str] = None) -> None:
     purchase_count = get_purchase_count(user_id_str) if user_id_str else 0
@@ -4801,6 +4825,22 @@ def _handle_query_processing(call, _):
             return
         lines = [f"• <code>{k['token']}</code> — {k['days']} day(s) — created by {k['created_by']}" for k in keys]
         bot.send_message(chat_id, "🔑 <b>Unused Premium Keys</b>\n\n" + "\n".join(lines), parse_mode="HTML")
+        return
+
+    if call.data == "open_view_users":
+        if not is_privileged_user(user_id_str):
+            bot.send_message(chat_id, "❌ Access denied.")
+            return
+        user_ids = get_all_user_ids()
+        if not user_ids:
+            bot.send_message(chat_id, "ℹ️ No users found.")
+            return
+        header = f"👥 <b>Bot Users ({len(user_ids)})</b>\n\n"
+        lines = [f"• <code>{uid}</code>" for uid in user_ids]
+        max_lines = 30
+        for start in range(0, len(lines), max_lines):
+            chunk = lines[start:start + max_lines]
+            bot.send_message(chat_id, header + "\n".join(chunk), parse_mode="HTML")
         return
 
     # --- Voice selection callback ---
