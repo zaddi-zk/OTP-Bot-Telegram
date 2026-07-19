@@ -1,7 +1,7 @@
 """
 user_manager.py - User database management with premium status tracking.
 Stores user information including premium status, subscription dates, and user roles.
-Uses SQLite for persistence and compatibility with Railway deployment.
+Supports both SQLite (local) and PostgreSQL (Railway) for flexibility.
 """
 
 import sqlite3
@@ -9,58 +9,132 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
+from config import DATABASE_URL, USE_POSTGRES
 
 logger = logging.getLogger("OTP-Bot.user_manager")
 
-# Database path in conf directory
+# Database path in conf directory (fallback for SQLite)
 DB_PATH = Path("conf/users.db")
+
+# PostgreSQL connection (lazy-loaded when needed)
+_pg_conn = None
+
+
+# ============================================================================
+# Database Connection Helpers
+# ============================================================================
+
+def _get_pg_connection():
+    """Get or create PostgreSQL connection."""
+    global _pg_conn
+    if _pg_conn is None:
+        try:
+            import psycopg2
+            _pg_conn = psycopg2.connect(DATABASE_URL)
+            logger.info("✅ Connected to PostgreSQL database")
+        except ImportError:
+            logger.error("❌ psycopg2 not installed. Install it with: pip install psycopg2-binary")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Failed to connect to PostgreSQL: {e}")
+            return None
+    return _pg_conn
+
+
+def _get_db_cursor():
+    """Get database cursor (supports both SQLite and PostgreSQL)."""
+    if USE_POSTGRES:
+        conn = _get_pg_connection()
+        if conn:
+            return conn.cursor(), conn
+        else:
+            logger.warning("⚠️  PostgreSQL failed, falling back to SQLite")
+    
+    # Fallback to SQLite
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    return cursor, conn
 
 
 def init_user_db() -> None:
     """Initialize user database with schema if it doesn't exist."""
     try:
-        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        # Create users table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id TEXT PRIMARY KEY,
-                is_premium INTEGER DEFAULT 0,
-                subscription_end_date TEXT,
-                created_at TEXT,
-                last_activity TEXT,
-                role TEXT DEFAULT 'free',
-                notes TEXT
-            )
-        """)
-        
-        conn.commit()
-        conn.close()
-        logger.info(f"✅ User database initialized at {DB_PATH}")
+        if USE_POSTGRES:
+            cursor, conn = _get_db_cursor()
+            if cursor is None:
+                logger.error("❌ No database connection available")
+                return
+            
+            # PostgreSQL schema
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id TEXT PRIMARY KEY,
+                    is_premium INTEGER DEFAULT 0,
+                    subscription_end_date TEXT,
+                    created_at TEXT,
+                    last_activity TEXT,
+                    role TEXT DEFAULT 'free',
+                    notes TEXT
+                )
+            """)
+            conn.commit()
+            conn.close()
+            logger.info("✅ PostgreSQL user database initialized")
+        else:
+            # SQLite fallback
+            DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id TEXT PRIMARY KEY,
+                    is_premium INTEGER DEFAULT 0,
+                    subscription_end_date TEXT,
+                    created_at TEXT,
+                    last_activity TEXT,
+                    role TEXT DEFAULT 'free',
+                    notes TEXT
+                )
+            """)
+            
+            conn.commit()
+            conn.close()
+            logger.info(f"✅ SQLite user database initialized at {DB_PATH}")
     except Exception as e:
         logger.error(f"❌ Failed to initialize user database: {e}")
+
 
 
 def add_user_if_not_exists(user_id: str) -> bool:
     """Add user to database if they don't already exist."""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
+        cursor, conn = _get_db_cursor()
+        if cursor is None:
+            return False
         
-        # Check if user exists
-        cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
+        # Check if user exists (works for both SQLite and PostgreSQL)
+        if USE_POSTGRES:
+            cursor.execute("SELECT user_id FROM users WHERE user_id = %s", (user_id,))
+        else:
+            cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
+        
         if cursor.fetchone():
             conn.close()
             return False
         
         # Add new user
         now = datetime.now().isoformat()
-        cursor.execute("""
-            INSERT INTO users (user_id, is_premium, created_at, last_activity, role)
-            VALUES (?, 0, ?, ?, 'free')
-        """, (user_id, now, now))
+        if USE_POSTGRES:
+            cursor.execute("""
+                INSERT INTO users (user_id, is_premium, created_at, last_activity, role)
+                VALUES (%s, 0, %s, %s, 'free')
+            """, (user_id, now, now))
+        else:
+            cursor.execute("""
+                INSERT INTO users (user_id, is_premium, created_at, last_activity, role)
+                VALUES (?, 0, ?, ?, 'free')
+            """, (user_id, now, now))
         
         conn.commit()
         conn.close()
@@ -75,14 +149,21 @@ def update_last_activity(user_id: str) -> None:
     """Update user's last activity timestamp."""
     try:
         add_user_if_not_exists(user_id)
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
+        cursor, conn = _get_db_cursor()
+        if cursor is None:
+            return
         
         now = datetime.now().isoformat()
-        cursor.execute(
-            "UPDATE users SET last_activity = ? WHERE user_id = ?",
-            (now, user_id)
-        )
+        if USE_POSTGRES:
+            cursor.execute(
+                "UPDATE users SET last_activity = %s WHERE user_id = %s",
+                (now, user_id)
+            )
+        else:
+            cursor.execute(
+                "UPDATE users SET last_activity = ? WHERE user_id = ?",
+                (now, user_id)
+            )
         
         conn.commit()
         conn.close()
@@ -90,12 +171,14 @@ def update_last_activity(user_id: str) -> None:
         logger.error(f"❌ Failed to update activity for {user_id}: {e}")
 
 
+
 def set_user_premium(user_id: str, is_premium: bool = True, days_duration: int = 30) -> bool:
     """Set user as premium with optional subscription duration."""
     try:
         add_user_if_not_exists(user_id)
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
+        cursor, conn = _get_db_cursor()
+        if cursor is None:
+            return False
         
         if is_premium:
             end_date = (datetime.now() + timedelta(days=days_duration)).isoformat()
@@ -106,11 +189,18 @@ def set_user_premium(user_id: str, is_premium: bool = True, days_duration: int =
             role = "free"
             logger.info(f"❌ User {user_id} set to FREE")
         
-        cursor.execute("""
-            UPDATE users 
-            SET is_premium = ?, subscription_end_date = ?, role = ?, last_activity = ?
-            WHERE user_id = ?
-        """, (1 if is_premium else 0, end_date, role, datetime.now().isoformat(), user_id))
+        if USE_POSTGRES:
+            cursor.execute("""
+                UPDATE users 
+                SET is_premium = %s, subscription_end_date = %s, role = %s, last_activity = %s
+                WHERE user_id = %s
+            """, (1 if is_premium else 0, end_date, role, datetime.now().isoformat(), user_id))
+        else:
+            cursor.execute("""
+                UPDATE users 
+                SET is_premium = ?, subscription_end_date = ?, role = ?, last_activity = ?
+                WHERE user_id = ?
+            """, (1 if is_premium else 0, end_date, role, datetime.now().isoformat(), user_id))
         
         conn.commit()
         conn.close()
