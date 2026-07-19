@@ -6915,11 +6915,20 @@ def help_handler(message):
         "🔑 /check: Check subscription status.\n"
         "⚙️ /clearset: Reset settings.\n"
         "🎙️ /start: Start the bot.\n"
+        "ℹ️ /about: Learn how the bot works.\n"
         "/create_script: Create a new call script.\n"
         "/my_scripts: List your saved scripts.\n"
         "💡 For more info, contact main channel."
     )
     bot.send_message(message.chat.id, help_text, parse_mode="HTML")
+
+@bot.message_handler(commands=["about"])
+def about_handler(message):
+    about_text = (
+        "🤖 <b>About OTP Bot</b>\n"
+        "AI-powered call assistant using AI mode for natural outgoing calls, caller ID spoofing, premium access, loyalty keys, instant status checks, smart voice selection, and secure tamper-proof key redemption."
+    )
+    bot.send_message(message.chat.id, about_text, parse_mode="HTML")
 
 @bot.message_handler(commands=["check"])
 def check_handler(message):
