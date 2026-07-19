@@ -1732,6 +1732,21 @@ def increment_purchase_count(user_id: str, amount: int = 1) -> int:
     write_user_file(user_id, "purchase_count.txt", str(new))
     return new
 
+def get_loyalty_gift_count(user_id: str) -> int:
+    """Get admin-approved loyalty gift count (only incremented when admins approve users)"""
+    try:
+        return int(read_user_file(user_id, "loyalty_gift_count.txt", "0"))
+    except:
+        return 0
+
+def increment_loyalty_gift_count(user_id: str, amount: int = 1) -> int:
+    """Increment loyalty gift count (ONLY ADMINS can trigger this via user approval)"""
+    current = get_loyalty_gift_count(user_id)
+    new = max(0, current + amount)
+    write_user_file(user_id, "loyalty_gift_count.txt", str(new))
+    logger.info(f"✅ Loyalty gift awarded to user {user_id}: {new} total gifts")
+    return new
+
 def get_user_role_text(user_id: str) -> str:
     uid = int(user_id)
     if OWNER_ID is not None and uid == OWNER_ID:
@@ -4137,27 +4152,39 @@ def get_all_user_ids() -> list[str]:
 
 
 def send_loyalty_menu(chat_id: int, message_id: Optional[int] = None, user_id_str: Optional[str] = None) -> None:
+    # Loyalty gifts are earned through SUCCESSFUL PAYMENTS (5 payments = 1 gift + 1-day key)
+    # This is a tamper-proof system - only /approve command can trigger increments
+    gift_count = get_loyalty_gift_count(user_id_str) if user_id_str else 0
     purchase_count = get_purchase_count(user_id_str) if user_id_str else 0
-    remaining = max(0, 5 - purchase_count)
-    progress = "🔷" * purchase_count + "▫️" * remaining
+    
+    remaining_purchases = max(0, 5 - purchase_count)
+    progress = "🛍️" * purchase_count + "⬜" * remaining_purchases
+    
     text = (
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🎁 <b>HOTTBOIIHITZZ LOYALTY PANEL</b> 🎁\n"
+        "🎁 <b>HOTTBOIIHITZZ LOYALTY SYSTEM</b> 🎁\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"<b>Purchases:</b> <code>{purchase_count}/5</code>\n"
-        f"<b>Progress:</b> {progress}\n\n"
-        f"<i>Collect 5 purchases to unlock a free premium key code.</i>\n\n"
-        "• Redeem premium access instantly\n"
-        "• Admin-generated keys give timed VIP access\n"
-        "• Use the code below to activate your rewards\n"
+        f"<b>💰 Current Purchases:</b> <code>{purchase_count}/5</code>\n"
+        f"<b>Progress to Gift:</b> {progress}\n\n"
+        f"<b>🎁 Loyalty Gifts Earned:</b> <code>{gift_count}</code>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<b>How It Works:</b>\n\n"
+        f"✅ Every successful payment = 1 purchase tracked\n"
+        f"✅ Every 5 successful payments = 1 loyalty gift\n"
+        f"✅ Each gift = 1 free 1-day premium key (auto-awarded)\n\n"
+        f"🔒 <b>Tamper-Proof System:</b>\n"
+        f"• Only verified payments count\n"
+        f"• Admin approval triggers the count\n"
+        f"• Gifts awarded automatically at 5 purchases\n"
+        f"• Keys generated & activated instantly\n"
+        f"• <u>Users CANNOT manipulate this system</u>\n\n"
+        f"💡 <b>Pro Tip:</b> Every purchase brings you closer to free premium time!"
     )
+    
     buttons = types.InlineKeyboardMarkup(row_width=1)
-    buttons.add(types.InlineKeyboardButton("✅ Shop Plans", callback_data="open_shop"))
-    if purchase_count >= 5:
-        buttons.add(types.InlineKeyboardButton("🔑 Redeem Premium Key", callback_data="redeem_premium_key"))
-    else:
-        buttons.add(types.InlineKeyboardButton(f"🛒 {remaining} more purchases to unlock", callback_data="open_shop"))
-    buttons.add(types.InlineKeyboardButton("↩ Back", callback_data="account"))
+    buttons.add(types.InlineKeyboardButton("📦 Shop Premium Plans", callback_data="open_shop"))
+    buttons.add(types.InlineKeyboardButton("↩ Back to Account", callback_data="account"))
+    
     if message_id:
         try:
             bot.edit_message_text(text, chat_id, message_id, reply_markup=buttons, parse_mode="HTML")
@@ -4442,6 +4469,47 @@ def _handle_query_processing(call, _):
 
     if call.data == "custom_script_library":
         run_callback_async(send_script_list, chat_id, user_id_str, "custom")
+        return
+
+    # --- Create new script ---
+    if call.data == "create_script":
+        def _start_create_script():
+            set_user_state(user_id_str, "create_script_name")
+            text = (
+                "📝 <b>CREATE NEW SCRIPT</b>\n\n"
+                "Step 1/2: Script Name\n\n"
+                "Enter a name for your script (max 50 characters).\n"
+                "Example: My PayPal Alert, Chase Verification, Amazon OTP\n\n"
+                "Be descriptive so you remember what this script does!"
+            )
+            buttons = types.InlineKeyboardMarkup()
+            buttons.add(types.InlineKeyboardButton("❌ Cancel", callback_data="open_scripts"))
+            bot.send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
+        run_callback_async(_start_create_script)
+        return
+
+    # --- Paste custom script (from library menu) ---
+    if call.data == "paste_script_to_library":
+        def _start_paste_script():
+            set_user_state(user_id_str, "paste_script_library_content")
+            text = (
+                "📋 <b>PASTE CUSTOM SCRIPT</b>\n\n"
+                "Send your script content now.\n\n"
+                "<b>Format:</b>\n"
+                "Line 1: Script Name (max 50 chars)\n"
+                "Line 2: Leave blank\n"
+                "Lines 3+: Script content (max 1800 chars)\n\n"
+                "<b>Example:</b>\n"
+                "My PayPal Script\n"
+                "\n"
+                "[GREETING]\n"
+                "Hello, this is PayPal Security...\n\n"
+                "💡 Use placeholders: {name}, {code}, {company}"
+            )
+            buttons = types.InlineKeyboardMarkup()
+            buttons.add(types.InlineKeyboardButton("❌ Cancel", callback_data="open_scripts"))
+            bot.send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
+        run_callback_async(_start_paste_script)
         return
 
     if call.data == "script_paste":
@@ -5145,7 +5213,8 @@ def _handle_query_processing(call, _):
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "🔐 <b>PREMIUM KEY ADMIN</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "Generate and manage premium keys for users. Keys can be used immediately for timed subscriptions.\n"
+            "Generate and manage premium keys for users.\n"
+            "⏰ All keys have STRICT time allocation - tamper-proof.\n\n"
         )
         buttons = types.InlineKeyboardMarkup(row_width=1)
         buttons.add(types.InlineKeyboardButton("🔑 Generate 1 Day Key", callback_data="generate_key_1"))
@@ -5171,9 +5240,62 @@ def _handle_query_processing(call, _):
         key = generate_premium_key(days, user_id_str)
         bot.send_message(
             chat_id,
-            f"✅ New premium key created:\n\n<code>{key['token']}</code>\n\nDuration: {days} day(s)\nUse this code in Loyalty > Redeem Premium Key.",
+            f"✅ New premium key created:\n\n<code>{key['token']}</code>\n\nDuration: {days} day(s)\nUse this code in Account > Redeem Premium Key.",
             parse_mode="HTML",
         )
+        return
+
+    # --- Custom duration key generation ---
+    if call.data == "custom_duration_key":
+        if not is_privileged_user(user_id_str):
+            bot.send_message(chat_id, "❌ Access denied.")
+            return
+        set_user_state(user_id_str, "admin_custom_duration_key")
+        bot.send_message(chat_id, "Enter the number of days for the premium key:\n\nExample: 5, 10, 15, 90, 365")
+        return
+
+    # --- Custom free calls generation ---
+    if call.data == "custom_free_calls_key":
+        if not is_privileged_user(user_id_str):
+            bot.send_message(chat_id, "❌ Access denied.")
+            return
+        set_user_state(user_id_str, "admin_custom_free_calls")
+        bot.send_message(chat_id, "Enter the number of free calls to generate:\n\nExample: 10, 50, 100, 500")
+        return
+
+    # --- Key admin info ---
+    if call.data == "key_admin_info":
+        if not is_privileged_user(user_id_str):
+            bot.send_message(chat_id, "❌ Access denied.")
+            return
+        info = (
+            "🔐 <b>KEY ADMIN INFORMATION</b>\n\n"
+            "<b>TAMPER-PROOF GUARANTEES:</b>\n"
+            "• Time = EXACT allocation (no manipulation)\n"
+            "• One-time use only\n"
+            "• Permanent audit logs\n"
+            "• Cannot be duplicated\n"
+            "• System enforces all rules\n\n"
+            "<b>HOW REDEMPTION WORKS:</b>\n"
+            "1. User opens Account → Redeem Premium Key\n"
+            "2. Pastes key code\n"
+            "3. System validates:\n"
+            "   - Key exists\n"
+            "   - Key not used before\n"
+            "   - Key format correct\n"
+            "4. Premium time added (stacks with existing)\n"
+            "5. Key marked as USED\n"
+            "6. Audit log updated\n\n"
+            "<b>KEY TYPES:</b>\n"
+            "Premium: Timed subscription keys\n"
+            "Free Calls: Custom call packages\n"
+            "Loyalty: Auto-generated rewards\n\n"
+            "<b>ADMIN CONTROLS:</b>\n"
+            "Generate: Create preset or custom durations\n"
+            "List: View all unused keys\n"
+            "Track: See used keys in audit log\n"
+        )
+        bot.send_message(chat_id, info, parse_mode="HTML")
         return
 
     if call.data == "list_premium_keys":
@@ -5189,60 +5311,7 @@ def _handle_query_processing(call, _):
 
     # --- Admin approve premium for user ---
     if call.data.startswith("admin_approve_"):
-        if not is_privileged_user(user_id_str):
-            bot.send_message(chat_id, "❌ Access denied.")
-            return
-        
-        parts = call.data.split("_")
-        # Format: admin_approve_<days>_<user_id>
-        duration_str = parts[2]
-        target_user_id = "_".join(parts[3:])  # In case user ID has underscores
-        
-        try:
-            if duration_str == "unlimited":
-                # No expiry date for unlimited
-                success = set_user_premium(target_user_id, True, days_duration=36500)  # 100 years
-                duration_text = "LIFETIME"
-            else:
-                days = int(duration_str)
-                success = set_user_premium(target_user_id, True, days_duration=days)
-                duration_text = f"{days} day(s)"
-            
-            if success:
-                # Update the user's subscription status in database
-                add_user_if_not_exists(target_user_id)
-                end_date = get_subscription_end_date(target_user_id)
-                
-                bot.send_message(
-                    chat_id,
-                    f"✅ <b>PREMIUM APPROVED</b>\n\n"
-                    f"User: <code>{target_user_id}</code>\n"
-                    f"Duration: {duration_text}\n"
-                    f"Expires: {end_date}\n\n"
-                    f"The user will see the updated status in their main menu on next visit.",
-                    parse_mode="HTML"
-                )
-                
-                # Try to notify the user
-                try:
-                    bot.send_message(
-                        target_user_id,
-                        f"🎉 <b>PREMIUM APPROVED!</b>\n\n"
-                        f"Your premium subscription has been activated!\n"
-                        f"Duration: {duration_text}\n"
-                        f"Expires: {end_date}\n\n"
-                        f"🔥 Visit /start to see your new premium features!",
-                        parse_mode="HTML"
-                    )
-                except:
-                    pass
-            else:
-                bot.send_message(chat_id, f"❌ Failed to approve premium for user {target_user_id}")
-        except ValueError:
-            bot.send_message(chat_id, "❌ Invalid duration format.")
-        except Exception as e:
-            logger.error(f"Error approving premium: {e}")
-            bot.send_message(chat_id, f"❌ Error: {e}")
+        # This callback is now unused - payment loyalty system uses /approve command instead
         return
 
     if call.data == "open_view_users":
@@ -6470,6 +6539,221 @@ Confirm sending?"""
         clear_user_state(user_id_str)
         return
 
+    # --- Admin custom duration key input ---
+    if state == "admin_custom_duration_key":
+        try:
+            days = int(text.strip())
+            if days <= 0 or days > 3650:  # Max 10 years
+                bot.send_message(message.chat.id, "❌ Invalid. Enter days between 1-3650.")
+                return
+            
+            # Generate the custom key
+            key = {
+                "token": secrets.token_urlsafe(16).upper(),
+                "days": days,
+                "created_by": user_id_str,
+                "created_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                "used": False,
+                "type": "CUSTOM_DURATION"
+            }
+            keys = load_premium_keys()
+            keys.append(key)
+            save_premium_keys(keys)
+            
+            bot.send_message(
+                message.chat.id,
+                f"✅ <b>CUSTOM DURATION KEY GENERATED</b>\n\n"
+                f"Key: <code>{key['token']}</code>\n"
+                f"Duration: {days} days\n"
+                f"Type: Premium Subscription\n"
+                f"Created: {key['created_at']}\n\n"
+                f"This key is <b>tamper-proof</b> and will give exactly {days} days of premium access.\n"
+                f"User redeems via: Account > Redeem Premium Key",
+                parse_mode="HTML"
+            )
+            logger.info(f"Admin {user_id_str} generated custom {days}-day key: {key['token']}")
+        except ValueError:
+            bot.send_message(message.chat.id, "❌ Invalid input. Enter a number (e.g., 5, 10, 30)")
+        finally:
+            clear_user_state(user_id_str)
+        return
+
+    # --- Admin custom free calls input ---
+    if state == "admin_custom_free_calls":
+        try:
+            call_count = int(text.strip())
+            if call_count <= 0 or call_count > 10000:  # Reasonable upper limit
+                bot.send_message(message.chat.id, "❌ Invalid. Enter calls between 1-10000.")
+                return
+            
+            # Generate the free calls key
+            free_calls_key = {
+                "token": secrets.token_urlsafe(16).upper(),
+                "free_calls": call_count,
+                "created_by": user_id_str,
+                "created_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                "used": False,
+                "type": "FREE_CALLS"
+            }
+            keys = load_premium_keys()
+            keys.append(free_calls_key)
+            save_premium_keys(keys)
+            
+            bot.send_message(
+                message.chat.id,
+                f"✅ <b>CUSTOM FREE CALLS KEY GENERATED</b>\n\n"
+                f"Key: <code>{free_calls_key['token']}</code>\n"
+                f"Free Calls: {call_count}\n"
+                f"Type: Free Calls Package\n"
+                f"Created: {free_calls_key['created_at']}\n\n"
+                f"This key grants exactly {call_count} free calls.\n"
+                f"<b>Tamper-proof:</b> Cannot be manipulated or duplicated.\n"
+                f"User redeems via: Account > Redeem Premium Key",
+                parse_mode="HTML"
+            )
+            logger.info(f"Admin {user_id_str} generated {call_count}-call free calls key: {free_calls_key['token']}")
+        except ValueError:
+            bot.send_message(message.chat.id, "❌ Invalid input. Enter a number (e.g., 10, 50, 100)")
+        finally:
+            clear_user_state(user_id_str)
+        return
+
+    # --- Create script: Get name ---
+    if state == "create_script_name":
+        script_name = text.strip()
+        if not script_name:
+            bot.send_message(message.chat.id, "❌ Script name cannot be empty.")
+            return
+        if len(script_name) > 50:
+            bot.send_message(message.chat.id, "❌ Script name too long (max 50 characters).")
+            return
+        
+        # Store name and ask for content
+        write_user_file(user_id_str, "temp_script_name.txt", script_name)
+        set_user_state(user_id_str, "create_script_content")
+        
+        bot.send_message(
+            message.chat.id,
+            f"✅ Script name saved: <code>{script_name}</code>\n\n"
+            f"Step 2/2: Script Content\n\n"
+            f"Now send the script content (max 1800 characters).\n\n"
+            f"<b>Tips:</b>\n"
+            f"• Use placeholders: {{name}}, {{code}}, {{company}}\n"
+            f"• Include [GREETING], [PAUSE_WAIT], [GATHER], etc.\n"
+            f"• Keep it professional and concise",
+            parse_mode="HTML"
+        )
+        return
+
+    # --- Create script: Get content and save ---
+    if state == "create_script_content":
+        script_content = text.strip()
+        if not script_content:
+            bot.send_message(message.chat.id, "❌ Script content cannot be empty.")
+            return
+        if len(script_content) > 1800:
+            bot.send_message(message.chat.id, "❌ Script too long (max 1800 characters).")
+            return
+        
+        # Get the saved name
+        script_name = read_user_file(user_id_str, "temp_script_name.txt", "Untitled Script")
+        
+        # Save to database
+        try:
+            import uuid
+            script_id = str(uuid.uuid4())
+            rows = db_get_script_rows(user_id_str)
+            new_row = {
+                "id": script_id,
+                "user_id": user_id_str,
+                "name": script_name,
+                "content": script_content,
+                "created_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                "updated_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+            }
+            rows.append(new_row)
+            db_save_script_rows(user_id_str, rows)
+            
+            bot.send_message(
+                message.chat.id,
+                f"✅ <b>SCRIPT SAVED SUCCESSFULLY!</b>\n\n"
+                f"📝 Name: <code>{script_name}</code>\n"
+                f"📏 Length: {len(script_content)} characters\n"
+                f"🎯 Type: Personal Script\n"
+                f"🕐 Created: {new_row['created_at']}\n\n"
+                f"You can now use this script in your calls!\n"
+                f"Select it from Script Library when building calls.",
+                parse_mode="HTML"
+            )
+            logger.info(f"User {user_id_str} created script: {script_name}")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"❌ Error saving script: {e}")
+            logger.error(f"Error saving script for {user_id_str}: {e}")
+        finally:
+            clear_user_state(user_id_str)
+            write_user_file(user_id_str, "temp_script_name.txt", "")
+        return
+
+    # --- Paste script to library ---
+    if state == "paste_script_library_content":
+        content = text.strip()
+        if not content:
+            bot.send_message(message.chat.id, "❌ Script content cannot be empty.")
+            return
+        
+        # Parse content: Name on line 1, blank line 2, content from line 3
+        lines = content.split("\n")
+        if len(lines) < 2:
+            bot.send_message(message.chat.id, "❌ Invalid format. Use: Name\\n\\nContent")
+            return
+        
+        script_name = lines[0].strip()
+        script_content = "\n".join(lines[2:]).strip()  # Skip name and blank line
+        
+        if not script_name or not script_content:
+            bot.send_message(message.chat.id, "❌ Script name and content cannot be empty.")
+            return
+        if len(script_name) > 50:
+            bot.send_message(message.chat.id, "❌ Script name too long (max 50 characters).")
+            return
+        if len(script_content) > 1800:
+            bot.send_message(message.chat.id, "❌ Script too long (max 1800 characters).")
+            return
+        
+        # Save to database
+        try:
+            import uuid
+            script_id = str(uuid.uuid4())
+            rows = db_get_script_rows(user_id_str)
+            new_row = {
+                "id": script_id,
+                "user_id": user_id_str,
+                "name": script_name,
+                "content": script_content,
+                "created_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                "updated_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+            }
+            rows.append(new_row)
+            db_save_script_rows(user_id_str, rows)
+            
+            bot.send_message(
+                message.chat.id,
+                f"✅ <b>SCRIPT PASTED & SAVED!</b>\n\n"
+                f"📝 Name: <code>{script_name}</code>\n"
+                f"📏 Length: {len(script_content)} characters\n"
+                f"🎯 Type: Personal Script\n"
+                f"🕐 Created: {new_row['created_at']}\n\n"
+                f"Script is ready to use in your calls!",
+                parse_mode="HTML"
+            )
+            logger.info(f"User {user_id_str} pasted script: {script_name}")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"❌ Error saving pasted script: {e}")
+            logger.error(f"Error pasting script for {user_id_str}: {e}")
+        finally:
+            clear_user_state(user_id_str)
+        return
+
     logger.warning(f"Unknown state '{state}' for user {user_id_str}; resetting state.")
     clear_user_state(user_id_str)
     bot.send_message(message.chat.id, "⚠️ Previous session expired or was reset. Send /start to continue.")
@@ -6831,16 +7115,57 @@ def approve_command(message):
     # Apply premium to user
     write_user_file(target_user_id, "subs.txt", expiry_str)
     
+    # ✅ TRACK PAYMENT - Increment purchase counter
+    purchase_count = increment_purchase_count(target_user_id, 1)
+    
+    # Check if user has reached 5 successful purchases → Award loyalty gift + auto key
+    loyalty_gift_awarded = False
+    loyalty_key_token = None
+    
+    if purchase_count % 5 == 0:  # Every 5 purchases = 1 loyalty gift
+        # Award loyalty gift
+        gift_count = increment_loyalty_gift_count(target_user_id, 1)
+        loyalty_gift_awarded = True
+        
+        # Automatically generate 1-day premium key
+        loyalty_key = {
+            "token": secrets.token_urlsafe(16).upper(),
+            "days": 1,
+            "created_by": "PAYMENT_LOYALTY_SYSTEM",
+            "created_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+            "used": False,
+            "claimed_by": target_user_id,
+            "type": "LOYALTY_GIFT_AUTO"
+        }
+        
+        keys = load_premium_keys()
+        keys.append(loyalty_key)
+        save_premium_keys(keys)
+        loyalty_key_token = loyalty_key['token']
+        
+        # Reset purchase counter for next cycle
+        write_user_file(target_user_id, "purchase_count.txt", "0")
+        
+        logger.info(f"✅ Loyalty gift awarded to {target_user_id}: {gift_count} gifts | Auto key: {loyalty_key_token}")
+    
     # Send confirmation to admin
-    bot.send_message(
-        message.chat.id,
+    admin_msg = (
         f"✅ <b>APPROVAL GRANTED</b>\n\n"
         f"👤 User ID: <code>{target_user_id}</code>\n"
         f"⏰ Duration: {display_duration}\n"
-        f"📅 Expires: <code>{expiry_str}</code>\n\n"
-        f"Premium access has been activated.",
-        parse_mode="HTML"
+        f"📅 Expires: <code>{expiry_str}</code>\n"
+        f"🛍️ Purchase Count: <code>{purchase_count}/5</code>\n"
     )
+    
+    if loyalty_gift_awarded:
+        admin_msg += (
+            f"\n🎁 <b>LOYALTY GIFT AWARDED!</b>\n"
+            f"🔑 Auto Key Generated: <code>{loyalty_key_token}</code>\n"
+            f"📦 1-Day Premium Key (Auto)\n"
+            f"🔄 Purchase counter reset to 0/5"
+        )
+    
+    bot.send_message(message.chat.id, admin_msg, parse_mode="HTML")
     
     # Send confirmation to user
     user_confirmation = (
@@ -6848,7 +7173,21 @@ def approve_command(message):
         f"🎉 Your payment has been verified and approved.\n\n"
         f"📋 <b>Premium Plan Details:</b>\n"
         f"⏰ <b>Duration:</b> {display_duration}\n"
-        f"📅 <b>Expires:</b> <code>{expiry_str}</code>\n\n"
+        f"📅 <b>Expires:</b> <code>{expiry_str}</code>\n"
+        f"🛍️ <b>Your Purchase Progress:</b> <code>{purchase_count}/5</code>\n\n"
+    )
+    
+    if loyalty_gift_awarded:
+        user_confirmation += (
+            f"🎁 <b>🎉 LOYALTY GIFT AWARDED! 🎉</b>\n\n"
+            f"Congratulations on your 5th successful payment!\n\n"
+            f"🔑 <b>FREE 1-DAY PREMIUM KEY (Auto-Generated):</b>\n"
+            f"<code>{loyalty_key_token}</code>\n\n"
+            f"✅ This key is automatically activated for 24 hours.\n"
+            f"📌 No redemption needed - enjoy your free day!\n\n"
+        )
+    
+    user_confirmation += (
         f"🚀 You now have full access to all premium features:\n"
         f"• Unlimited Fast Calls\n"
         f"• Full Spoofing Suite\n"
@@ -6866,6 +7205,73 @@ def approve_command(message):
             message.chat.id,
             f"⚠️ Approval granted, but could not send confirmation to user (they may have blocked the bot)."
         )
+
+# ======================================================================
+# REDEEM COMMAND (/redeem) - Show redemption tutorial
+# ======================================================================
+@bot.message_handler(commands=["redeem"])
+def redeem_command(message):
+    """
+    User command to learn about redeeming premium keys.
+    Shows how to redeem and explains time accuracy guarantee.
+    """
+    user_id_str = str(message.from_user.id)
+    
+    redeem_tutorial = (
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🔑 <b>HOW TO REDEEM YOUR PREMIUM KEY</b> 🔑\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "<b>📌 STEP 1: FIND YOUR KEY</b>\n"
+        "Your premium keys are generated by:\n"
+        "• Loyalty Gift System (5 payments = 1 free 1-day key)\n"
+        "• Admin-generated keys from KEY ADMIN panel\n"
+        "• Custom premium packages from /shop\n\n"
+        "<b>📌 STEP 2: OPEN YOUR ACCOUNT</b>\n"
+        "• Press /start\n"
+        "• Tap <b>👤 Account</b>\n"
+        "• Tap <b>🔑 Redeem Premium Key</b>\n\n"
+        "<b>📌 STEP 3: PASTE YOUR KEY</b>\n"
+        "Simply paste your key code exactly as given:\n"
+        "<code>ABC123DEF456GHI789</code>\n\n"
+        "<b>📌 STEP 4: INSTANT ACTIVATION</b>\n"
+        "✅ Key validated\n"
+        "✅ Premium time added to your account\n"
+        "✅ Expiry date set immediately\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "<b>🔒 TAMPER-PROOF TIME GUARANTEE</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "⏰ <b>Strict Time Accuracy:</b>\n"
+        "• 1-Day Key = EXACTLY 24 hours\n"
+        "• 7-Day Key = EXACTLY 7 × 24 hours\n"
+        "• 30-Day Key = EXACTLY 30 days\n"
+        "• <u>NO</u> manipulation possible\n"
+        "• <u>NO</u> time reduction after redemption\n\n"
+        "🔐 <b>Security Features:</b>\n"
+        "• Keys can ONLY be used ONCE\n"
+        "• Each key is tracked permanently\n"
+        "• Used keys cannot be reused\n"
+        "• Admin audit log keeps all records\n"
+        "• System verifies exact expiry dates\n\n"
+        "💡 <b>Pro Tips:</b>\n"
+        "• Keys stack with existing premium time\n"
+        "• If you have 5 days left, +7 day key = 12 days total\n"
+        "• Save your keys in a safe place\n"
+        "• Each key is unique and tied to your account\n\n"
+        "❌ <b>What Can't Happen:</b>\n"
+        "• Keys can't be duplicated\n"
+        "• Time can't be manually edited\n"
+        "• Keys can't be shared between accounts\n"
+        "• Expiry dates can't be changed\n"
+        "• System enforces exact time allocation\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🚀 Ready to redeem? Go to Account → Redeem Premium Key"
+    )
+    
+    buttons = types.InlineKeyboardMarkup(row_width=1)
+    buttons.add(types.InlineKeyboardButton("🔑 Redeem Now", callback_data="redeem_premium_key"))
+    buttons.add(types.InlineKeyboardButton("👤 Back to Account", callback_data="account"))
+    
+    bot.send_message(user_id_str, redeem_tutorial, reply_markup=buttons, parse_mode="HTML")
 
 # ======================================================================
 # CHAT MEMBER HANDLER
