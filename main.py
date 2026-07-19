@@ -47,11 +47,14 @@ def ensure_conf_dir() -> None:
 
 def start_flask_server() -> None:
     try:
-        # On Railway, Flask runs on an internal port only (not exposed)
-        # FastAPI (uvicorn) binds to the PORT env var and is exposed to the internet
-        flask_port = int(os.getenv("INTERNAL_FLASK_PORT", "5000"))
-        logger.info(f"Starting Flask server on port {flask_port} (internal only)")
-        flask_app.run(host="127.0.0.1", port=flask_port, debug=False, use_reloader=False, threaded=True)
+        # On Railway, Flask is mounted into FastAPI, so we don't run it separately
+        # Only run Flask standalone if FORCE_FLASK_STANDALONE is set
+        if os.getenv("FORCE_FLASK_STANDALONE") == "true":
+            flask_port = int(os.getenv("INTERNAL_FLASK_PORT", "5000"))
+            logger.info(f"Starting Flask server on port {flask_port} (internal only)")
+            flask_app.run(host="127.0.0.1", port=flask_port, debug=False, use_reloader=False, threaded=True)
+        else:
+            logger.info("Flask app mounted to FastAPI; skipping standalone Flask server")
     except Exception as exc:
         logger.exception(f"Flask startup failed: {exc}")
 
@@ -63,9 +66,13 @@ def start_otp_bot() -> None:
     runtime_mode = get_runtime_mode(bot)
     logger.info(f"Starting application in {runtime_mode} mode.")
 
-    flask_thread = threading.Thread(target=start_flask_server, daemon=True, name="FlaskThread")
-    flask_thread.start()
-    logger.info("Flask server thread started (internal only).")
+    # Only start Flask thread if not on Railway (or if forced)
+    if os.getenv("FORCE_FLASK_STANDALONE") == "true":
+        flask_thread = threading.Thread(target=start_flask_server, daemon=True, name="FlaskThread")
+        flask_thread.start()
+        logger.info("Flask server thread started (internal only).")
+    else:
+        logger.info("Flask mounted to FastAPI; skipping standalone Flask thread.")
 
     if runtime_mode == "full":
         if USE_WEBHOOK:

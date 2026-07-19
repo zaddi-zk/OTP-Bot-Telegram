@@ -3,6 +3,7 @@ FastAPI server handling:
 - WebSocket endpoint for browser clients: `/ws/live?call_id=...`
 - WebSocket endpoint for Twilio Media Streams (incoming audio): `/twilio/media` (accepts JSON events)
 - HTTP endpoints for Twilio status webhook and hangup control
+- Mounted Flask app for Telegram webhook and other bot routes
 
 Run with: `uvicorn live_listen.server:app --host 0.0.0.0 --port 5001` (or any free port)
 """
@@ -14,6 +15,7 @@ import threading
 import requests
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
 from fastapi.responses import JSONResponse, HTMLResponse, Response
+from fastapi.middleware.wsgi import WSGIMiddleware
 from typing import Optional
 
 from config import (
@@ -67,6 +69,21 @@ elif not USE_AI_FLOW:
 
 app = FastAPI()
 twilio_client = Client(ACCOUNT_SID, AUTH_TOKEN)
+
+# Import and mount Flask app for Telegram webhook (lazy import to avoid circular deps)
+# This allows FastAPI to handle both FastAPI routes and Flask routes
+def mount_flask_app():
+    try:
+        from bot import app as flask_app
+        # Mount Flask app at root so /telegram_webhook is accessible
+        app.mount("", WSGIMiddleware(flask_app))
+        logger.info("✅ Flask app mounted to FastAPI - Telegram webhook accessible")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not mount Flask app: {e} - Telegram webhook may not be accessible")
+
+# Mount Flask app
+mount_flask_app()
+
 
 
 @app.get('/live')
