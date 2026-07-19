@@ -4,6 +4,9 @@
 This module exposes the FastAPI ASGI app for Railway's default ASGI start
 behavior, while also starting the Flask-based Telegram bot and background
 services in a separate thread.
+
+Railway will start with: `python main.py`
+The FastAPI app is automatically run via uvicorn as the PORT-bound entrypoint.
 """
 import logging
 import os
@@ -44,8 +47,11 @@ def ensure_conf_dir() -> None:
 
 def start_flask_server() -> None:
     try:
-        logger.info(f"Starting Flask server on port {FLASK_PORT}")
-        flask_app.run(host="0.0.0.0", port=FLASK_PORT, debug=False, use_reloader=False, threaded=True)
+        # On Railway, Flask runs on an internal port only (not exposed)
+        # FastAPI (uvicorn) binds to the PORT env var and is exposed to the internet
+        flask_port = int(os.getenv("INTERNAL_FLASK_PORT", "5000"))
+        logger.info(f"Starting Flask server on port {flask_port} (internal only)")
+        flask_app.run(host="127.0.0.1", port=flask_port, debug=False, use_reloader=False, threaded=True)
     except Exception as exc:
         logger.exception(f"Flask startup failed: {exc}")
 
@@ -59,7 +65,7 @@ def start_otp_bot() -> None:
 
     flask_thread = threading.Thread(target=start_flask_server, daemon=True, name="FlaskThread")
     flask_thread.start()
-    logger.info("Flask server thread started.")
+    logger.info("Flask server thread started (internal only).")
 
     if runtime_mode == "full":
         if USE_WEBHOOK:
@@ -83,23 +89,29 @@ def start_otp_bot() -> None:
         logger.info("Skipping Telegram webhook and polling startup because the bot is not configured.")
 
 
-def _main() -> None:
-    start_otp_bot()
-    if __name__ == "__main__":
-        fastapi_port = int(os.getenv("FASTAPI_PORT", os.getenv("PORT", "5001")))
-        try:
-            import uvicorn
+# Start the bot immediately on module load
+start_otp_bot()
 
-            logger.info(f"Starting uvicorn FastAPI app on port {fastapi_port}")
-            uvicorn.run("main:app", host="0.0.0.0", port=fastapi_port, log_level="info")
-        except Exception as exc:
-            logger.exception(f"Failed to start uvicorn: {exc}")
-        finally:
-            while True:
-                time.sleep(60)
-
-
+# Export FastAPI app as `app` for uvicorn to bind to Railway's PORT
+# This is the primary entrypoint that Railway exposes to the internet
 app = fastapi_app
 
+# Register startup/shutdown logging
+@app.on_event("startup")
+async def startup():
+    port = os.getenv("PORT", "5001")
+    logger.info(f"FastAPI app starting on PORT={port}")
+
+@app.on_event("shutdown")
+async def shutdown():
+    logger.info("FastAPI app shutting down")
+
 if __name__ == "__main__":
-    _main()
+    # Fallback for local testing: keep the process alive
+    logger.info("Running in standalone mode (Railway will use uvicorn to bind FastAPI app)")
+    try:
+        while True:
+            time.sleep(60)
+    except KeyboardInterrupt:
+        logger.info("Shutdown requested")
+

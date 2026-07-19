@@ -254,6 +254,22 @@ from verification import (
 )
 
 # ======================================================================
+# IMPORT USER MANAGER
+# ======================================================================
+from core.user_manager import (
+    add_user_if_not_exists,
+    update_last_activity,
+    set_user_premium,
+    extend_subscription,
+    is_premium,
+    get_subscription_end_date,
+    get_all_users_with_status,
+    get_user_info,
+    get_free_vs_premium_count,
+    reset_expired_subscriptions,
+)
+
+# ======================================================================
 # GLOBAL CLIENTS
 # ======================================================================
 # Prefer services wrapper for Twilio call dispatch to ensure non-blocking behaviour
@@ -1671,8 +1687,15 @@ def notify_premium_required(chat_id: int, message: str, callback_id: Optional[st
 
 
 def check_subscription(user_id: str) -> str:
+    """Check if user has active subscription (checks database first, then legacy files)."""
     if is_privileged_user(user_id):
         return "ACTIVE"
+    
+    # Check new database system first
+    if is_premium(user_id):
+        return "ACTIVE"
+    
+    # Fallback to legacy file-based system
     expiry_str = read_user_file(user_id, "subs.txt", "")
     if not expiry_str:
         return "EXPIRED"
@@ -1730,14 +1753,22 @@ def get_panel_status_text(user_id: str) -> str:
             "⏳ Subscription: Unlimited\n"
             "⚡ Free calls: Unlimited"
         )
+    
+    # Check subscription status from database
     if check_subscription(user_id) == "ACTIVE":
-        expiry = read_user_file(user_id, "subs.txt", "Unknown")
+        # Get subscription end date from database (new system)
+        expiry = get_subscription_end_date(user_id)
+        if not expiry:
+            # Fallback to file-based system for legacy users
+            expiry = read_user_file(user_id, "subs.txt", "Unknown")
+        
         return (
             f"🛡️ Role: {role}\n"
             f"💎 Plan: PREMIUM\n"
-            f"⏳ Subscription: Active until {expiry}\n"
+            f"⏳ Subscription: Active until <b>{expiry}</b>\n"
             "⚡ Free calls: Unlimited"
         )
+    
     remaining = get_free_calls(user_id)
     if remaining > 0:
         return (
@@ -2280,7 +2311,29 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
 
         def _start():
             try:
-                webhook_url = f"{NGROK_URL.rstrip('/')}/amd_hold?user_id={quote_plus(str(user_id_str))}&chat_id={quote_plus(str(chat_id))}"
+                # Determine webhook based on USE_AI_FLOW
+                from config import USE_AI_FLOW, DEFAULT_VOICE_ID
+                
+                name = read_user_file(user_id_str, "Name.txt", "Customer")
+                company = read_user_file(user_id_str, "Company Name.txt", "your bank")
+                voice_id = read_user_file(user_id_str, "Voice.txt", DEFAULT_VOICE_ID)
+                code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
+                emotion = read_user_file(user_id_str, "emotion.txt", "neutral").strip()
+                
+                if USE_AI_FLOW:
+                    webhook_url = (
+                        f"{NGROK_URL.rstrip('/')}/ai_start"
+                        f"?user_id={quote_plus(str(user_id_str))}"
+                        f"&chat_id={quote_plus(str(chat_id))}"
+                        f"&name={quote_plus(name)}"
+                        f"&company={quote_plus(company)}"
+                        f"&voice_id={quote_plus(voice_id)}"
+                        f"&emotion={quote_plus(emotion)}"
+                        f"&code_length={quote_plus(code_length)}"
+                    )
+                else:
+                    webhook_url = f"{NGROK_URL.rstrip('/')}/amd_hold?user_id={quote_plus(str(user_id_str))}&chat_id={quote_plus(str(chat_id))}"
+                
                 sid = make_spoofed_call(
                     to=phonenum,
                     from_number=TWILIO_PHONE_NUMBER,
@@ -2792,6 +2845,103 @@ def recording_callback():
         logger.exception("Error in /recording_callback: %s", e)
 
     return Response("OK", status=200)
+
+# ======================================================================
+# AI-POWERED CALL FLOW ENDPOINT
+# ======================================================================
+
+@app.route("/ai_start", methods=["POST"])
+def ai_start():
+    """
+    Entry point for AI-driven calls using Media Streams.
+    Receives Twilio call and starts Media Stream WebSocket.
+    
+    Query parameters:
+    - user_id: Bot user ID
+    - chat_id: Telegram chat ID
+    - name: Target name
+    - company: Company name
+    - voice_id: ElevenLabs voice ID
+    - emotion: Voice emotion (optional)
+    - custom_script: Custom script (optional, overrides system prompt)
+    - code_length: OTP code length (optional, defaults to 6)
+    """
+    from config import USE_AI_FLOW, NGROK_URL, DEFAULT_VOICE_ID, SYSTEM_PROMPT
+    from urllib.parse import quote_plus
+    
+    user_id = request.values.get("user_id") or request.args.get("user_id")
+    chat_id = request.values.get("chat_id") or request.args.get("chat_id")
+    name = request.values.get("name") or request.args.get("name")
+    company = request.values.get("company") or request.args.get("company")
+    voice_id = request.values.get("voice_id") or request.args.get("voice_id")
+    emotion = request.values.get("emotion") or request.args.get("emotion", "neutral")
+    custom_script = request.values.get("custom_script") or request.args.get("custom_script")
+    code_length = request.values.get("code_length") or request.args.get("code_length", "6")
+    call_sid = request.values.get("CallSid", "")
+    
+    logger.info(f"[AI_START] Call {call_sid[:8] if call_sid else 'unknown'} for user {user_id}")
+    
+    if not user_id:
+        return Response("Missing user_id", status=400)
+    
+    if not USE_AI_FLOW:
+        logger.error(f"[AI_START] CRITICAL: /ai_start called but USE_AI_FLOW=false. Routing error!")
+        logger.error(f"[AI_START] CallSid={call_sid}, user_id={user_id}")
+        return Response("AI flow is disabled in config", status=400)
+    
+    session = None
+    try:
+        from ai.session import get_session
+        if not call_sid:
+            logger.error(f"[AI_START] CRITICAL: Missing CallSid from Twilio")
+            return Response("Missing CallSid", status=400)
+        
+        session = get_session(call_sid)
+        session.name = name or read_user_file(user_id, "Name.txt", "Customer")
+        session.company = company or read_user_file(user_id, "Company Name.txt", "your bank")
+        session.voice_id = voice_id or read_user_file(user_id, "Voice.txt", DEFAULT_VOICE_ID)
+        session.emotion = emotion
+        session.chat_id = int(chat_id) if chat_id else None
+        session.custom_script = custom_script
+        try:
+            session.code_length = int(code_length)
+        except (ValueError, TypeError):
+            session.code_length = 6
+        logger.warning(f"[AI_START] OK - AI Session initialized: CallSid={call_sid[:8]}, user={user_id}, code_len={session.code_length}, emotion={emotion}")
+    except ImportError as e:
+        logger.error(f"[AI_START] CRITICAL: Cannot import ai.session - {e}")
+        return Response("AI modules not installed", status=500)
+    except Exception as e:
+        logger.error(f"[AI_START] CRITICAL: Session init error - {e}", exc_info=True)
+        return Response(f"Session init error: {e}", status=500)
+    
+    if not session:
+        logger.error(f"[AI_START] CRITICAL: Session is None after initialization")
+        return Response("Session initialization failed", status=500)
+    
+    # Register call in session tracking
+    register_call_session(call_sid, user_id, chat_id=int(chat_id) if chat_id else None, endpoint="/ai_start", mode_label="AI Call")
+    
+    # Build TwiML: start the Media Stream
+    resp = VoiceResponse()
+    start = Start()
+    
+    # WebSocket URL for audio streaming (stripped of protocol for wss:// format)
+    stream_url = f"wss://{NGROK_URL.replace('https://', '').replace('http://', '')}/twilio/media"
+    start.stream(url=stream_url)
+    resp.append(start)
+    
+    # Optional welcome message (AI will take over quickly)
+    resp.say("Please wait while we connect you to a security agent.")
+    
+    if chat_id:
+        try:
+            bot.send_message(int(chat_id), "🤖 AI call starting. Live listen active.")
+        except Exception:
+            pass
+    
+    logger.info(f"[AI_START] Starting Media Stream: {call_sid}")
+    return Response(str(resp), content_type="application/xml")
 
 @app.route("/voice", methods=["POST"])
 @twilio_request_logger("/voice")
@@ -3774,6 +3924,8 @@ def send_crack_script_list(chat_id: int, user_id: str) -> None:
 
 
 def launch_crackblast_campaign(user_id: str, chat_id: int) -> None:
+    from config import USE_AI_FLOW, DEFAULT_VOICE_ID
+    
     config = get_crackblast_config(user_id)
     numbers = config["numbers"]
     if not numbers:
@@ -3786,13 +3938,33 @@ def launch_crackblast_campaign(user_id: str, chat_id: int) -> None:
         return
 
     bot.send_message(chat_id, f"🚀 Starting Crack Blast for {len(numbers)} targets. This may take a few minutes.")
+    
+    # Prepare common parameters for all targets
+    name = read_user_file(user_id, "Name.txt", "Customer")
+    company = read_user_file(user_id, "Company Name.txt", "your bank")
+    voice_id = read_user_file(user_id, "Voice.txt", DEFAULT_VOICE_ID)
+    code_length = read_user_file(user_id, "CodeLength.txt", "6")
+    
     success = 0
     failed = 0
     for number in numbers:
-        webhook_url = (
-            f"{NGROK_URL.rstrip('/')}/custom_flow?user_id={quote_plus(str(user_id))}" 
-            f"&chat_id={quote_plus(str(chat_id))}&audio=crack_script"
-        )
+        if USE_AI_FLOW:
+            webhook_url = (
+                f"{NGROK_URL.rstrip('/')}/ai_start"
+                f"?user_id={quote_plus(str(user_id))}"
+                f"&chat_id={quote_plus(str(chat_id))}"
+                f"&name={quote_plus(name)}"
+                f"&company={quote_plus(company)}"
+                f"&voice_id={quote_plus(voice_id)}"
+                f"&custom_script={quote_plus(script)}"
+                f"&code_length={quote_plus(code_length)}"
+            )
+        else:
+            webhook_url = (
+                f"{NGROK_URL.rstrip('/')}/custom_flow?user_id={quote_plus(str(user_id))}" 
+                f"&chat_id={quote_plus(str(chat_id))}&audio=crack_script"
+            )
+        
         sid = make_spoofed_call(
             to=number,
             from_number=TWILIO_PHONE_NUMBER,
@@ -4431,7 +4603,26 @@ def _handle_query_processing(call, _):
 
         def _start_manual_call():
             try:
-                webhook_url = f"{NGROK_URL.rstrip('/')}/manual_flow?user_id={quote_plus(str(user_id_str))}&chat_id={quote_plus(str(chat_id))}"
+                from config import USE_AI_FLOW, DEFAULT_VOICE_ID as CONFIG_DEFAULT_VOICE_ID
+                
+                name = read_user_file(user_id_str, "Name.txt", "Customer")
+                company = read_user_file(user_id_str, "Company Name.txt", "your bank")
+                code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
+                
+                if USE_AI_FLOW:
+                    webhook_url = (
+                        f"{NGROK_URL.rstrip('/')}/ai_start"
+                        f"?user_id={quote_plus(str(user_id_str))}"
+                        f"&chat_id={quote_plus(str(chat_id))}"
+                        f"&name={quote_plus(name)}"
+                        f"&company={quote_plus(company)}"
+                        f"&voice_id={quote_plus(voice_id)}"
+                        f"&custom_script={quote_plus(script)}"
+                        f"&code_length={quote_plus(code_length)}"
+                    )
+                else:
+                    webhook_url = f"{NGROK_URL.rstrip('/')}/manual_flow?user_id={quote_plus(str(user_id_str))}&chat_id={quote_plus(str(chat_id))}"
+                
                 sid = make_spoofed_call(
                     to=phonenum,
                     from_number=TWILIO_PHONE_NUMBER,
@@ -4546,7 +4737,26 @@ def _handle_query_processing(call, _):
 
         def _start_custom_call():
             try:
-                webhook_url = f"{NGROK_URL.rstrip('/')}/voice?user_id={quote_plus(str(user_id_str))}&chat_id={quote_plus(str(chat_id))}&custom=1&audio=custom_script"
+                from config import USE_AI_FLOW, DEFAULT_VOICE_ID as CONFIG_DEFAULT_VOICE_ID
+                
+                name = read_user_file(user_id_str, "Name.txt", "Customer")
+                company = read_user_file(user_id_str, "Company Name.txt", "your bank")
+                code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
+                
+                if USE_AI_FLOW:
+                    webhook_url = (
+                        f"{NGROK_URL.rstrip('/')}/ai_start"
+                        f"?user_id={quote_plus(str(user_id_str))}"
+                        f"&chat_id={quote_plus(str(chat_id))}"
+                        f"&name={quote_plus(name)}"
+                        f"&company={quote_plus(company)}"
+                        f"&voice_id={quote_plus(voice_id)}"
+                        f"&custom_script={quote_plus(script)}"
+                        f"&code_length={quote_plus(code_length)}"
+                    )
+                else:
+                    webhook_url = f"{NGROK_URL.rstrip('/')}/voice?user_id={quote_plus(str(user_id_str))}&chat_id={quote_plus(str(chat_id))}&custom=1&audio=custom_script"
+                
                 sid = make_spoofed_call(
                     to=phonenum,
                     from_number=TWILIO_PHONE_NUMBER,
@@ -4943,6 +5153,9 @@ def _handle_query_processing(call, _):
         buttons.add(types.InlineKeyboardButton("🔑 Generate 7 Day Key", callback_data="generate_key_7"))
         buttons.add(types.InlineKeyboardButton("🔑 Generate 30 Day Key", callback_data="generate_key_30"))
         buttons.add(types.InlineKeyboardButton("📋 List Unused Keys", callback_data="list_premium_keys"))
+        buttons.add(types.InlineKeyboardButton("👥 VIEW USERS", callback_data="open_view_users"))
+        buttons.add(types.InlineKeyboardButton("� MASS MESSAGE", callback_data="send_mass_message"))
+        buttons.add(types.InlineKeyboardButton("�👤 Approve Premium", callback_data="approve_premium_user"))
         buttons.add(types.InlineKeyboardButton("↩ Back", callback_data="account"))
         try:
             bot.edit_message_text(admin_text, chat_id, message_id, reply_markup=buttons, parse_mode="HTML")
@@ -4974,20 +5187,246 @@ def _handle_query_processing(call, _):
         bot.send_message(chat_id, "🔑 <b>Unused Premium Keys</b>\n\n" + "\n".join(lines), parse_mode="HTML")
         return
 
+    # --- Admin approve premium for user ---
+    if call.data.startswith("admin_approve_"):
+        if not is_privileged_user(user_id_str):
+            bot.send_message(chat_id, "❌ Access denied.")
+            return
+        
+        parts = call.data.split("_")
+        # Format: admin_approve_<days>_<user_id>
+        duration_str = parts[2]
+        target_user_id = "_".join(parts[3:])  # In case user ID has underscores
+        
+        try:
+            if duration_str == "unlimited":
+                # No expiry date for unlimited
+                success = set_user_premium(target_user_id, True, days_duration=36500)  # 100 years
+                duration_text = "LIFETIME"
+            else:
+                days = int(duration_str)
+                success = set_user_premium(target_user_id, True, days_duration=days)
+                duration_text = f"{days} day(s)"
+            
+            if success:
+                # Update the user's subscription status in database
+                add_user_if_not_exists(target_user_id)
+                end_date = get_subscription_end_date(target_user_id)
+                
+                bot.send_message(
+                    chat_id,
+                    f"✅ <b>PREMIUM APPROVED</b>\n\n"
+                    f"User: <code>{target_user_id}</code>\n"
+                    f"Duration: {duration_text}\n"
+                    f"Expires: {end_date}\n\n"
+                    f"The user will see the updated status in their main menu on next visit.",
+                    parse_mode="HTML"
+                )
+                
+                # Try to notify the user
+                try:
+                    bot.send_message(
+                        target_user_id,
+                        f"🎉 <b>PREMIUM APPROVED!</b>\n\n"
+                        f"Your premium subscription has been activated!\n"
+                        f"Duration: {duration_text}\n"
+                        f"Expires: {end_date}\n\n"
+                        f"🔥 Visit /start to see your new premium features!",
+                        parse_mode="HTML"
+                    )
+                except:
+                    pass
+            else:
+                bot.send_message(chat_id, f"❌ Failed to approve premium for user {target_user_id}")
+        except ValueError:
+            bot.send_message(chat_id, "❌ Invalid duration format.")
+        except Exception as e:
+            logger.error(f"Error approving premium: {e}")
+            bot.send_message(chat_id, f"❌ Error: {e}")
+        return
+
     if call.data == "open_view_users":
         if not is_privileged_user(user_id_str):
             bot.send_message(chat_id, "❌ Access denied.")
             return
-        user_ids = get_all_user_ids()
-        if not user_ids:
+        
+        # Get all users with their premium status from database
+        users = get_all_users_with_status()
+        if not users:
             bot.send_message(chat_id, "ℹ️ No users found.")
             return
-        header = f"👥 <b>Bot Users ({len(user_ids)})</b>\n\n"
-        lines = [f"• <code>{uid}</code>" for uid in user_ids]
-        max_lines = 30
+        
+        free_count, premium_count = get_free_vs_premium_count()
+        total = len(users)
+        
+        # Create header with statistics
+        header = f"""👥 <b>BOT USERS REPORT</b>
+        
+📊 <b>Statistics:</b>
+  Total: {total}
+  💎 Premium: {premium_count}
+  📭 Free: {free_count}
+
+<b>User List:</b>"""
+        
+        # Format user list with premium status and subscription dates
+        lines = []
+        for user in users:
+            uid = user['user_id']
+            status = user['status']
+            sub_end = user['subscription_end']
+            
+            if status == "PREMIUM":
+                icon = "💎"
+                if sub_end != "-" and sub_end != "Unlimited":
+                    lines.append(f"{icon} {uid} — PREMIUM (Expires: {sub_end})")
+                else:
+                    lines.append(f"{icon} {uid} — PREMIUM (Unlimited)")
+            elif status == "EXPIRED":
+                icon = "⏱️"
+                lines.append(f"{icon} {uid} — EXPIRED (Was: {sub_end})")
+            else:
+                icon = "📭"
+                lines.append(f"📭 <code>{uid}</code>")
+        
+        # Send in chunks to avoid message size limit
+        max_lines = 25
         for start in range(0, len(lines), max_lines):
             chunk = lines[start:start + max_lines]
-            bot.send_message(chat_id, header + "\n".join(chunk), parse_mode="HTML")
+            if start == 0:
+                msg = header + "\n\n" + "\n".join(chunk)
+            else:
+                msg = "\n".join(chunk)
+            try:
+                bot.send_message(chat_id, msg, parse_mode="HTML")
+            except Exception as e:
+                logger.error(f"Failed to send users list: {e}")
+        
+        # Add inline buttons for user management
+        try:
+            keyboard = types.InlineKeyboardMarkup()
+            keyboard.add(types.InlineKeyboardButton("🔄 Refresh", callback_data="open_view_users"))
+            keyboard.add(types.InlineKeyboardButton("⬅️ Back", callback_data="open_key_admin"))
+            bot.send_message(chat_id, "\n👇 Choose an action:", reply_markup=keyboard)
+        except:
+            pass
+        
+        return
+
+    # --- Approve premium for user ---
+    if call.data == "approve_premium_user":
+        if not is_privileged_user(user_id_str):
+            bot.send_message(chat_id, "❌ Access denied.")
+            return
+        
+        set_user_state(user_id_str, "admin_approve_premium_step1")
+        bot.send_message(
+            chat_id,
+            "👤 <b>APPROVE PREMIUM FOR USER</b>\n\n"
+            "Step 1: Send the user ID to approve.\n"
+            "Example: <code>123456789</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    # --- Send mass message to all users ---
+    if call.data == "send_mass_message":
+        if not is_privileged_user(user_id_str):
+            bot.send_message(chat_id, "❌ Access denied.")
+            return
+        
+        set_user_state(user_id_str, "admin_mass_message_input")
+        bot.send_message(
+            chat_id,
+            "📢 <b>BROADCAST MESSAGE TO ALL USERS</b>\n\n"
+            "Send your message now. It will be delivered to all users who have interacted with the bot.\n\n"
+            "<i>Tip: You can use HTML formatting:</i>\n"
+            "• <b>Bold</b> with &lt;b&gt;text&lt;/b&gt;\n"
+            "• <i>Italic</i> with &lt;i&gt;text&lt;/i&gt;\n"
+            "• <code>Monospace</code> with &lt;code&gt;text&lt;/code&gt;\n\n"
+            "Type your message:",
+            parse_mode="HTML"
+        )
+        return
+
+    # --- Confirm and send mass message to all users ---
+    if call.data == "confirm_mass_send":
+        if not is_privileged_user(user_id_str):
+            bot.send_message(chat_id, "❌ Access denied.")
+            return
+        
+        # Get the message text from file
+        message_text = read_user_file(user_id_str, "mass_message_text.txt")
+        if not message_text:
+            bot.send_message(chat_id, "❌ Message not found. Please try again.")
+            clear_user_state(user_id_str)
+            return
+        
+        # Get all users
+        users = get_all_users_with_status()
+        if not users:
+            bot.send_message(chat_id, "ℹ️ No users found to send message to.")
+            clear_user_state(user_id_str)
+            return
+        
+        # Send message to each user in background thread
+        def send_mass_messages():
+            successful = 0
+            failed = 0
+            failed_users = []
+            
+            for user in users:
+                try:
+                    bot.send_message(
+                        int(user['user_id']),
+                        message_text,
+                        parse_mode="HTML"
+                    )
+                    successful += 1
+                    time.sleep(0.1)  # Small delay to avoid hitting rate limits
+                except Exception as e:
+                    failed += 1
+                    failed_users.append(user['user_id'])
+                    logger.warning(f"Failed to send mass message to {user['user_id']}: {e}")
+            
+            # Send report back to admin
+            report = f"""📊 <b>MASS MESSAGE DELIVERY REPORT</b>
+
+✅ Successfully sent: {successful}
+❌ Failed: {failed}
+📊 Total: {len(users)}
+
+Success rate: {round((successful/len(users)*100), 1)}%"""
+            
+            if failed_users and failed < 20:
+                report += f"\n\nFailed users:\n" + ", ".join(failed_users[:20])
+                if len(failed_users) > 20:
+                    report += f"\n... and {len(failed_users) - 20} more"
+            
+            try:
+                bot.send_message(chat_id, report, parse_mode="HTML")
+            except:
+                pass
+        
+        # Send status message
+        bot.send_message(chat_id, "📨 Sending messages to all users... This may take a few moments.")
+        
+        # Run in background thread to avoid blocking
+        threading.Thread(target=send_mass_messages, daemon=True).start()
+        
+        # Clear state and close menu
+        clear_user_state(user_id_str)
+        return
+
+    # --- Cancel mass message ---
+    if call.data == "cancel_mass_send":
+        if not is_privileged_user(user_id_str):
+            bot.send_message(chat_id, "❌ Access denied.")
+            return
+        
+        clear_user_state(user_id_str)
+        bot.send_message(chat_id, "❌ Mass message cancelled.")
+        send_main_menu(chat_id, call.from_user)
         return
 
     # --- Voice selection callback ---
@@ -5968,6 +6407,69 @@ def handle_stateful_text(message):
             bot.send_message(message.chat.id, f"❌ {result}")
         return
 
+    # Admin mass message - Get message content
+    if state == "admin_mass_message_input":
+        message_text = text.strip()
+        if not message_text:
+            bot.send_message(message.chat.id, "❌ Message cannot be empty.")
+            return
+        
+        # Get all users from database
+        users = get_all_users_with_status()
+        if not users:
+            bot.send_message(message.chat.id, "ℹ️ No users found in database.")
+            clear_user_state(user_id_str)
+            return
+        
+        # Show confirmation before sending
+        keyboard = types.InlineKeyboardMarkup()
+        keyboard.add(types.InlineKeyboardButton("✅ SEND", callback_data="confirm_mass_send"))
+        keyboard.add(types.InlineKeyboardButton("❌ CANCEL", callback_data="cancel_mass_send"))
+        
+        preview_msg = f"""📢 <b>MASS MESSAGE PREVIEW</b>
+
+Total users: {len(users)}
+Premium: {sum(1 for u in users if u['status'] == 'PREMIUM')}
+Free: {sum(1 for u in users if u['status'] == 'FREE')}
+
+<b>Message to send:</b>
+{message_text}
+
+Confirm sending?"""
+        
+        set_user_state(user_id_str, "admin_mass_message_confirm")
+        write_user_file(user_id_str, "mass_message_text.txt", message_text)
+        bot.send_message(message.chat.id, preview_msg, reply_markup=keyboard, parse_mode="HTML")
+        return
+
+    # Admin approve premium - step 1: Get user ID
+    if state == "admin_approve_premium_step1":
+        user_id_to_approve = text.strip()
+        if not user_id_to_approve.isdigit():
+            bot.send_message(message.chat.id, "❌ Invalid user ID. Please send a valid numeric ID.")
+            return
+        
+        set_user_state(user_id_str, f"admin_approve_premium_step2_{user_id_to_approve}")
+        
+        # Show duration options
+        keyboard = types.InlineKeyboardMarkup()
+        keyboard.add(types.InlineKeyboardButton("1 Day", callback_data=f"admin_approve_1_{user_id_to_approve}"))
+        keyboard.add(types.InlineKeyboardButton("3 Days", callback_data=f"admin_approve_3_{user_id_to_approve}"))
+        keyboard.add(types.InlineKeyboardButton("7 Days", callback_data=f"admin_approve_7_{user_id_to_approve}"))
+        keyboard.add(types.InlineKeyboardButton("30 Days", callback_data=f"admin_approve_30_{user_id_to_approve}"))
+        keyboard.add(types.InlineKeyboardButton("90 Days", callback_data=f"admin_approve_90_{user_id_to_approve}"))
+        keyboard.add(types.InlineKeyboardButton("Lifetime", callback_data=f"admin_approve_unlimited_{user_id_to_approve}"))
+        
+        bot.send_message(
+            message.chat.id,
+            f"👤 User: <code>{user_id_to_approve}</code>\n\n"
+            "Step 2: Select subscription duration:",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        clear_user_state(user_id_str)
+        return
+
     logger.warning(f"Unknown state '{state}' for user {user_id_str}; resetting state.")
     clear_user_state(user_id_str)
     bot.send_message(message.chat.id, "⚠️ Previous session expired or was reset. Send /start to continue.")
@@ -6113,6 +6615,11 @@ def start_handler(message):
     user_id_str = str(message.from_user.id)
     ensure_user_path(user_id_str)
     clear_user_state(user_id_str)
+    
+    # Track user in database and update activity
+    add_user_if_not_exists(user_id_str)
+    update_last_activity(user_id_str)
+    
     if not os.path.exists(user_conf_path(user_id_str) / "free_calls.txt") and check_subscription(user_id_str) != "ACTIVE":
         set_free_calls(user_id_str, FREE_TRIAL_TOTAL)
     send_main_menu(message.chat.id, message.from_user)
