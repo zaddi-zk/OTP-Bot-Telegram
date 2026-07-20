@@ -67,7 +67,15 @@ def _build_engine():
         return _engine
 
     if not DATABASE_URL:
-        logger.warning("DATABASE_URL is not configured; PostgreSQL user storage is disabled")
+        logger.error("\n" + "="*70)
+        logger.error("🚨 CRITICAL: DATABASE_URL is NOT configured!")
+        logger.error("   Users WILL NOT persist to PostgreSQL")
+        logger.error("   View Users button will show: 'No users found'")
+        logger.error("   Premium status updates will NOT work")
+        logger.error("")
+        logger.error("   FIX: Set DATABASE_URL in Railway environment variables")
+        logger.error("   Then restart the bot")
+        logger.error("="*70 + "\n")
         return None
 
     _engine = create_engine(
@@ -142,12 +150,14 @@ def add_user_if_not_exists(user_id: str) -> bool:
     """Create a user in PostgreSQL when they do not already exist."""
     session = get_session()
     if session is None:
+        logger.warning(f"⚠️  Cannot add user {user_id}: DATABASE_URL not configured (PostgreSQL disabled)")
         return False
 
     try:
         with _SessionTransaction(session):
             existing = session.get(UserRecord, str(user_id))
             if existing is not None:
+                logger.debug(f"User {user_id} already exists")
                 return False
 
             now = _timestamp_now()
@@ -161,7 +171,7 @@ def add_user_if_not_exists(user_id: str) -> bool:
             )
             session.add(user)
 
-        logger.info(f"➕ New user added: {user_id}")
+        logger.info(f"✅ NEW USER CREATED in PostgreSQL: {user_id}")
         return True
     except Exception as exc:
         logger.error(f"❌ Failed to add user {user_id}: {exc}")
@@ -255,7 +265,10 @@ def is_premium(user_id: str) -> bool:
         if not user.subscription_end_date:
             return True
         end_date = _parse_datetime(user.subscription_end_date)
-        return end_date is not None and end_date >= datetime.now()
+        is_active = end_date is not None and end_date >= datetime.now()
+        if is_active:
+            logger.debug(f"✅ User {user_id} is PREMIUM (expires: {user.subscription_end_date})")
+        return is_active
     except Exception as exc:
         logger.error(f"❌ Failed to check premium status for {user_id}: {exc}")
         return False

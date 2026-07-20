@@ -293,8 +293,34 @@ if bot:
 app = Flask(__name__)
 
 # Ensure the user database is ready on startup.
+def _startup_diagnostics():
+    """Check and log configuration status on startup."""
+    from config import DATABASE_URL, USE_POSTGRES
+    
+    logger.info("\n" + "="*70)
+    logger.info("🔧 STARTUP DIAGNOSTICS")
+    logger.info("="*70)
+    
+    if USE_POSTGRES and DATABASE_URL:
+        logger.info("✅ DATABASE_URL: Configured")
+        logger.info("   → PostgreSQL user persistence: ENABLED")
+        logger.info("   → Users will persist across bot restarts")
+        logger.info("   → Premium status updates will work")
+    else:
+        logger.error("❌ DATABASE_URL: NOT CONFIGURED")
+        logger.error("   → PostgreSQL user persistence: DISABLED")
+        logger.error("   → Users will NOT persist (lost on bot restart)")
+        logger.error("   → Premium status updates will NOT work")
+        logger.error("   → VIEW USERS button will show: 'No users found'")
+        logger.error("")
+        logger.error("   FIX: Set DATABASE_URL in Railway environment variables")
+        logger.error("   Then restart the bot")
+    
+    logger.info("="*70 + "\n")
+
 try:
     init_user_db()
+    _startup_diagnostics()
 except Exception:
     logger.exception("Failed to initialize user database")
 
@@ -1777,13 +1803,17 @@ def get_panel_status_text(user_id: str) -> str:
         )
     
     # Check subscription status from database
-    if check_subscription(user_id) == "ACTIVE":
+    sub_status = check_subscription(user_id)
+    logger.debug(f"📊 Premium check for {user_id}: {sub_status}")
+    
+    if sub_status == "ACTIVE":
         # Get subscription end date from database (new system)
         expiry = get_subscription_end_date(user_id)
         if not expiry:
             # Fallback to file-based system for legacy users
             expiry = read_user_file(user_id, "subs.txt", "Unknown")
         
+        logger.info(f"✅ User {user_id} is PREMIUM - expires: {expiry}")
         return (
             f"🛡️ Role: {role}\n"
             f"💎 Plan: PREMIUM\n"
@@ -6932,12 +6962,22 @@ def my_scripts_callback(call):
 @bot.message_handler(commands=["start"])
 def start_handler(message):
     user_id_str = str(message.from_user.id)
+    logger.info(f"👤 /start command from user {user_id_str}")
+    
     ensure_user_path(user_id_str)
     clear_user_state(user_id_str)
     
     # Track user in database and update activity
-    add_user_if_not_exists(user_id_str)
-    update_last_activity(user_id_str)
+    # This should create the user in PostgreSQL
+    user_created = add_user_if_not_exists(user_id_str)
+    if user_created:
+        logger.info(f"   ✅ User {user_id_str} created in PostgreSQL")
+    else:
+        logger.info(f"   ℹ️  User {user_id_str} already exists in PostgreSQL")
+    
+    activity_updated = update_last_activity(user_id_str)
+    if activity_updated is not False:  # None is success
+        logger.info(f"   ✅ User {user_id_str} activity timestamp updated")
     
     if not os.path.exists(user_conf_path(user_id_str) / "free_calls.txt") and check_subscription(user_id_str) != "ACTIVE":
         set_free_calls(user_id_str, FREE_TRIAL_TOTAL)
@@ -7156,8 +7196,23 @@ def approve_command(message):
         expiry_str = expiry.strftime("%d/%m/%Y")
         display_duration = f"{int(days)} day(s)"
     
-    # Apply premium to user
+    # Apply premium to user in both file (legacy) and PostgreSQL (new)
+    logger.info(f"👤 Approving user {target_user_id} for {display_duration}")
+    
+    # Write to file for backward compatibility
     write_user_file(target_user_id, "subs.txt", expiry_str)
+    logger.info(f"   ✅ Updated subs.txt with expiry: {expiry_str}")
+    
+    # Update PostgreSQL with the new premium status
+    if days == 9999:  # Lifetime
+        premium_success = set_user_premium(target_user_id, is_premium=True, days_duration=9999)
+    else:
+        premium_success = set_user_premium(target_user_id, is_premium=True, days_duration=int(days))
+    
+    if premium_success:
+        logger.info(f"   ✅ Updated PostgreSQL: User {target_user_id} premium status ACTIVE (expires: {expiry_str})")
+    else:
+        logger.warning(f"   ⚠️  Failed to update PostgreSQL for user {target_user_id}")
     
     # ✅ TRACK PAYMENT - Increment purchase counter
     purchase_count = increment_purchase_count(target_user_id, 1)

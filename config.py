@@ -121,6 +121,16 @@ DEBUG = _get("DEBUG", "false").lower() in ("true", "1", "yes")
 DATABASE_URL = _get("DATABASE_URL", "").strip()  # Railway PostgreSQL connection string
 USE_POSTGRES = bool(DATABASE_URL)
 
+# Log DATABASE_URL status on module load (without exposing the actual URL)
+if USE_POSTGRES:
+    import logging as _config_log
+    _log = _config_log.getLogger("config")
+    _log.info("✅ DATABASE_URL is configured - PostgreSQL user persistence ENABLED")
+else:
+    import logging as _config_log
+    _log = _config_log.getLogger("config")
+    _log.warning("⚠️  DATABASE_URL not configured - PostgreSQL user persistence DISABLED (users will not persist!)")
+
 # Derived channel IDs (if URLs given but IDs not)
 def _derive_channel_id(url: str, fallback: str) -> str:
     if fallback:
