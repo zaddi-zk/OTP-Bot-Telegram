@@ -267,6 +267,7 @@ from core.user_manager import (
     get_user_info,
     get_free_vs_premium_count,
     reset_expired_subscriptions,
+    init_user_db,
 )
 
 # ======================================================================
@@ -290,6 +291,12 @@ if bot:
     telebot.apihelper.API_URL = f"{api_base}{{0}}/{{1}}"
     telebot.apihelper.FILE_URL = f"{api_base}{{0}}/{{1}}"
 app = Flask(__name__)
+
+# Ensure the user database is ready on startup.
+try:
+    init_user_db()
+except Exception:
+    logger.exception("Failed to initialize user database")
 
 # When running without a real `BOT_TOKEN` (for example in CI or a public
 # deployment without secrets), provide a lightweight `DummyBot` that
@@ -5864,6 +5871,34 @@ def db_get_script_rows(user_id_str: str) -> List[Dict[str, Any]]:
 
 def db_get_scripts(user_id_str: str) -> List[str]:
     return [row["content"] for row in db_get_script_rows(user_id_str)]
+
+
+def db_save_script_rows(user_id_str: str, rows: List[Dict[str, Any]]) -> bool:
+    """Persist script rows for a user, preserving the shared default library rows."""
+    init_user_db(user_id_str)
+    db_path = get_db_path(user_id_str)
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.execute("DELETE FROM scripts WHERE user_id = ?", (user_id_str,))
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name") or "Untitled Script").strip() or "Untitled Script"
+            content = str(row.get("content") or "").strip()
+            user_id = str(row.get("user_id") or user_id_str)
+            created_at = row.get("created_at") or datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+            updated_at = row.get("updated_at") or created_at
+            conn.execute(
+                "INSERT INTO scripts (user_id, name, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (user_id, name, content, created_at, updated_at),
+            )
+        conn.commit()
+        conn.close()
+        logger.info(f"Scripts rows saved for user {user_id_str}")
+        return True
+    except Exception as e:
+        logger.error(f"DB save rows error: {e}")
+        return False
 
 # ======================================================================
 # TEXT MESSAGE HANDLER (state machine with feedback)

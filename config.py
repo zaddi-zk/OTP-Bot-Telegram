@@ -118,8 +118,8 @@ FLASK_PORT = int(_get("FLASK_PORT", 5000))
 DEBUG = _get("DEBUG", "false").lower() in ("true", "1", "yes")
 
 # Database
-DATABASE_URL = _get("DATABASE_URL", "")  # Railway PostgreSQL connection string
-USE_POSTGRES = bool(DATABASE_URL and "postgresql" in DATABASE_URL)
+DATABASE_URL = _get("DATABASE_URL", "").strip()  # Railway PostgreSQL connection string
+USE_POSTGRES = bool(DATABASE_URL)
 
 # Derived channel IDs (if URLs given but IDs not)
 def _derive_channel_id(url: str, fallback: str) -> str:

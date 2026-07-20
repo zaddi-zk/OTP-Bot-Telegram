@@ -13,6 +13,10 @@ from pathlib import Path
 from threading import Lock
 from typing import Optional, Dict, List, Any, Tuple
 
+from sqlalchemy import Column, String, Text, create_engine
+from sqlalchemy.orm import Session, declarative_base, sessionmaker
+
+from config import CONF_DIR, DATABASE_URL
 from core.files import ensure_user_path, write_user_file, read_user_file
 
 logger = logging.getLogger("OTP-Bot.verification")
@@ -23,8 +27,187 @@ _SAVE_LOCK = Lock()
 # ======================================================================
 # Constants
 # ======================================================================
-VERIFICATIONS_PATH = Path("conf") / "pending_verifications.json"
-APPROVED_PATH = Path("conf") / "approved_purchases.json"
+VERIFICATIONS_PATH = CONF_DIR / "pending_verifications.json"
+APPROVED_PATH = CONF_DIR / "approved_purchases.json"
+
+Base = declarative_base()
+
+
+class VerificationRecord(Base):
+    __tablename__ = "verification_requests"
+
+    verification_id = Column(String, primary_key=True)
+    user_id = Column(String, nullable=False, index=True)
+    username = Column(String, nullable=True)
+    plan = Column(String, nullable=True)
+    plan_name = Column(String, nullable=True)
+    price = Column(String, nullable=True)
+    days = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="pending", index=True)
+    created_at = Column(String, nullable=True)
+    proof_file_id = Column(String, nullable=True)
+    proof_type = Column(String, nullable=True)
+    proof_submitted_at = Column(String, nullable=True)
+    approved_at = Column(String, nullable=True)
+    approved_by = Column(String, nullable=True)
+    rejected_at = Column(String, nullable=True)
+    rejection_reason = Column(String, nullable=True)
+    payload = Column(Text, nullable=True)
+
+
+class ApprovedPurchaseRecord(Base):
+    __tablename__ = "approved_purchases"
+
+    verification_id = Column(String, primary_key=True)
+    user_id = Column(String, nullable=False, index=True)
+    plan = Column(String, nullable=True)
+    plan_name = Column(String, nullable=True)
+    price = Column(String, nullable=True)
+    days = Column(String, nullable=True)
+    approved_at = Column(String, nullable=True)
+    approved_by = Column(String, nullable=True)
+    expiry = Column(String, nullable=True)
+    payload = Column(Text, nullable=True)
+
+
+_engine = None
+_SessionLocal = None
+
+
+def _build_engine():
+    global _engine, _SessionLocal
+    if _engine is not None:
+        return _engine
+    if not DATABASE_URL:
+        return None
+    _engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+        pool_recycle=1800,
+        pool_size=5,
+        max_overflow=10,
+        future=True,
+    )
+    _SessionLocal = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
+    return _engine
+
+
+def get_session() -> Optional[Session]:
+    engine = _build_engine()
+    if engine is None or _SessionLocal is None:
+        return None
+    return _SessionLocal()
+
+
+def init_verification_db() -> None:
+    engine = _build_engine()
+    if engine is None:
+        return
+    Base.metadata.create_all(engine)
+    _migrate_legacy_json_records()
+
+
+def _migrate_legacy_json_records() -> None:
+    if not DATABASE_URL:
+        return
+    session = get_session()
+    if session is None:
+        return
+    try:
+        with session.begin():
+            existing_pending = session.query(VerificationRecord).count()
+            if existing_pending == 0 and VERIFICATIONS_PATH.exists():
+                try:
+                    payload = json.loads(VERIFICATIONS_PATH.read_text(encoding="utf-8"))
+                    if isinstance(payload, list):
+                        for item in payload:
+                            if isinstance(item, dict):
+                                save_verification_record(session, item)
+                except Exception as exc:
+                    logger.warning(f"⚠️ Unable to migrate pending verifications JSON: {exc}")
+
+            existing_purchases = session.query(ApprovedPurchaseRecord).count()
+            if existing_purchases == 0 and APPROVED_PATH.exists():
+                try:
+                    payload = json.loads(APPROVED_PATH.read_text(encoding="utf-8"))
+                    if isinstance(payload, list):
+                        for item in payload:
+                            if isinstance(item, dict):
+                                save_approved_purchase_record(session, item)
+                except Exception as exc:
+                    logger.warning(f"⚠️ Unable to migrate approved purchases JSON: {exc}")
+    finally:
+        session.close()
+
+
+def _serialize_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    payload = dict(record)
+    payload.pop("verification_id", None)
+    payload.pop("user_id", None)
+    payload.pop("username", None)
+    payload.pop("plan", None)
+    payload.pop("plan_name", None)
+    payload.pop("price", None)
+    payload.pop("days", None)
+    payload.pop("status", None)
+    payload.pop("created_at", None)
+    payload.pop("proof_file_id", None)
+    payload.pop("proof_type", None)
+    payload.pop("proof_submitted_at", None)
+    payload.pop("approved_at", None)
+    payload.pop("approved_by", None)
+    payload.pop("rejected_at", None)
+    payload.pop("rejection_reason", None)
+    return payload
+
+
+def _update_verification_record(record: VerificationRecord, payload: Dict[str, Any]) -> None:
+    record.user_id = payload.get("user_id")
+    record.username = payload.get("username")
+    record.plan = payload.get("plan")
+    record.plan_name = payload.get("plan_name")
+    record.price = payload.get("price")
+    record.days = payload.get("days")
+    record.status = payload.get("status") or "pending"
+    record.created_at = payload.get("created_at")
+    record.proof_file_id = payload.get("proof_file_id")
+    record.proof_type = payload.get("proof_type")
+    record.proof_submitted_at = payload.get("proof_submitted_at")
+    record.approved_at = payload.get("approved_at")
+    record.approved_by = payload.get("approved_by")
+    record.rejected_at = payload.get("rejected_at")
+    record.rejection_reason = payload.get("rejection_reason")
+    record.payload = json.dumps(_serialize_record(payload), ensure_ascii=False)
+
+
+def save_verification_record(session: Session, payload: Dict[str, Any]) -> None:
+    verification_id = payload.get("verification_id")
+    if not verification_id:
+        return
+    record = session.get(VerificationRecord, str(verification_id))
+    if record is None:
+        record = VerificationRecord(verification_id=str(verification_id))
+        session.add(record)
+    _update_verification_record(record, payload)
+
+
+def save_approved_purchase_record(session: Session, payload: Dict[str, Any]) -> None:
+    verification_id = payload.get("verification_id")
+    if not verification_id:
+        return
+    record = session.get(ApprovedPurchaseRecord, str(verification_id))
+    if record is None:
+        record = ApprovedPurchaseRecord(verification_id=str(verification_id))
+        session.add(record)
+    record.user_id = payload.get("user_id")
+    record.plan = payload.get("plan")
+    record.plan_name = payload.get("plan_name")
+    record.price = payload.get("price")
+    record.days = payload.get("days")
+    record.approved_at = payload.get("approved_at")
+    record.approved_by = payload.get("approved_by")
+    record.expiry = payload.get("expiry")
+    record.payload = json.dumps(payload, ensure_ascii=False)
 
 PLAN_MAPPING = {
     "plan_3hourtrial": {"name": "3 Hour Trial", "price": "$5", "days": 0.125},
@@ -38,15 +221,47 @@ PLAN_MAPPING = {
 # Verification Storage
 # ======================================================================
 def load_verifications() -> List[Dict[str, Any]]:
-    """Load all pending verifications."""
-    if not VERIFICATIONS_PATH.exists():
-        return []
+    """Load all verification requests from PostgreSQL, falling back to the legacy JSON file if needed."""
+    session = get_session()
+    if session is None:
+        if not VERIFICATIONS_PATH.exists():
+            return []
+        try:
+            with open(VERIFICATIONS_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to load verifications: {e}")
+            return []
+
     try:
-        with open(VERIFICATIONS_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
+        rows = session.query(VerificationRecord).all()
+        return [
+            {
+                "verification_id": row.verification_id,
+                "user_id": row.user_id,
+                "username": row.username,
+                "plan": row.plan,
+                "plan_name": row.plan_name,
+                "price": row.price,
+                "days": row.days,
+                "status": row.status,
+                "created_at": row.created_at,
+                "proof_file_id": row.proof_file_id,
+                "proof_type": row.proof_type,
+                "proof_submitted_at": row.proof_submitted_at,
+                "approved_at": row.approved_at,
+                "approved_by": row.approved_by,
+                "rejected_at": row.rejected_at,
+                "rejection_reason": row.rejection_reason,
+                "payload": row.payload,
+            }
+            for row in rows
+        ]
     except Exception as e:
         logger.error(f"Failed to load verifications: {e}")
         return []
+    finally:
+        session.close()
 
 def _atomic_json_write(data: Any, target_path: Path, error_label: str) -> None:
     """Persist JSON atomically using an isolation lock and os.replace()."""
@@ -78,23 +293,74 @@ def _atomic_json_write(data: Any, target_path: Path, error_label: str) -> None:
 
 
 def save_verifications(verifications: List[Dict[str, Any]]) -> None:
-    """Save verifications atomically and safely."""
-    _atomic_json_write(verifications, VERIFICATIONS_PATH, "Failed to save verifications")
+    """Persist verifications into PostgreSQL."""
+    session = get_session()
+    if session is None:
+        _atomic_json_write(verifications, VERIFICATIONS_PATH, "Failed to save verifications")
+        return
+
+    try:
+        with session.begin():
+            for verification in verifications:
+                save_verification_record(session, verification)
+    except Exception as exc:
+        logger.error(f"Failed to save verifications: {exc}")
+        _atomic_json_write(verifications, VERIFICATIONS_PATH, "Failed to save verifications")
+    finally:
+        session.close()
 
 def load_approved_purchases() -> List[Dict[str, Any]]:
-    """Load all approved purchases."""
-    if not APPROVED_PATH.exists():
-        return []
+    """Load all approved purchases from PostgreSQL."""
+    session = get_session()
+    if session is None:
+        if not APPROVED_PATH.exists():
+            return []
+        try:
+            with open(APPROVED_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to load approved purchases: {e}")
+            return []
+
     try:
-        with open(APPROVED_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
+        rows = session.query(ApprovedPurchaseRecord).all()
+        return [
+            {
+                "verification_id": row.verification_id,
+                "user_id": row.user_id,
+                "plan": row.plan,
+                "plan_name": row.plan_name,
+                "price": row.price,
+                "days": row.days,
+                "approved_at": row.approved_at,
+                "approved_by": row.approved_by,
+                "expiry": row.expiry,
+                "payload": row.payload,
+            }
+            for row in rows
+        ]
     except Exception as e:
         logger.error(f"Failed to load approved purchases: {e}")
         return []
+    finally:
+        session.close()
 
 def save_approved_purchases(purchases: List[Dict[str, Any]]) -> None:
-    """Save approved purchases atomically and safely."""
-    _atomic_json_write(purchases, APPROVED_PATH, "Failed to save approved purchases")
+    """Persist approved purchases into PostgreSQL."""
+    session = get_session()
+    if session is None:
+        _atomic_json_write(purchases, APPROVED_PATH, "Failed to save approved purchases")
+        return
+
+    try:
+        with session.begin():
+            for purchase in purchases:
+                save_approved_purchase_record(session, purchase)
+    except Exception as exc:
+        logger.error(f"Failed to save approved purchases: {exc}")
+        _atomic_json_write(purchases, APPROVED_PATH, "Failed to save approved purchases")
+    finally:
+        session.close()
 
 # ======================================================================
 # Verification Creation
