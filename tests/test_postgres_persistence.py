@@ -15,6 +15,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import json
+import os
+import pytest
+
+# Skip these heavy persistence tests when DATABASE_URL is not set in the
+# environment. CI or local developers who wish to run them should export
+# a working `DATABASE_URL` before running pytest.
+if not os.getenv("DATABASE_URL"):
+    pytest.skip("DATABASE_URL not set; skipping Postgres persistence tests", allow_module_level=True)
 from datetime import datetime, timedelta
 from core import user_manager as um
 

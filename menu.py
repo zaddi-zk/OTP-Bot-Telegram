@@ -25,6 +25,7 @@ from core.auth import (
     get_purchase_count,
     get_panel_status_text,
 )
+from core.user_manager import is_full_premium
 from core.files import read_user_file, user_conf_path
 from premium import get_unused_premium_keys, get_key_stats
 from twilio_service import get_current_call_sid, get_call_status
@@ -97,7 +98,8 @@ def send_main_menu(
         "🔥 <b>Premium Controls</b> — Fast access to calls, AI mode, and account tools.\n"
     )
     
-    premium_active = check_subscription(str(user.id)) == "ACTIVE"
+    # UI: only show advanced premium features unlocked for full (purchased) premium users
+    premium_active = is_full_premium(str(user.id))
     ai_label = f"{ICONS['ai']} AI MODE" if premium_active else f"{ICONS['ai']} AI MODE 🔒"
     crack_label = f"{ICONS['crack']} CRACK BLAST" if premium_active else f"{ICONS['crack']} CRACK BLAST 🔒"
 

@@ -223,6 +223,34 @@ def set_user_premium(user_id: str, is_premium: bool = True, days_duration: int =
         session.close()
 
 
+def set_user_subscription_end_date(user_id: str, end_dt: datetime, role: str = "premium") -> bool:
+    """Set a user's subscription end date to an exact datetime (DB authoritative).
+
+    This writes the exact expiry to the database (ISO format), marks the user premium
+    and updates last activity. Use this when you have computed the canonical expiry
+    (for example during key redemption) and want the database to match it exactly.
+    """
+    session = get_session()
+    if session is None:
+        return False
+
+    try:
+        with _SessionTransaction(session):
+            user = _ensure_user_exists(session, user_id)
+            user.subscription_end_date = end_dt.isoformat()
+            user.is_premium = 1
+            user.role = role or "premium"
+            user.last_activity = _timestamp_now()
+
+        logger.info(f"✅ Set subscription end for {user_id} to {user.subscription_end_date}")
+        return True
+    except Exception as exc:
+        logger.error(f"❌ Failed to set subscription end date for {user_id}: {exc}")
+        return False
+    finally:
+        session.close()
+
+
 def extend_subscription(user_id: str, days: int = 30) -> bool:
     """Extend an existing subscription by the requested number of days."""
     session = get_session()
@@ -293,6 +321,27 @@ def get_subscription_end_date(user_id: str) -> Optional[str]:
     except Exception as exc:
         logger.error(f"❌ Failed to get subscription end date for {user_id}: {exc}")
         return None
+    finally:
+        session.close()
+
+
+def is_full_premium(user_id: str) -> bool:
+    """Return True only for full paid premium users (role == 'premium').
+
+    This is useful to distinguish purchased premium (full access) from
+    key-scoped grants which may set role to 'premium_key'.
+    """
+    session = get_session()
+    if session is None:
+        return False
+    try:
+        user = session.get(UserRecord, str(user_id))
+        if user is None:
+            return False
+        return (user.role == "premium") and bool(user.is_premium)
+    except Exception as exc:
+        logger.error(f"❌ Failed to check full premium for {user_id}: {exc}")
+        return False
     finally:
         session.close()
 

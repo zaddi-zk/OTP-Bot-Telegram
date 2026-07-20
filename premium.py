@@ -15,7 +15,7 @@ from typing import Optional, List, Dict, Any
 
 from core.files import ensure_user_path, write_user_file, read_user_file
 from core.auth import check_subscription
-from core.user_manager import set_user_premium
+from core.user_manager import set_user_premium, set_user_subscription_end_date
 
 logger = logging.getLogger("OTP-Bot.premium")
 
@@ -226,8 +226,13 @@ def redeem_premium_key(user_id: str, token: str) -> tuple:
             write_user_file(user_id, "subs.txt", expiry_str)
             logger.info(f"   ✅ Updated file: User {user_id} subscription expires {expiry_str}")
             
-            # ✅ UPDATE POSTGRESQL (new system) - CRITICAL FIX
-            db_success = set_user_premium(user_id, is_premium=True, days_duration=days)
+            # ✅ UPDATE POSTGRESQL (new system) - persist exact expiry so DB and file match
+            try:
+                # Mark role as a key-scoped premium so redeemed keys only grant Normal Call access
+                db_success = set_user_subscription_end_date(user_id, expiry, role="premium_key")
+            except Exception:
+                db_success = False
+
             if db_success:
                 logger.info(f"   ✅ Updated PostgreSQL: User {user_id} premium status ACTIVE (expires {expiry_str})")
             else:

@@ -1705,6 +1705,24 @@ def is_premium_user(user_id: str) -> bool:
     return check_subscription(user_id) == "ACTIVE"
 
 
+def is_full_premium_user(user_id: str) -> bool:
+    """Return True only for full paid premium users (not key-scoped grants).
+
+    This allows scoping keys to limited features (e.g., Normal Call only) by
+    differentiating `role` values in the database. Privileged users always
+    qualify as full premium.
+    """
+    if is_privileged_user(user_id):
+        return True
+    try:
+        info = get_user_info(user_id)
+        if not info:
+            return False
+        return info.get("role") == "premium"
+    except Exception:
+        return False
+
+
 def notify_premium_required(chat_id: int, message: str, callback_id: Optional[str] = None) -> None:
     """Send the user a premium upgrade notice."""
     if callback_id:
@@ -4461,7 +4479,7 @@ def _handle_query_processing(call, _):
         return
 
     if call.data == "fast_mode":
-        if not is_premium_user(user_id_str):
+        if not is_full_premium_user(user_id_str):
             alert_msg = "⚡ FAST MODE requires Premium Access\n\nHigh-speed one-line call deployment is exclusive to premium members.\n\nUpgrade in SHOP to launch calls in seconds."
             bot.answer_callback_query(call.id, alert_msg, show_alert=True)
             bot.send_message(chat_id, f"❌ {alert_msg}", parse_mode="HTML")
@@ -4483,7 +4501,7 @@ def _handle_query_processing(call, _):
         return
 
     if call.data == "manual_call":
-        if not is_premium_user(user_id_str):
+        if not is_full_premium_user(user_id_str):
             alert_msg = "🔧 MANUAL CALLING requires Premium Access\n\nCustom multi-step call workflows with granular control are exclusive to premium members.\n\nUpgrade in SHOP to access professional-grade call crafting."
             bot.answer_callback_query(call.id, alert_msg, show_alert=True)
             bot.send_message(chat_id, f"❌ {alert_msg}", parse_mode="HTML")
@@ -4765,7 +4783,7 @@ def _handle_query_processing(call, _):
         return
 
     if call.data == "custom_call":
-        if not is_premium_user(user_id_str):
+        if not is_full_premium_user(user_id_str):
             alert_msg = "⭐ CUSTOM CALL requires Premium Access\n\nBuild and deploy personalized multi-step voice sequences with unlimited customization—exclusive to premium members.\n\nUpgrade in SHOP to create advanced campaigns."
             bot.answer_callback_query(call.id, alert_msg, show_alert=True)
             bot.send_message(chat_id, f"❌ {alert_msg}", parse_mode="HTML")
@@ -4899,7 +4917,7 @@ def _handle_query_processing(call, _):
         return
 
     if call.data == "emotion_call":
-        if not is_premium_user(user_id_str):
+        if not is_full_premium_user(user_id_str):
             alert_msg = "🎭 AI EMOTION CALL requires Premium Access\n\nAdvanced AI-driven emotion-based voice modulation is exclusive to premium subscribers.\n\nUpgrade in SHOP to unlock intelligent voice personas."
             bot.answer_callback_query(call.id, alert_msg, show_alert=True)
             bot.send_message(chat_id, f"❌ {alert_msg}", parse_mode="HTML")
@@ -4918,7 +4936,7 @@ def _handle_query_processing(call, _):
         return
 
     if call.data == "crack_blast":
-        if not is_premium_user(user_id_str):
+        if not is_full_premium_user(user_id_str):
             alert_msg = "💥 CRACK BLAST requires Premium Access\n\nUnlimited bulk campaigns with advanced targeting are exclusive to premium members.\n\nUpgrade in SHOP to unlock massive campaign capabilities."
             bot.answer_callback_query(call.id, alert_msg, show_alert=True)
             bot.send_message(chat_id, f"❌ {alert_msg}", parse_mode="HTML")
@@ -5260,8 +5278,8 @@ def _handle_query_processing(call, _):
         buttons.add(types.InlineKeyboardButton("🔑 Generate 30 Day Key", callback_data="generate_key_30"))
         buttons.add(types.InlineKeyboardButton("📋 List Unused Keys", callback_data="list_premium_keys"))
         buttons.add(types.InlineKeyboardButton("👥 VIEW USERS", callback_data="open_view_users"))
-        buttons.add(types.InlineKeyboardButton("� MASS MESSAGE", callback_data="send_mass_message"))
-        buttons.add(types.InlineKeyboardButton("�👤 Approve Premium", callback_data="approve_premium_user"))
+        buttons.add(types.InlineKeyboardButton("💬 MASS MESSAGE", callback_data="send_mass_message"))
+        buttons.add(types.InlineKeyboardButton("✅ Approve Premium", callback_data="approve_premium_user"))
         buttons.add(types.InlineKeyboardButton("↩ Back", callback_data="account"))
         try:
             bot.edit_message_text(admin_text, chat_id, message_id, reply_markup=buttons, parse_mode="HTML")

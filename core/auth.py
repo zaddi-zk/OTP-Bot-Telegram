@@ -7,6 +7,7 @@ from config import (
     OWNER_ID, ADMIN_ID, DEVELOPER_IDS, FREE_TRIAL_TOTAL,
 )
 from core.files import read_user_file, write_user_file, user_conf_path, ensure_user_path
+from core import user_manager
 
 logger = logging.getLogger("OTP-Bot.auth")
 
@@ -23,6 +24,25 @@ def is_privileged_user(user_id: str) -> bool:
 def check_subscription(user_id: str) -> str:
     if is_privileged_user(user_id):
         return "ACTIVE"
+    # Prefer Postgres as the source of truth when available.
+    try:
+        # If DB reports premium/active, return ACTIVE and keep file in sync.
+        if user_manager.is_premium(user_id):
+            db_sub_end = user_manager.get_subscription_end_date(user_id)
+            if db_sub_end:
+                # Ensure file matches DB formatted date
+                try:
+                    file_expiry = read_user_file(user_id, "subs.txt", "")
+                    if file_expiry != db_sub_end:
+                        write_user_file(user_id, "subs.txt", db_sub_end)
+                        logger.debug(f"Synced subs.txt for {user_id} to DB expiry {db_sub_end}")
+                except Exception:
+                    pass
+            return "ACTIVE"
+    except Exception:
+        # DB unavailable or error — fall back to file-based check
+        pass
+
     expiry_str = read_user_file(user_id, "subs.txt", "")
     if not expiry_str:
         return "EXPIRED"
