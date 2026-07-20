@@ -15,6 +15,7 @@ from typing import Optional, List, Dict, Any
 
 from core.files import ensure_user_path, write_user_file, read_user_file
 from core.auth import check_subscription
+from core.user_manager import set_user_premium
 
 logger = logging.getLogger("OTP-Bot.premium")
 
@@ -221,22 +222,35 @@ def redeem_premium_key(user_id: str, token: str) -> tuple:
             expiry += timedelta(days=days)
             expiry_str = expiry.strftime("%d/%m/%Y")
             
-            # Update user's subscription
+            # ✅ UPDATE FILE (legacy system)
             write_user_file(user_id, "subs.txt", expiry_str)
+            logger.info(f"   ✅ Updated file: User {user_id} subscription expires {expiry_str}")
             
-            # Mark key as used
+            # ✅ UPDATE POSTGRESQL (new system) - CRITICAL FIX
+            db_success = set_user_premium(user_id, is_premium=True, days_duration=days)
+            if db_success:
+                logger.info(f"   ✅ Updated PostgreSQL: User {user_id} premium status ACTIVE (expires {expiry_str})")
+            else:
+                logger.warning(f"   ⚠️  Failed to update PostgreSQL for user {user_id} (key still redeemed in file)")
+            
+            # Mark key as used (IMMUTABLE - prevents re-use)
             key["used"] = True
             key["used_by"] = user_id
             key["used_at"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+            key["redemption_expiry"] = expiry_str  # Lock the expiry date in the key record
             
-            # Save updated keys
+            # Save updated keys (prevents further manipulation)
             save_premium_keys(keys)
+            logger.info(f"✅ KEY REDEEMED: {token}")
+            logger.info(f"   User: {user_id}")
+            logger.info(f"   Duration: {days} day(s)")
+            logger.info(f"   Expires: {expiry_str}")
+            logger.info(f"   Key marked USED (cannot be redeemed again)")
             
             # Update purchase count (optional loyalty adjustment)
             current_purchases = get_purchase_count(user_id)
             set_purchase_count(user_id, current_purchases - 5)  # Deduct 5 purchases for key redemption
             
-            logger.info(f"User {user_id} redeemed key {token} for {days} days (expires {expiry_str})")
             return True, expiry_str
     
     return False, "Premium key not found. Please check your code and try again."
