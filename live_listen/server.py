@@ -325,10 +325,16 @@ async def twilio_media(ws: WebSocket):
                                             except Exception as e:
                                                 logger.error(f"[AI_OTP_ERROR] CRITICAL: {e}", exc_info=True)
                                         
-                                        # Generate AI response
+                                        # Generate AI response with proper system prompt and emotion
                                         system_prompt = session.custom_script or SYSTEM_PROMPT
-                                        ai_response = chat_with_ai(text, session, system_prompt)
-                                        logger.warning(f"[AI_RESPONSE] OK: {ai_response[:80]}")
+                                        ai_response = chat_with_ai(
+                                            text,
+                                            session,
+                                            system_prompt=system_prompt,
+                                            call_type=session.call_type,
+                                            emotion=session.emotion
+                                        )
+                                        logger.warning(f"[AI_RESPONSE] ✅ type={session.call_type}, emotion={session.emotion}: {ai_response[:80]}")
                                         
                                         # Generate and queue audio response
                                         filename = save_audio(

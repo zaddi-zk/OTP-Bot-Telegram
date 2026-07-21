@@ -43,12 +43,26 @@ def generate_audio(text: str, voice_id: str = None) -> bytes:
         }
     }
     
+    # Basic validation
+    if not ELEVENLABS_API_KEY or 'YOUR_' in ELEVENLABS_API_KEY:
+        logger.error("ElevenLabs API key not configured. Set ELEVENLABS_API_KEY in env or conf/settings.txt")
+        return b""
+    if not voice_id:
+        logger.error("ElevenLabs voice_id not set. Set DEFAULT_VOICE_ID in config or pass voice_id")
+        return b""
+
     try:
-        response = requests.post(url, headers=headers, json=data, timeout=10)
+        response = requests.post(url, headers=headers, json=data, timeout=30)
+        if response.status_code == 404:
+            logger.error(f"ElevenLabs voice not found (voice_id={voice_id}). Check DEFAULT_VOICE_ID.")
+            return b""
         response.raise_for_status()
         return response.content
     except requests.exceptions.Timeout:
         logger.error("ElevenLabs TTS timeout")
+        return b""
+    except requests.exceptions.HTTPError as he:
+        logger.error(f"ElevenLabs TTS HTTP error: {he} - {getattr(he.response,'text', '')}")
         return b""
     except Exception as e:
         logger.error(f"ElevenLabs TTS error: {e}")

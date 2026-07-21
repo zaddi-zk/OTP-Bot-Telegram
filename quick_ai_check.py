@@ -43,11 +43,11 @@ except Exception as e:
 # Test 2: Check config
 print("\n[CHECK] Testing config...")
 try:
-    from config import USE_AI_FLOW, OLLAMA_URL, OLLAMA_MODEL, VOUCH_CHANNEL_ID
+    from config import USE_AI_FLOW, GROQ_API_KEY, GROQ_MODEL, VOUCH_CHANNEL_ID
     print(f"[OK] Config loaded:")
     print(f"  - USE_AI_FLOW: {USE_AI_FLOW}")
-    print(f"  - OLLAMA_URL: {OLLAMA_URL}")
-    print(f"  - OLLAMA_MODEL: {OLLAMA_MODEL}")
+    print(f"  - GROQ_API_KEY: {'set' if GROQ_API_KEY and 'YOUR_' not in GROQ_API_KEY else 'NOT SET'}")
+    print(f"  - GROQ_MODEL: {GROQ_MODEL}")
     print(f"  - VOUCH_CHANNEL_ID: {VOUCH_CHANNEL_ID}")
 except Exception as e:
     print(f"[ERROR] Config: {e}")
