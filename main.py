@@ -13,6 +13,7 @@ import os
 import sys
 import threading
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from bot import (
@@ -99,19 +100,22 @@ def start_otp_bot() -> None:
 # Start the bot immediately on module load
 start_otp_bot()
 
+# Modern lifespan context manager to replace deprecated @app.on_event
+@asynccontextmanager
+async def lifespan(app):
+    # Startup event
+    port = os.getenv("PORT", "5001")
+    logger.info(f"FastAPI app started on PORT={port}")
+    yield
+    # Shutdown event
+    logger.info("FastAPI app shutting down")
+
+# Apply lifespan to the FastAPI app
+fastapi_app.router.lifespan_context = lifespan
+
 # Export FastAPI app as `app` for uvicorn to bind to Railway's PORT
 # This is the primary entrypoint that Railway exposes to the internet
 app = fastapi_app
-
-# Register startup/shutdown logging
-@app.on_event("startup")
-async def startup():
-    port = os.getenv("PORT", "5001")
-    logger.info(f"FastAPI app starting on PORT={port}")
-
-@app.on_event("shutdown")
-async def shutdown():
-    logger.info("FastAPI app shutting down")
 
 if __name__ == "__main__":
     # Fallback for local testing: keep the process alive
