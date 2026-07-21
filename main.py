@@ -13,7 +13,6 @@ import os
 import sys
 import threading
 import time
-from contextlib import asynccontextmanager
 from pathlib import Path
 
 from bot import (
@@ -75,12 +74,33 @@ def start_otp_bot() -> None:
     else:
         logger.info("Flask mounted to FastAPI; skipping standalone Flask thread.")
 
+    # NOTE: Webhook setup is deferred to async startup event to ensure
+    # FastAPI+Flask are fully initialized and can receive requests
+    if runtime_mode != "full":
+        logger.info("Skipping Telegram webhook and polling startup because the bot is not configured.")
+
+
+# Start the bot immediately on module load
+start_otp_bot()
+
+# Export FastAPI app as `app` for uvicorn to bind to Railway's PORT
+# This is the primary entrypoint that Railway exposes to the internet
+app = fastapi_app
+
+# Register startup/shutdown logging and webhook setup
+@app.on_event("startup")
+async def startup_event():
+    port = os.getenv("PORT", "5001")
+    logger.info(f"FastAPI app started on PORT={port}")
+    
+    # Delayed webhook setup: FastAPI+Flask are now fully initialized and ready to receive requests
+    runtime_mode = get_runtime_mode(bot)
     if runtime_mode == "full":
         if USE_WEBHOOK:
             if set_telegram_webhook():
-                logger.info("Webhook enabled; polling disabled.")
+                logger.info("✅ Webhook enabled; polling disabled.")
             else:
-                logger.warning("Telegram webhook setup failed; falling back to polling.")
+                logger.warning("⚠️ Telegram webhook setup failed; falling back to polling.")
                 mark_webhook_mode(False)
                 start_bot_polling(allowed_updates=["message", "callback_query", "chat_member"])
         else:
@@ -93,29 +113,10 @@ def start_otp_bot() -> None:
                     logger.warning("Could not remove webhook via HTTP fallback; continuing to start polling.")
             mark_webhook_mode(False)
             start_bot_polling(allowed_updates=["message", "callback_query", "chat_member"])
-    else:
-        logger.info("Skipping Telegram webhook and polling startup because the bot is not configured.")
 
-
-# Start the bot immediately on module load
-start_otp_bot()
-
-# Modern lifespan context manager to replace deprecated @app.on_event
-@asynccontextmanager
-async def lifespan(app):
-    # Startup event
-    port = os.getenv("PORT", "5001")
-    logger.info(f"FastAPI app started on PORT={port}")
-    yield
-    # Shutdown event
+@app.on_event("shutdown")
+async def shutdown_event():
     logger.info("FastAPI app shutting down")
-
-# Apply lifespan to the FastAPI app
-fastapi_app.router.lifespan_context = lifespan
-
-# Export FastAPI app as `app` for uvicorn to bind to Railway's PORT
-# This is the primary entrypoint that Railway exposes to the internet
-app = fastapi_app
 
 if __name__ == "__main__":
     # Fallback for local testing: keep the process alive
