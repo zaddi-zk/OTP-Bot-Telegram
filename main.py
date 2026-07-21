@@ -93,11 +93,11 @@ start_otp_bot()
 app = fastapi_app
 
 if __name__ == "__main__":
-    # Fallback for local testing: keep the process alive
-    logger.info("Running in standalone mode (Railway will use uvicorn to bind FastAPI app)")
-    try:
-        while True:
-            time.sleep(60)
-    except KeyboardInterrupt:
-        logger.info("Shutdown requested")
+    # When run directly, start uvicorn server to bind FastAPI app and trigger startup events
+    # Railway will use uvicorn via railway.toml, but this allows local testing
+    import uvicorn
+    port = int(os.getenv("PORT", "8000"))
+    logger.info(f"Starting uvicorn server on port {port}")
+    logger.warning(f"[MAIN_STARTUP] uvicorn will now call FastAPI startup event")
+    uvicorn.run(app, host="0.0.0.0", port=port, workers=1)
 

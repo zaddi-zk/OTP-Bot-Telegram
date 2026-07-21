@@ -3,11 +3,9 @@
 command = "python -m pip install --upgrade pip && python -m pip install -r requirements.txt && python -m py_compile main.py bot.py && echo '✅ Build complete'"
 
 [start]
-# Railway will automatically start FastAPI with: `python main.py`
-# The FastAPI app is exported as `app = fastapi_app` at module level
-# Telegram bot and Flask run in background threads
-# Railway binds to PORT env var automatically (default 5000)
-command = "python main.py"
+# Use uvicorn to start the FastAPI app
+# This will bind the app to PORT and trigger all FastAPI startup events
+command = "uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1"
 
 # Restart policy
 restartPolicyMaxRetries = 5
