@@ -85,38 +85,8 @@ start_otp_bot()
 
 # Export FastAPI app as `app` for uvicorn to bind to Railway's PORT
 # This is the primary entrypoint that Railway exposes to the internet
+# NOTE: Startup/shutdown events are registered in live_listen/server.py
 app = fastapi_app
-
-# Register startup/shutdown logging and webhook setup
-@app.on_event("startup")
-async def startup_event():
-    port = os.getenv("PORT", "5001")
-    logger.info(f"FastAPI app started on PORT={port}")
-    
-    # Delayed webhook setup: FastAPI+Flask are now fully initialized and ready to receive requests
-    runtime_mode = get_runtime_mode(bot)
-    if runtime_mode == "full":
-        if USE_WEBHOOK:
-            if set_telegram_webhook():
-                logger.info("✅ Webhook enabled; polling disabled.")
-            else:
-                logger.warning("⚠️ Telegram webhook setup failed; falling back to polling.")
-                mark_webhook_mode(False)
-                start_bot_polling(allowed_updates=["message", "callback_query", "chat_member"])
-        else:
-            try:
-                bot.remove_webhook()
-                logger.info("Telegram webhook removed before polling startup.")
-            except Exception as remove_exc:
-                logger.debug(f"bot.remove_webhook() failed: {remove_exc}")
-                if not force_delete_telegram_webhook():
-                    logger.warning("Could not remove webhook via HTTP fallback; continuing to start polling.")
-            mark_webhook_mode(False)
-            start_bot_polling(allowed_updates=["message", "callback_query", "chat_member"])
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    logger.info("FastAPI app shutting down")
 
 if __name__ == "__main__":
     # Fallback for local testing: keep the process alive

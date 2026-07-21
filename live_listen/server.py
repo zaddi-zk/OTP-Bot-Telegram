@@ -70,6 +70,51 @@ elif not USE_AI_FLOW:
 app = FastAPI()
 twilio_client = Client(ACCOUNT_SID, AUTH_TOKEN)
 
+# Register startup event IMMEDIATELY after app creation
+# This ensures webhook/polling is set up when uvicorn starts the app
+@app.on_event("startup")
+async def startup_event():
+    """Webhook and polling setup - runs when FastAPI starts."""
+    import logging as _log
+    logger_startup = _log.getLogger(__name__)
+    
+    try:
+        from bot import get_runtime_mode, bot, USE_WEBHOOK, set_telegram_webhook, mark_webhook_mode
+        from bot import start_bot_polling, force_delete_telegram_webhook
+        
+        runtime_mode = get_runtime_mode(bot)
+        logger_startup.info(f"⏰ FastAPI Startup Event: Setting up Telegram integration (mode={runtime_mode})")
+        
+        if runtime_mode == "full":
+            if USE_WEBHOOK:
+                if set_telegram_webhook():
+                    logger_startup.info("✅ Webhook enabled; polling disabled.")
+                else:
+                    logger_startup.warning("⚠️ Telegram webhook setup failed; falling back to polling.")
+                    mark_webhook_mode(False)
+                    start_bot_polling(allowed_updates=["message", "callback_query", "chat_member"])
+            else:
+                try:
+                    bot.remove_webhook()
+                    logger_startup.info("Telegram webhook removed before polling startup.")
+                except Exception as remove_exc:
+                    logger_startup.debug(f"bot.remove_webhook() failed: {remove_exc}")
+                    if not force_delete_telegram_webhook():
+                        logger_startup.warning("Could not remove webhook via HTTP fallback; continuing to start polling.")
+                mark_webhook_mode(False)
+                start_bot_polling(allowed_updates=["message", "callback_query", "chat_member"])
+        else:
+            logger_startup.info("Skipping Telegram integration (bot not in full mode)")
+    except Exception as e:
+        logger_startup.error(f"Startup event error: {e}", exc_info=True)
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on app shutdown."""
+    import logging as _log
+    logger_shutdown = _log.getLogger(__name__)
+    logger_shutdown.info("FastAPI app shutting down")
+
 # Import and mount Flask app for Telegram webhook (lazy import to avoid circular deps)
 # This allows FastAPI to handle both FastAPI routes and Flask routes
 def mount_flask_app():
