@@ -75,7 +75,9 @@ elif not USE_AI_FLOW:
     logger.warning("[STARTUP] AI flow disabled (USE_AI_FLOW=false)")
 
 app = FastAPI()
+logger.warning("[SERVER_STARTUP] FastAPI app created successfully")
 twilio_client = Client(ACCOUNT_SID, AUTH_TOKEN)
+logger.warning("[SERVER_STARTUP] Twilio client initialized")
 
 # Register startup event IMMEDIATELY after app creation
 # This ensures webhook/polling is set up when uvicorn starts the app
@@ -83,10 +85,15 @@ twilio_client = Client(ACCOUNT_SID, AUTH_TOKEN)
 async def startup_event():
     """Webhook and polling setup - runs when FastAPI starts."""
     import logging as _log
+    import sys
     logger_startup = _log.getLogger(__name__)
     
-    # CRITICAL: Log that startup event is firing
-    logger_startup.warning("[STARTUP_EVENT_FIRED] FastAPI startup event is running NOW")
+    # CRITICAL: Log that startup event is firing - use print() for guaranteed output to console
+    msg_sep = "="*70
+    msg_startup = f"\n{msg_sep}\n[STARTUP_EVENT_FIRED] FastAPI startup event is running NOW\n{msg_sep}\n"
+    print(msg_startup, file=sys.stderr, flush=True)
+    print(msg_startup, file=sys.stdout, flush=True)
+    logger_startup.warning(msg_startup)
     
     try:
         from bot import get_runtime_mode, bot, USE_WEBHOOK, set_telegram_webhook, mark_webhook_mode
@@ -133,15 +140,19 @@ async def shutdown_event():
 # This allows FastAPI to handle both FastAPI routes and Flask routes
 def mount_flask_app():
     try:
+        logger.warning("[FLASK_MOUNT] Starting Flask app mount...")
         from bot import app as flask_app
+        logger.warning("[FLASK_MOUNT] Flask app imported successfully")
         # Mount Flask app at root so /telegram_webhook is accessible
         app.mount("", WSGIMiddleware(flask_app))
-        logger.info("✅ Flask app mounted to FastAPI - Telegram webhook accessible")
+        logger.warning("[FLASK_MOUNT] ✅ Flask app mounted to FastAPI - Telegram webhook accessible")
     except Exception as e:
-        logger.warning(f"⚠️ Could not mount Flask app: {e} - Telegram webhook may not be accessible")
+        logger.error(f"[FLASK_MOUNT_ERROR] ⚠️ Could not mount Flask app: {e} - Telegram webhook may not be accessible", exc_info=True)
 
 # Mount Flask app
+logger.warning("[SERVER_INIT] About to mount Flask app...")
 mount_flask_app()
+logger.warning("[SERVER_INIT] Flask app mount complete. FastAPI app ready to start.")
 
 
 
