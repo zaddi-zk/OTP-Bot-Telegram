@@ -85,22 +85,28 @@ async def startup_event():
     import logging as _log
     logger_startup = _log.getLogger(__name__)
     
+    # CRITICAL: Log that startup event is firing
+    logger_startup.warning("[STARTUP_EVENT_FIRED] FastAPI startup event is running NOW")
+    
     try:
         from bot import get_runtime_mode, bot, USE_WEBHOOK, set_telegram_webhook, mark_webhook_mode
         from bot import start_bot_polling, force_delete_telegram_webhook
         
         runtime_mode = get_runtime_mode(bot)
+        logger_startup.warning(f"[STARTUP_EVENT] Mode={runtime_mode}, USE_WEBHOOK={USE_WEBHOOK}")
         logger_startup.info(f"⏰ FastAPI Startup Event: Setting up Telegram integration (mode={runtime_mode})")
         
         if runtime_mode == "full":
             if USE_WEBHOOK:
+                logger_startup.warning(f"[STARTUP_EVENT] Attempting webhook setup...")
                 if set_telegram_webhook():
-                    logger_startup.info("✅ Webhook enabled; polling disabled.")
+                    logger_startup.warning("[STARTUP_EVENT_SUCCESS] ✅ Webhook enabled; polling disabled.")
                 else:
-                    logger_startup.warning("⚠️ Telegram webhook setup failed; falling back to polling.")
+                    logger_startup.error("[STARTUP_EVENT_FAILED] ⚠️ Telegram webhook setup failed; falling back to polling.")
                     mark_webhook_mode(False)
                     start_bot_polling(allowed_updates=["message", "callback_query", "chat_member"])
             else:
+                logger_startup.warning(f"[STARTUP_EVENT] USE_WEBHOOK=False; starting polling...")
                 try:
                     bot.remove_webhook()
                     logger_startup.info("Telegram webhook removed before polling startup.")
@@ -110,10 +116,11 @@ async def startup_event():
                         logger_startup.warning("Could not remove webhook via HTTP fallback; continuing to start polling.")
                 mark_webhook_mode(False)
                 start_bot_polling(allowed_updates=["message", "callback_query", "chat_member"])
+                logger_startup.warning("[STARTUP_EVENT] Polling started")
         else:
-            logger_startup.info("Skipping Telegram integration (bot not in full mode)")
+            logger_startup.warning("[STARTUP_EVENT] Skipping Telegram integration (bot not in full mode)")
     except Exception as e:
-        logger_startup.error(f"Startup event error: {e}", exc_info=True)
+        logger_startup.error(f"[STARTUP_EVENT_EXCEPTION] Startup event error: {e}", exc_info=True)
 
 @app.on_event("shutdown")
 async def shutdown_event():

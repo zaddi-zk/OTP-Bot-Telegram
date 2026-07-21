@@ -65,6 +65,10 @@ def start_otp_bot() -> None:
 
     runtime_mode = get_runtime_mode(bot)
     logger.info(f"Starting application in {runtime_mode} mode.")
+    
+    # Log webhook configuration EARLY for diagnostics
+    from bot import get_telegram_webhook_url
+    logger.warning(f"[WEBHOOK_CONFIG] USE_WEBHOOK={USE_WEBHOOK}, WEBHOOK_URL={get_telegram_webhook_url()}")
 
     # Only start Flask thread if not on Railway (or if forced)
     if os.getenv("FORCE_FLASK_STANDALONE") == "true":
