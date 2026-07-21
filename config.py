@@ -220,6 +220,9 @@ USE_AI_FLOW = _get("USE_AI_FLOW", "true").lower() in ("true", "1", "yes")
 GROQ_API_KEY = _get("GROQ_API_KEY", "YOUR_GROQ_API_KEY_HERE")
 GROQ_MODEL = _get("GROQ_MODEL", "llama-3.1-8b-instant")
 
+# Groq Whisper API for speech-to-text (ASR)
+WHISPER_MODEL = _get("WHISPER_MODEL", "whisper-large-v3")
+
 # Channel for OTP notifications
 VOUCH_CHANNEL_ID = _get("VOUCH_CHANNEL_ID", "-1004364877298")
 

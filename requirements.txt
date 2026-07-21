@@ -15,7 +15,7 @@ psycopg2-binary>=2.9.0
 SQLAlchemy>=2.0.0
 
 # AI-powered call flow dependencies
-faster-whisper>=1.0.0
+# Groq API for LLM and Whisper ASR (replaces local faster-whisper)
 numpy>=1.24.0
 websockets>=12.0
 pydub>=0.25.1
