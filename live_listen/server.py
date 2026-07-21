@@ -36,19 +36,16 @@ try:
     from ai.tts import save_audio
     from ai.utils import extract_otp, send_otp_to_channel
     
-    # ASR: Try Groq Whisper first, then graceful fallback
+    # ASR: Initialize Groq Whisper (no external audio libraries needed)
     try:
         from ai.asr import process_ulaw_buffer, initialize_asr
         asr_initialized = initialize_asr()
         if not asr_initialized:
             logger_temp = logging.getLogger(__name__)
-            logger_temp.error("[STARTUP] Groq Whisper ASR failed to initialize - transcription disabled")
+            logger_temp.error("[STARTUP] Groq Whisper ASR initialization failed - transcription disabled")
             # Stub: return empty string if ASR unavailable
             def process_ulaw_buffer(ulaw_bytes: bytes) -> str:
                 return ""
-        else:
-            logger_temp = logging.getLogger(__name__)
-            logger_temp.info("[STARTUP] Groq Whisper ASR initialized successfully")
     except (ImportError, Exception) as e:
         logger_temp = logging.getLogger(__name__)
         logger_temp.error(f"[STARTUP] ASR import failed: {e} - transcription disabled")
