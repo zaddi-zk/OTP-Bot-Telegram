@@ -54,3 +54,50 @@ def test_amd_hold_hangs_up_when_machine_detected():
     assert response.status_code == 200
     body = response.get_data(as_text=True)
     assert "Hangup" in body or "Goodbye" in body
+
+
+def test_twilio_status_uses_session_chat_id(monkeypatch):
+    bot_module = importlib.import_module("bot")
+    sent_messages = []
+
+    def fake_send_message(chat_id, text, **kwargs):
+        sent_messages.append((chat_id, text))
+
+    monkeypatch.setattr(bot_module.bot, "send_message", fake_send_message)
+    monkeypatch.setattr(bot_module, "validate_twilio_request", lambda: True)
+    monkeypatch.setattr(bot_module, "update_call_status_message", lambda *args, **kwargs: False)
+
+    bot_module.call_sessions["CA456"] = {"chat_id": 777777, "user_id": "u1"}
+
+    client = bot_module.app.test_client()
+    response = client.post(
+        "/twilio/status",
+        data={
+            "CallSid": "CA456",
+            "CallStatus": "completed",
+            "AnsweredBy": "human",
+            "user_id": "u1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert any(chat_id == 777777 for chat_id, _ in sent_messages)
+
+
+def test_handle_acknowledgment_hangs_up_for_voicemail_speech():
+    bot_module = importlib.import_module("bot")
+    client = bot_module.app.test_client()
+
+    response = client.post(
+        "/handle_acknowledgment",
+        data={
+            "user_id": "u1",
+            "chat_id": "123",
+            "CallSid": "CA789",
+            "SpeechResult": "Calling gpen. This call is being recorded.",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "Hangup" in body or "Goodbye" in body

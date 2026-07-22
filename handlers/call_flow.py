@@ -812,7 +812,7 @@ async def initiate_call_from_query(query, user_id: str):
     caller_id = read_user_file(user_id, "Caller ID.txt", TWILIO_PHONE_NUMBER)
 
     webhook_url = (
-        f"{NGROK_URL.rstrip('/')}/ai_start"
+        f"{NGROK_URL.rstrip('/')}/amd_hold"
         f"?user_id={quote_plus(str(user_id))}"
         f"&chat_id={quote_plus(str(chat_id))}"
         f"&name={quote_plus(name)}"
@@ -841,10 +841,11 @@ async def initiate_call_from_query(query, user_id: str):
             from_number=TWILIO_PHONE_NUMBER,
             caller_id=caller_id,
             webhook_url=webhook_url,
-            record=False,
-            machine_detection=None,
-            async_amd=False,
-            async_amd_status_callback=None,
+            record=True,
+            machine_detection="DetectMessageEnd",
+            async_amd=True,
+            async_amd_status_callback=async_cb,
+            chat_id=chat_id,
         )
         if not future:
             await query.edit_message_text("❌ Call failed to dispatch. Check Twilio configuration.")
