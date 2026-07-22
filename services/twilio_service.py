@@ -90,9 +90,12 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
             call_params["from_"] = from_number
     except Exception:
         call_params["from_"] = from_number
-    # AMD/Answering-Machine-Detection has been disabled; ignore caller requests
-    # to include async AMD or machine_detection parameters so calls never
-    # include machine/human detection settings.
+    if machine_detection:
+        call_params["machine_detection"] = machine_detection
+    if async_amd:
+        call_params["async_amd"] = True
+        if async_amd_status_callback:
+            call_params["async_amd_status_callback"] = async_amd_status_callback
     if record:
         call_params["record"] = True
         call_params["recording_channels"] = "mono"

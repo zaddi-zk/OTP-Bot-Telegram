@@ -182,9 +182,9 @@ def initiate_call_compat(chat_id: int, user_id: str, call_from_user):
             webhook_url=webhook_url,
             user_id=user_id,
             record=True,
-            machine_detection=None,
-            async_amd=False,
-            async_amd_status_callback=None,
+            machine_detection="DetectMessageEnd",
+            async_amd=True,
+            async_amd_status_callback=f"{NGROK_URL.rstrip('/')}/amd_callback?user_id={quote_plus(str(user_id))}" + (f"&chat_id={quote_plus(str(chat_id))}" if chat_id else ""),
         )
         if sid:
             store_call_metadata(user_id, sid, target=phone)
