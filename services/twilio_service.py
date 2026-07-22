@@ -97,6 +97,7 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
         call_params["record"] = True
         call_params["recording_channels"] = "mono"
         call_params["recording_status_callback_event"] = ["completed"]
+    call_params["status_callback_event"] = ["queued", "ringing", "answered", "completed"]
     if caller_id and caller_id != from_number:
         logger.warning(
             "Ignoring unsupported Twilio call create parameter 'caller_id'; using from_=%s",
