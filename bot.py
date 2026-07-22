@@ -3130,6 +3130,7 @@ def ai_start():
     code_length = request.values.get("code_length") or request.args.get("code_length", "6")
     call_type = request.values.get("call_type") or request.args.get("call_type", "normal")
     mode_label = request.values.get("mode_label") or request.args.get("mode_label", "AI Call")
+    caller_id = request.values.get("caller_id") or request.args.get("caller_id")
     call_sid = request.values.get("CallSid", "")
     
     logger.info(f"[AI_START] Call {call_sid[:8] if call_sid else 'unknown'} type={call_type} user={user_id}")
