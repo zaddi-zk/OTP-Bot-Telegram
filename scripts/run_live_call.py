@@ -16,7 +16,7 @@ from services.twilio_service import make_call_and_store_async
 
 user_id = "8366864444"
 to = "+18336913224"
-webhook = f"{NGROK_URL.rstrip('/')}/voice?user_id={user_id}&chat_id={user_id}"
+webhook = f"{NGROK_URL.rstrip('/')}/ai_start?user_id={user_id}&chat_id={user_id}&call_type=normal&mode_label=Normal%20Call"
 async_cb = f"{NGROK_URL.rstrip('/')}/amd_callback?user_id={user_id}&chat_id={user_id}"
 
 print("Dispatching call to:", to)

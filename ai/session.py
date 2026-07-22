@@ -26,6 +26,8 @@ class CallSession:
         # Call type metadata
         self.call_type = "normal"      # normal, manual, custom, emotion, crack_blast
         self.mode_label = "AI Call"    # Display label
+        self.caller_id = None
+        self.from_name = None
         
         # Manual/Custom-specific
         self.script_delay = 0          # Delay before playing script (seconds)
@@ -64,6 +66,8 @@ class CallSession:
             "code_length": self.code_length,
             "otp_captured": self.otp_captured,
             "otp_value": self.otp_value,
+            "caller_id": self.caller_id,
+            "from_name": self.from_name,
             "turns": len(self.history),
             "history": self.history,
             "voice_id": self.voice_id

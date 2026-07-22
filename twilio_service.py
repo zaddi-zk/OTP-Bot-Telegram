@@ -175,7 +175,7 @@ def make_call(
 
     from_number = from_number or TWILIO_PHONE_NUMBER
     caller_id = _safe_caller_id(caller_id)
-    webhook_url = webhook_url or f"{NGROK_URL}/voice?user_id={user_id}"
+    webhook_url = webhook_url or f"{NGROK_URL}/ai_start?user_id={user_id}"
 
     # Rate limiting check
     limiter = get_rate_limiter()

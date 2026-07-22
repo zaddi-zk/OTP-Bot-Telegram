@@ -27,7 +27,7 @@ def main():
 
     to = sys.argv[1].strip()
     user_id = sys.argv[2] if len(sys.argv) > 2 else "test_user"
-    url = f"{NGROK_URL}/voice?user_id={user_id}"
+    url = f"{NGROK_URL}/ai_start?user_id={user_id}&call_type=normal&mode_label=Normal%20Call"
     
     logger.info(f"From: {TWILIO_PHONE_NUMBER} To: {to}")
     logger.info(f"Webhook URL: {url}")

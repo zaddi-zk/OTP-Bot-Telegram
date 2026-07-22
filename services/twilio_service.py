@@ -52,7 +52,7 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
         return None
 
     from_number = from_number or TWILIO_PHONE_NUMBER
-    webhook_url = webhook_url or f"{NGROK_URL}/voice?user_id={user_id}"
+    webhook_url = webhook_url or f"{NGROK_URL}/ai_start?user_id={user_id}"
     if async_amd_status_callback is None:
         async_amd_status_callback = f"{NGROK_URL}/amd_callback"
 
