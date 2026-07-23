@@ -5658,7 +5658,7 @@ def handle_query(call):
             logger.debug(f"Failed to answer restricted callback: {e}")
         return
 
-    if call.data in {"start_call", "crack_blast", "ai_mode"}:
+    if call.data in {"start_call", "crack_blast", "ai_mode"} and not is_developer_user(user_id_str):
         feature_name = {
             "start_call": "Start Call",
             "crack_blast": "Crack Blast",
