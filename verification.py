@@ -415,8 +415,11 @@ def find_user_pending_verification(user_id: str) -> Optional[Dict[str, Any]]:
     """Find a user's pending verification request."""
     verifications = load_verifications()
     for v in verifications:
-        if v.get("user_id") == user_id and v.get("status") == "pending":
-            return v
+        try:
+            if str(v.get("user_id")) == str(user_id) and v.get("status") == "pending":
+                return v
+        except Exception:
+            continue
     return None
 
 def add_proof_to_verification(
