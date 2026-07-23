@@ -5622,6 +5622,23 @@ def send_live_listen_panel(chat_id: int, user_id_str: str) -> None:
 # ======================================================================
 # TELEGRAM CALLBACK HANDLERS
 # ======================================================================
+def show_under_development_notice(chat_id: int, call_id: Optional[str] = None, feature_name: str = "This feature") -> None:
+    """Show a visible under-development alert for blocked callback actions."""
+    message = (
+        f"🚧 <b>{feature_name}</b> is currently under development.\n\n"
+        "This feature is not available yet. Please check back soon for updates."
+    )
+    try:
+        if call_id:
+            bot.answer_callback_query(call_id, f"{feature_name} is under development", show_alert=True, cache_time=1)
+    except Exception as e:
+        logger.debug(f"Failed to show callback popup: {e}")
+    try:
+        bot.send_message(chat_id, message, parse_mode="HTML")
+    except Exception as e:
+        logger.debug(f"Failed to send under-development message: {e}")
+
+
 @bot.callback_query_handler(func=lambda call: True)
 def handle_query(call):
     """Main callback handler - acknowledge immediately, then process in the background executor."""
