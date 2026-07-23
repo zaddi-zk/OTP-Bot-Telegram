@@ -1644,9 +1644,10 @@ def cleanup_call_session(call_sid: str) -> None:
 def send_telegram_status(chat_id, text):
     """Send status update to Telegram."""
     try:
-        bot.send_message(chat_id, f"🔄 {text}")
-    except:
-        pass
+        if bot:
+            safe_bot_send_message(chat_id, f"🔄 {text}")
+    except Exception as e:
+        logger.debug(f"Failed to send Telegram status: {e}")
 
 
 def save_and_send_recording(call_sid: str, user_id: Optional[str], chat_id: Optional[int], content: bytes) -> bool:
@@ -3177,9 +3178,9 @@ def amd_callback():
             try:
                 send_telegram_status(int(chat_id), text)
             except Exception:
-                # fallback to raw bot send (aliased to safe send)
+                # fallback to current bot send implementation
                 try:
-                    bot.send_message(int(chat_id), text)
+                    safe_bot_send_message(int(chat_id), text)
                 except Exception:
                     logger.debug("Failed to notify chat from AMD callback")
 
@@ -3229,11 +3230,8 @@ def amd_hold():
         if chat_id is not None:
             try:
                 send_telegram_status(int(chat_id), "📞 A machine or voicemail answered the call. Ending the call gracefully.")
-            except Exception:
-                try:
-                    bot.send_message(int(chat_id), "📞 A machine or voicemail answered the call. Ending the call gracefully.")
-                except Exception:
-                    logger.debug("Failed to notify chat from amd_hold")
+            except Exception as e:
+                logger.debug(f"Failed to notify chat from amd_hold: {e}")
         resp.say("Thank you. Goodbye.")
         resp.hangup()
         return Response(str(resp), content_type="application/xml")
@@ -3985,12 +3983,9 @@ def handle_greeting():
             # If user pressed 1, notify explicitly
             if digits == "1":
                 try:
-                    telegram_safe_send(int(chat_id), "Human Pressed 1")
-                except Exception:
-                    try:
-                        bot.send_message(int(chat_id), "Human Pressed 1")
-                    except Exception:
-                        logger.debug("Failed to send 'Human Pressed 1' notification")
+                    safe_bot_send_message(int(chat_id), "Human Pressed 1")
+                except Exception as e:
+                    logger.debug(f"Failed to send 'Human Pressed 1' notification: {e}")
 
             # Build a precise, professional Normal Call system prompt and attach to server-side session
             try:
@@ -4204,12 +4199,9 @@ def handle_acknowledgment():
             # If user pressed 1, notify explicitly
             if digits == "1":
                 try:
-                    telegram_safe_send(int(chat_id), "Human Pressed 1")
-                except Exception:
-                    try:
-                        bot.send_message(int(chat_id), "Human Pressed 1")
-                    except Exception:
-                        logger.debug("Failed to send 'Human Pressed 1' notification")
+                    safe_bot_send_message(int(chat_id), "Human Pressed 1")
+                except Exception as e:
+                    logger.debug(f"Failed to send 'Human Pressed 1' notification: {e}")
 
             redirect_url = (
                 f"/ai_start?user_id={quote_plus(str(user_id))}"
@@ -4976,26 +4968,82 @@ def launch_crackblast_campaign(user_id: str, chat_id: int) -> None:
 # ======================================================================
 # TELEGRAM MENU FUNCTIONS
 # ======================================================================
-def telegram_safe_send(chat_id: int, *args, **kwargs):
-    """Send a Telegram message with basic 429 handling and one retry."""
+# Preserve the original TeleBot `send_message` method so the wrapper
+# can call it directly and avoid recursive aliasing.
+_original_bot_send_message = getattr(bot, "send_message", None)
+
+def safe_bot_send_message(chat_id, *args, **kwargs):
+    """Send a Telegram message using the current bot.send_message binding.
+
+    This helper is intentionally conservative for testability:
+    - If bot.send_message has been monkeypatched, honor that override.
+    - If bot.send_message is the wrapper itself, fall back to the original.
+    - If the current send fails, log and try the original implementation.
+    """
+    if not bot:
+        logger.error("safe_bot_send_message: bot is not initialized")
+        return None
+
+    current_send = getattr(bot, "send_message", None)
+    if current_send and current_send is not telegram_safe_send and current_send is not safe_bot_send_message and current_send is not _original_bot_send_message:
+        try:
+            return current_send(chat_id, *args, **kwargs)
+        except Exception as e:
+            logger.debug(f"safe_bot_send_message proxy to current bot.send_message failed: {e}")
+
+    if not _original_bot_send_message:
+        logger.error("safe_bot_send_message cannot operate because original send_message is missing")
+        return None
+
     try:
-        return bot.send_message(chat_id, *args, **kwargs)
+        return _original_bot_send_message(chat_id, *args, **kwargs)
     except Exception as e:
         try:
-            # Telebot ApiTelegramException may include retry info in the message
             msg = getattr(e, "result_json", None) or str(e)
-            m = re.search(r"retry after\s*(\d+)", str(msg))
+            m = re.search(r"retry after\s*(\d+)", str(msg), re.I)
             if m:
                 retry = int(m.group(1))
                 logger.warning("Telegram API 429, retry after %s seconds", retry)
-                # sleep a bounded amount to avoid long blocking
                 time.sleep(min(retry, 30))
-                return bot.send_message(chat_id, *args, **kwargs)
+                return _original_bot_send_message(chat_id, *args, **kwargs)
         except Exception:
             logger.exception("Telegram retry failed: %s", e)
+
         logger.exception("Telegram send failed: %s", e)
         return None
-# Apply global alias so existing `bot.send_message` calls get 429 handling
+
+
+def telegram_safe_send(chat_id: int, *args, **kwargs):
+    """Send a Telegram message with basic 429 handling and one retry.
+
+    Important: this wrapper must call the preserved original send_message
+    implementation (`_original_bot_send_message`) so that assigning
+    `bot.send_message = telegram_safe_send` does not cause infinite recursion.
+    """
+    if not _original_bot_send_message:
+        logger.error("Telegram safe send cannot operate because original send_message is missing")
+        return None
+
+    try:
+        return _original_bot_send_message(chat_id, *args, **kwargs)
+    except Exception as e:
+        try:
+            msg = getattr(e, "result_json", None) or str(e)
+            m = re.search(r"retry after\s*(\d+)", str(msg), re.I)
+            if m:
+                retry = int(m.group(1))
+                logger.warning("Telegram API 429, retry after %s seconds", retry)
+                time.sleep(min(retry, 30))
+                return _original_bot_send_message(chat_id, *args, **kwargs)
+        except Exception:
+            logger.exception("Telegram retry failed: %s", e)
+
+        logger.exception("Telegram send failed: %s", e)
+        return None
+
+# Apply global alias so existing `bot.send_message` calls get 429 handling.
+# We preserve the original in `_original_bot_send_message` above so the wrapper
+# can call it and avoid recursion.
 try:
     if bot:
         bot.send_message = telegram_safe_send
@@ -5005,7 +5053,14 @@ except Exception:
 # Also alias legacy telebot compatibility instance if present
 try:
     if '_telebot_instance' in globals() and _telebot_instance:
-        _telebot_instance.send_message = telegram_safe_send
+        # preserve original if present
+        _orig = getattr(_telebot_instance, 'send_message', None)
+        try:
+            _telebot_instance.send_message = telegram_safe_send
+        except Exception:
+            pass
+        if _orig and not globals().get('_original_bot_send_message'):
+            _original_bot_send_message = _orig
 except Exception:
     logger.debug("Could not alias _telebot_instance.send_message to telegram_safe_send")
 def send_main_menu(chat_id: int, user, message_id: Optional[int] = None) -> None:
@@ -5043,9 +5098,9 @@ def send_main_menu(chat_id: int, user, message_id: Optional[int] = None) -> None
         try:
             bot.edit_message_text(text, chat_id, message_id, reply_markup=buttons, parse_mode="HTML")
         except:
-            telegram_safe_send(chat_id, text, reply_markup=buttons, parse_mode="HTML")
+            safe_bot_send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
     else:
-        telegram_safe_send(chat_id, text, reply_markup=buttons, parse_mode="HTML")
+        safe_bot_send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
 
 def send_call_complete_menu(chat_id: int, summary_text: Optional[str] = None) -> None:
     """
@@ -5057,7 +5112,7 @@ def send_call_complete_menu(chat_id: int, summary_text: Optional[str] = None) ->
     buttons.add(
         types.InlineKeyboardButton("🏠 MAIN MENU", callback_data="show_main_menu")
     )
-    telegram_safe_send(chat_id, text, reply_markup=buttons, parse_mode="HTML")
+    safe_bot_send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
 
 def send_shop_menu(chat_id: int, message_id: Optional[int] = None) -> None:
     text = (
@@ -5093,9 +5148,9 @@ def send_shop_menu(chat_id: int, message_id: Optional[int] = None) -> None:
         try:
             bot.edit_message_text(text, chat_id, message_id, reply_markup=buttons, parse_mode="HTML")
         except:
-            telegram_safe_send(chat_id, text, reply_markup=buttons, parse_mode="HTML")
+            safe_bot_send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
     else:
-        telegram_safe_send(chat_id, text, reply_markup=buttons, parse_mode="HTML")
+        safe_bot_send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
 
 def send_account_menu(chat_id: int, message_id: Optional[int] = None, user_id_str: Optional[str] = None) -> None:
     text = (
