@@ -5681,25 +5681,7 @@ def _handle_query_processing(call, _):
 
     # --- Start call submenu ---
     if call.data == "start_call":
-        def _show_call_types():
-            text = (
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "📞 <b>CALLS - SELECT CALL TYPE</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                "Choose the call path you want. Each mode has a clear, human-friendly setup flow."
-            )
-            buttons = types.InlineKeyboardMarkup(row_width=1)
-            buttons.add(types.InlineKeyboardButton("📞 Normal Call", callback_data="normal_call"))
-            buttons.add(types.InlineKeyboardButton("⚡ Fast Mode", callback_data="fast_mode"))
-            buttons.add(types.InlineKeyboardButton("🔧 Manual Calling", callback_data="manual_call"))
-            buttons.add(types.InlineKeyboardButton("⭐ Custom Call", callback_data="custom_call"))
-            buttons.add(types.InlineKeyboardButton("🧠 AI Emotion Call", callback_data="emotion_call"))
-            buttons.add(types.InlineKeyboardButton("↩ Back", callback_data="back_to_menu"))
-            try:
-                bot.edit_message_text(text, chat_id, message_id, reply_markup=buttons, parse_mode="HTML")
-            except:
-                bot.send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
-        run_callback_async(_show_call_types)
+        show_under_development_notice(chat_id, call.id, "Start Call")
         return
 
     if call.data == "normal_call":
@@ -6188,23 +6170,7 @@ def _handle_query_processing(call, _):
         return
 
     if call.data == "crack_blast":
-        if not is_full_premium_user(user_id_str):
-            alert_msg = "💥 CRACK BLAST requires Premium Access\n\nUnlimited bulk campaigns with advanced targeting are exclusive to premium members.\n\nUpgrade in SHOP to unlock massive campaign capabilities."
-            bot.answer_callback_query(call.id, alert_msg, show_alert=True)
-            bot.send_message(chat_id, f"❌ {alert_msg}", parse_mode="HTML")
-            return
-        set_user_state(user_id_str, "crack_blast_step_1_numbers")
-        bot.send_message(
-            chat_id,
-            "💥 <b>CRACK BLAST SETUP</b>\n\n"
-            "Step 1/7: Target numbers\n"
-            "Send a list of phone numbers with country code. Use commas, new lines, or semicolons.\n"
-            "Example:\n+1234567890\n+19876543210\n\n"
-            "Maximum 30 targets.\n"
-            "After you send the list, choose a saved script or paste a custom one."
-            ,
-            parse_mode="HTML"
-        )
+        show_under_development_notice(chat_id, call.id, "Crack Blast")
         return
 
     if call.data == "crack_blast_script_paste":
@@ -6431,24 +6397,7 @@ def _handle_query_processing(call, _):
 
     # --- AI Mode ---
     if call.data == "ai_mode":
-        if not is_full_premium_user(user_id_str):
-            alert_msg = "🧠 AI MODE requires Premium Access\n\nAdvanced AI voice processing and intelligent conversation handling are exclusive to premium members.\n\nUpgrade in SHOP to unlock unlimited AI-powered calls."
-            bot.answer_callback_query(call.id, alert_msg, show_alert=True)
-            bot.send_message(chat_id, f"❌ {alert_msg}", parse_mode="HTML")
-            return
-        
-        # AI MODE is a variant of Normal Call with enhanced AI responsiveness
-        ensure_user_path(user_id_str)
-        
-        # Check if phone number is set
-        phone = normalize_phone_number(read_user_file(user_id_str, "phonenum.txt", ""))
-        if not phone or not is_valid_e164(phone):
-            set_user_state(user_id_str, "ai_mode_awaiting_phone")
-            bot.send_message(chat_id, "🧠 <b>AI MODE</b>\n\nEnter target phone number:\n(Format: +1234567890)", parse_mode="HTML")
-            return
-        
-        # Phone is set, start AI call
-        initiate_normal_call(chat_id, user_id_str, call.from_user, mode_label="AI Mode")
+        show_under_development_notice(chat_id, call.id, "AI Mode")
         return
 
     # --- Crack Blast ---
@@ -7543,14 +7492,9 @@ def handle_stateful_text(message):
         return
 
     if isinstance(state, str) and state.startswith("crack_blast_step_"):
-        if not is_premium_user(user_id_str):
-            bot.send_message(
-                message.chat.id,
-                "❌ Premium access required.\n\nCRACK BLAST is reserved for premium subscribers. Visit SHOP to purchase a subscription or redeem a premium key.",
-                parse_mode="HTML",
-            )
-            clear_user_state(user_id_str)
-            return
+        show_under_development_notice(message.chat.id, None, "Crack Blast")
+        clear_user_state(user_id_str)
+        return
 
     if state == "custom_call_schedule":
         parts = [p.strip() for p in text.split(",")]
@@ -7778,21 +7722,8 @@ def handle_stateful_text(message):
 
     # AI Mode phone input
     if state == "ai_mode_awaiting_phone":
-        if not is_full_premium_user(user_id_str):
-            clear_user_state(user_id_str)
-            bot.send_message(message.chat.id, "❌ Premium access required. AI MODE is available only to premium subscribers.")
-            return
-        
-        phonenum = normalize_phone_number(text.strip())
-        if not phonenum or not is_valid_e164(phonenum):
-            bot.send_message(message.chat.id, "❌ Invalid phone number. Use format: +1234567890")
-            return
-        
-        write_user_file(user_id_str, "phonenum.txt", phonenum)
+        show_under_development_notice(message.chat.id, None, "AI Mode")
         clear_user_state(user_id_str)
-        
-        # Start AI Mode call
-        initiate_normal_call(message.chat.id, user_id_str, message.from_user, mode_label="AI Mode")
         return
 
     # Custom script creation
