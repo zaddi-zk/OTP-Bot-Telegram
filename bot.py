@@ -5641,6 +5641,18 @@ def handle_query(call):
             logger.debug(f"Failed to answer restricted callback: {e}")
         return
 
+    if call.data in {"start_call", "crack_blast", "ai_mode"}:
+        feature_name = {
+            "start_call": "Start Call",
+            "crack_blast": "Crack Blast",
+            "ai_mode": "AI Mode",
+        }.get(call.data, "This feature")
+        try:
+            show_under_development_notice(call.message.chat.id, call.id, feature_name)
+        except Exception as e:
+            logger.debug(f"Failed to show under-development notice: {e}")
+        return
+
     try:
         bot.answer_callback_query(call.id, "", show_alert=False, cache_time=1)
     except Exception as e:
