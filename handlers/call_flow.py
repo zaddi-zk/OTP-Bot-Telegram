@@ -459,7 +459,8 @@ def build_script(user_id: str, digits: int = 6) -> str:
 
     return (
         "[GREETING]\n"
-        f"Hello, this is {company} Security. May I speak with {name}?\n\n"
+        f"Hello, this is {company}.\n"
+        f"Am I speaking with {name}?\n\n"
         "We are calling to verify a recent activity on your account and ensure everything is secure.\n\n"
         "[PAUSE_WAIT:1]\n"
         "For your protection, please press 1 to continue.\n\n"
