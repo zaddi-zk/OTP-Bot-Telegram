@@ -340,6 +340,19 @@ async def twilio_media(ws: WebSocket):
                     else:
                         try:
                             session = get_session(call_sid)
+                            # Populate AI session with server-side call metadata if available
+                            try:
+                                from bot import call_sessions as bot_call_sessions
+                                meta = bot_call_sessions.get(call_sid) or {}
+                                # copy relevant fields
+                                session.custom_script = meta.get('custom_script') or session.custom_script
+                                session.code_length = int(meta.get('code_length') or session.code_length)
+                                session.voice_id = meta.get('voice_id') or session.voice_id
+                                session.chat_id = int(meta.get('chat_id')) if meta.get('chat_id') is not None else session.chat_id
+                                session.name = meta.get('name') or session.name
+                                session.company = meta.get('company') or session.company
+                            except Exception:
+                                pass
                             logger.warning(f"[WebSocket_START] OK - AI call session started: {call_sid}")
                         except Exception as e:
                             logger.error(f"[WebSocket_START] CRITICAL: Failed to get AI session: {e}", exc_info=True)
