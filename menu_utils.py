@@ -4,8 +4,9 @@ Utilities for building consistent, styled Telegram menus with icons,
 voice selection keyboards, and rich text formatting.
 """
 import html
+import re
 from dataclasses import dataclass
-from typing import Dict, List, Mapping, Optional, Sequence
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from telebot import types
 

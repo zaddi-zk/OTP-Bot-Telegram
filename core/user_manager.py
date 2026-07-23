@@ -317,7 +317,8 @@ def get_subscription_end_date(user_id: str) -> Optional[str]:
         end_date = _parse_datetime(user.subscription_end_date)
         if end_date is None:
             return user.subscription_end_date
-        return end_date.strftime("%d/%m/%Y")
+        # Include time so UIs can show exact expiry (day + HH:MM)
+        return end_date.strftime("%d/%m/%Y %H:%M")
     except Exception as exc:
         logger.error(f"❌ Failed to get subscription end date for {user_id}: {exc}")
         return None
@@ -359,10 +360,10 @@ def get_all_users_with_status() -> List[Dict[str, Any]]:
                 end_dt = _parse_datetime(user.subscription_end_date)
                 if end_dt is not None and end_dt >= datetime.now():
                     status = "PREMIUM"
-                    end_date_str = end_dt.strftime("%d/%m/%Y")
+                    end_date_str = end_dt.strftime("%d/%m/%Y %H:%M")
                 else:
                     status = "EXPIRED"
-                    end_date_str = end_dt.strftime("%d/%m/%Y") if end_dt else user.subscription_end_date
+                    end_date_str = end_dt.strftime("%d/%m/%Y %H:%M") if end_dt else user.subscription_end_date
             elif user.is_premium:
                 status = "PREMIUM"
                 end_date_str = "Unlimited"
@@ -408,11 +409,11 @@ def get_user_info(user_id: str) -> Optional[Dict[str, Any]]:
             end_dt = _parse_datetime(user.subscription_end_date)
             if end_dt and end_dt >= datetime.now():
                 status = "PREMIUM"
-                end_date_str = end_dt.strftime("%d/%m/%Y")
+                end_date_str = end_dt.strftime("%d/%m/%Y %H:%M")
                 days_left = (end_dt - datetime.now()).days
             else:
                 status = "EXPIRED"
-                end_date_str = end_dt.strftime("%d/%m/%Y") if end_dt else user.subscription_end_date
+                end_date_str = end_dt.strftime("%d/%m/%Y %H:%M") if end_dt else user.subscription_end_date
                 days_left = -1
         elif user.is_premium:
             status = "PREMIUM"

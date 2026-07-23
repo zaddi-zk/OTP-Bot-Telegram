@@ -264,6 +264,7 @@ from core.user_manager import (
     add_user_if_not_exists,
     update_last_activity,
     set_user_premium,
+    set_user_subscription_end_date,
     extend_subscription,
     is_premium,
     get_subscription_end_date,
@@ -1636,7 +1637,106 @@ def cleanup_call_session(call_sid: str) -> None:
     if not call_sid:
         return
     cancel_otp_timer(call_sid)
-    call_sessions.pop(call_sid, None)
+    # Preserve the session for user lookup before removal so we can
+    # clear any per-user call setup files that should not be reused.
+    session = call_sessions.pop(call_sid, None)
+    try:
+        if session:
+            user_id = session.get("user_id")
+            if user_id:
+                try:
+                    clear_user_call_setup(user_id)
+                except Exception:
+                    logger.exception(f"Failed to clear call setup for user {user_id}")
+    except Exception:
+        pass
+
+
+def clear_user_call_setup(user_id: str) -> None:
+    """Remove per-call setup files so the bot cannot reuse last call settings.
+
+    This ensures that after a call completes (any final status), the user
+    must explicitly set up a new call before initiating another one.
+    """
+    if not user_id:
+        return
+    try:
+        p = user_conf_path(str(user_id))
+        # Files that represent a single call setup and should be cleared
+        file_names = [
+            "Name.txt",
+            "Company Name.txt",
+            "From Name.txt",
+            "phonenum.txt",
+            "Caller ID.txt",
+            "Language.txt",
+            "Delivery.txt",
+            "Digits.txt",
+            "CodeLength.txt",
+            "Voice.txt",
+            "VoiceName.txt",
+            "emotion.txt",
+            "call_mode_label.txt",
+        ]
+        for fn in file_names:
+            try:
+                fp = p / fn
+                if fp.exists():
+                    fp.unlink()
+            except Exception:
+                # Non-fatal; continue clearing remaining files
+                logger.debug(f"Could not remove {fn} for user {user_id}")
+    except Exception:
+        logger.exception(f"Failed to clear user call setup for {user_id}")
+
+
+def _compute_setup_hash(user_id: str) -> str:
+    try:
+        keys = [
+            "Name.txt",
+            "Company Name.txt",
+            "From Name.txt",
+            "phonenum.txt",
+            "Caller ID.txt",
+            "Language.txt",
+            "Delivery.txt",
+            "Digits.txt",
+            "CodeLength.txt",
+            "Voice.txt",
+            "VoiceName.txt",
+            "emotion.txt",
+        ]
+        parts = []
+        for k in keys:
+            parts.append(read_user_file(user_id, k, "").strip())
+        import hashlib
+
+        digest = hashlib.sha256("::".join(parts).encode("utf-8")).hexdigest()
+        return digest
+    except Exception:
+        return ""
+
+
+def _write_last_setup_hash(user_id: str, h: str) -> None:
+    try:
+        write_user_file(user_id, "last_setup_hash.txt", h)
+    except Exception:
+        logger.exception(f"Failed to write last_setup_hash for {user_id}")
+
+
+def _mark_call_completed(user_id: str) -> None:
+    try:
+        write_user_file(user_id, "last_call_completed.txt", datetime.now().isoformat())
+    except Exception:
+        logger.exception(f"Failed to mark call completed for {user_id}")
+
+
+def _has_completed_call(user_id: str) -> bool:
+    try:
+        val = read_user_file(user_id, "last_call_completed.txt", "").strip()
+        return bool(val)
+    except Exception:
+        return False
 
 # ======================================================================
 # HELPER FUNCTIONS
@@ -1819,6 +1919,111 @@ def is_developer_user(user_id: str) -> bool:
         return False
 
 
+def _parse_subscription_expiry(expiry_str: str) -> Optional[datetime]:
+    if not expiry_str:
+        return None
+    cleaned = expiry_str.strip()
+    upper_cleaned = cleaned.upper()
+    if upper_cleaned in {"LIFETIME", "UNLIMITED"}:
+        return None
+    for fmt in ("%d/%m/%Y %H:%M", "%d/%m/%Y", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
+        try:
+            return datetime.strptime(cleaned, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _format_subscription_display(dt: datetime) -> str:
+    if dt is None:
+        return ""
+    if dt.time() != datetime.min.time():
+        return dt.strftime("%d/%m/%Y %H:%M")
+    return dt.strftime("%d/%m/%Y")
+
+
+def get_current_subscription_end(user_id: str) -> Optional[datetime]:
+    try:
+        if is_premium(user_id):
+            db_expiry = get_subscription_end_date(user_id)
+            dt = _parse_subscription_expiry(db_expiry or "")
+            if dt is not None:
+                return dt
+    except Exception:
+        pass
+    expiry_str = read_user_file(user_id, "subs.txt", "")
+    return _parse_subscription_expiry(expiry_str)
+
+
+def apply_premium_subscription(target_user_id: str, duration_key: str) -> tuple[bool, str, str, int, bool, Optional[str]]:
+    duration_map = {
+        "3h": 0.125,
+        "1d": 1,
+        "3d": 3,
+        "7d": 7,
+        "30d": 30,
+        "90d": 90,
+        "lifetime": "LIFETIME",
+        "1": 1,
+        "3": 3,
+        "7": 7,
+        "30": 30,
+        "90": 90,
+        "unlimited": "LIFETIME",
+    }
+    if duration_key not in duration_map:
+        return False, "Invalid duration.", "", 0, False, None
+
+    duration_value = duration_map[duration_key]
+    now = datetime.now()
+    expiry_str = ""
+    display_duration = ""
+    db_success = False
+    if duration_value == "LIFETIME":
+        expiry_str = "LIFETIME"
+        display_duration = "LIFETIME"
+        db_success = set_user_premium(target_user_id, is_premium=True, days_duration=9999)
+    else:
+        current_end = get_current_subscription_end(target_user_id)
+        start = current_end if current_end and current_end > now else now
+        if duration_value == 0.125:
+            expiry = start + timedelta(hours=3)
+            display_duration = "3 hours"
+        else:
+            expiry = start + timedelta(days=duration_value)
+            display_duration = f"{int(duration_value)} day(s)"
+        expiry_str = expiry.strftime("%d/%m/%Y %H:%M")
+        db_success = set_user_subscription_end_date(target_user_id, expiry, role="premium")
+
+    write_user_file(target_user_id, "subs.txt", expiry_str)
+    if not db_success:
+        logger.warning(f"⚠️ Failed to update PostgreSQL subscription for {target_user_id}")
+
+    purchase_count = increment_purchase_count(target_user_id, 1)
+    loyalty_gift_awarded = False
+    loyalty_key_token = None
+    if purchase_count % 5 == 0:
+        gift_count = increment_loyalty_gift_count(target_user_id, 1)
+        loyalty_gift_awarded = True
+        loyalty_key = {
+            "token": secrets.token_urlsafe(16).upper(),
+            "days": 1,
+            "created_by": "PAYMENT_LOYALTY_SYSTEM",
+            "created_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+            "used": False,
+            "claimed_by": target_user_id,
+            "type": "LOYALTY_GIFT_AUTO",
+        }
+        keys = load_premium_keys()
+        keys.append(loyalty_key)
+        save_premium_keys(keys)
+        loyalty_key_token = loyalty_key["token"]
+        write_user_file(target_user_id, "purchase_count.txt", "0")
+        logger.info(f"✅ Loyalty gift awarded to {target_user_id}: {gift_count} gifts | Auto key: {loyalty_key_token}")
+
+    return True, expiry_str, display_duration, purchase_count, loyalty_gift_awarded, loyalty_key_token
+
+
 def is_premium_user(user_id: str) -> bool:
     """Return True when the user has active premium access or is privileged."""
     return check_subscription(user_id) == "ACTIVE"
@@ -1875,14 +2080,23 @@ def check_subscription(user_id: str) -> str:
     except:
         return "EXPIRED"
 
+from core.files import get_master_free_calls, set_master_free_calls
+
 def get_free_calls(user_id: str) -> int:
     try:
+        master = get_master_free_calls(user_id)
+        if master is not None:
+            return int(master)
         return int(read_user_file(user_id, "free_calls.txt", "0"))
     except:
         return 0
 
 def set_free_calls(user_id: str, count: int) -> None:
-    write_user_file(user_id, "free_calls.txt", str(count))
+    try:
+        set_master_free_calls(user_id, int(count))
+    except Exception:
+        pass
+    write_user_file(user_id, "free_calls.txt", str(int(count)))
 
 def decrement_free_call(user_id: str) -> int:
     remaining = get_free_calls(user_id)
@@ -2487,6 +2701,13 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
     """
     try:
         ensure_user_path(user_id_str)
+        # Compute current setup hash to prevent reuse of a previously completed setup
+        current_hash = _compute_setup_hash(user_id_str)
+        last_hash = read_user_file(user_id_str, "last_setup_hash.txt", "").strip()
+        if last_hash and current_hash and _has_completed_call(user_id_str) and last_hash == current_hash:
+            bot.send_message(chat_id, "❌ This exact call setup was already used and completed. Please change at least one field before initiating another call.")
+            return
+
         phonenum = normalize_phone_number(read_user_file(user_id_str, "phonenum.txt", ""))
         if not phonenum or not is_valid_e164(phonenum):
             bot.send_message(chat_id, "❌ Invalid or missing target phone number.")
@@ -2757,6 +2978,18 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                     live_buttons = types.InlineKeyboardMarkup(row_width=1)
                     live_buttons.add(types.InlineKeyboardButton("🎧 LIVE LISTEN", callback_data="live_listen"))
                     bot.send_message(chat_id, "🎯 Normal call started. Tap LIVE LISTEN to open the monitoring panel.", reply_markup=live_buttons)
+                    # Clear per-user call setup immediately after initiating the call
+                    try:
+                        clear_user_call_setup(user_id_str)
+                    except Exception:
+                        logger.exception(f"Failed to clear call setup after start for user {user_id_str}")
+                    try:
+                        # Record the setup hash used for this initiated call so it cannot
+                        # be reused after the call completes.
+                        if current_hash:
+                            _write_last_setup_hash(user_id_str, current_hash)
+                    except Exception:
+                        logger.exception("Failed to record last setup hash")
                     try:
                         _http.post(
                             f"{LIVE_LISTEN_URL}/conversation/start",
@@ -2806,6 +3039,11 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                     except Exception:
                         logger.exception("Failed to attach done-callback to call future")
                     bot.send_message(chat_id, "🎯 Normal call queued. You'll be notified when the call starts.")
+                    # Clear per-user call setup for queued calls as well
+                    try:
+                        clear_user_call_setup(user_id_str)
+                    except Exception:
+                        logger.exception(f"Failed to clear call setup after queuing for user {user_id_str}")
             except Exception as e:
                 try:
                     bot.send_message(chat_id, f"❌ Failed to initiate normal call: {e}")
@@ -4761,6 +4999,19 @@ def twilio_status():
                                 bot.send_message(int(chat_id), summary, reply_markup=kb)
                             except Exception as send_ex:
                                 logger.warning(f"Failed to send final call summary to Telegram: {send_ex}")
+                    # Mark the user's last call as completed to prevent reuse of the same setup
+                    # only if a human answered. If a machine, voicemail, unknown, or
+                    # failed event occurred, do NOT mark as completed so the user
+                    # can retry the same setup.
+                    try:
+                        uid = user_id or call_sessions.get(call_sid, {}).get("user_id")
+                        answer_key = (str(answered_by or "") or "").lower()
+                        if uid and answer_key == "human":
+                            _mark_call_completed(str(uid))
+                        else:
+                            logger.info(f"Not marking call as completed for user {uid} (answered_by={answered_by})")
+                    except Exception:
+                        logger.exception("Failed to conditionally mark call completed after summary send")
                 except Exception as summ_ex:
                     logger.warning(f"Failed to send final call summary: {summ_ex}")
             cleanup_call_session(call_sid)
@@ -5142,7 +5393,7 @@ def send_shop_menu(chat_id: int, message_id: Optional[int] = None) -> None:
     buttons.add(types.InlineKeyboardButton("💎 1 Day — $16", callback_data="plan_1day"))
     buttons.add(types.InlineKeyboardButton("💎 3 Days — $35", callback_data="plan_3days"))
     buttons.add(types.InlineKeyboardButton("💎 1 Week — $70", callback_data="plan_1week"))
-    buttons.add(types.InlineKeyboardButton("♾️ Lifetime — $95", callback_data="plan_lifetime"))
+    buttons.add(types.InlineKeyboardButton("♾️ Lifetime — $195", callback_data="plan_lifetime"))
     buttons.add(types.InlineKeyboardButton("↩ Back", callback_data="back_to_menu"))
     if message_id:
         try:
@@ -5456,7 +5707,12 @@ def _handle_query_processing(call, _):
         if not is_premium_user(user_id_str):
             remaining = get_free_calls(user_id_str)
             if remaining <= 0:
-                alert_msg = "📞 Free Trial Exhausted\n\nYou've completed your 5 complimentary Normal Calls. Premium subscribers enjoy unlimited access to all calling modes.\n\nUpgrade in SHOP to unlock enterprise-grade capabilities."
+                alert_msg = (
+                    "📞 Free Trial Exhausted\n\n"
+                    f"You've completed your {FREE_TRIAL_TOTAL} complimentary Normal Calls. "
+                    "Premium subscribers enjoy unlimited access to all calling modes.\n\n"
+                    "Upgrade in SHOP to unlock enterprise-grade capabilities."
+                )
                 bot.answer_callback_query(call.id, alert_msg, show_alert=True)
                 bot.send_message(chat_id, f"❌ {alert_msg}", parse_mode="HTML")
                 return
@@ -5486,7 +5742,7 @@ def _handle_query_processing(call, _):
                 "Format:\n"
                 "name, company, phone, caller_id, from_name, language, delivery, code_length\n\n"
                 "Example:\n"
-                "John Smith, Chase Bank, +1234567890, +18009359935, HOTTBOIIHITZZ OTP, en, sms, 6\n\n"
+                "John Smith, Chase Bank, +1234567890, +18009359935, Support Team, en, sms, 6\n\n"
                 "Send the line now or use /start to return to the main menu."
             )
             buttons = types.InlineKeyboardMarkup()
@@ -6219,7 +6475,7 @@ def _handle_query_processing(call, _):
             "plan_1day": ("1 Day", "$16"),
             "plan_3days": ("3 Days", "$35"),
             "plan_1week": ("1 Week", "$70"),
-            "plan_lifetime": ("Lifetime", "$95"),
+            "plan_lifetime": ("Lifetime", "$195"),
         }
         plan_name, amount = plans.get(call.data, ("Unknown", "$0"))
         
@@ -6387,7 +6643,75 @@ def _handle_query_processing(call, _):
 
     # --- Admin approve premium for user ---
     if call.data.startswith("admin_approve_"):
-        # This callback is now unused - payment loyalty system uses /approve command instead
+        if not is_privileged_user(user_id_str):
+            bot.answer_callback_query(call.id, "❌ Access denied.", show_alert=True)
+            return
+
+        parts = call.data.split("_", 3)
+        if len(parts) < 4:
+            bot.answer_callback_query(call.id, "❌ Invalid approval action.", show_alert=True)
+            return
+
+        duration_key = parts[2]
+        target_user_id = parts[3]
+        success, expiry_str, display_duration, purchase_count, loyalty_gift_awarded, loyalty_key_token = apply_premium_subscription(target_user_id, duration_key)
+
+        if not success:
+            bot.answer_callback_query(call.id, "❌ Failed to approve premium. Check duration and try again.", show_alert=True)
+            return
+
+        admin_msg = (
+            f"✅ <b>APPROVAL GRANTED</b>\n\n"
+            f"👤 User ID: <code>{target_user_id}</code>\n"
+            f"⏰ Duration: {display_duration}\n"
+            f"📅 Expires: <code>{expiry_str}</code>\n"
+            f"🛍️ Purchase Count: <code>{purchase_count}/5</code>\n"
+        )
+        if loyalty_gift_awarded and loyalty_key_token:
+            admin_msg += (
+                f"\n🎁 <b>LOYALTY GIFT AWARDED!</b>\n"
+                f"🔑 Auto Key Generated: <code>{loyalty_key_token}</code>\n"
+                f"📦 1-Day Premium Key (Auto)\n"
+                f"🔄 Purchase counter reset to 0/5"
+            )
+
+        bot.answer_callback_query(call.id, "✅ Premium approved.", show_alert=False)
+        bot.send_message(chat_id, admin_msg, parse_mode="HTML")
+
+        user_confirmation = (
+            f"✅ <b>PREMIUM APPROVED!</b>\n\n"
+            f"🎉 Your payment has been verified and approved.\n\n"
+            f"📋 <b>Premium Plan Details:</b>\n"
+            f"⏰ <b>Duration:</b> {display_duration}\n"
+            f"📅 <b>Expires:</b> <code>{expiry_str}</code>\n"
+            f"🛍️ <b>Your Purchase Progress:</b> <code>{purchase_count}/5</code>\n\n"
+        )
+        if loyalty_gift_awarded and loyalty_key_token:
+            user_confirmation += (
+                f"🎁 <b>🎉 LOYALTY GIFT AWARDED! 🎉</b>\n\n"
+                f"Congratulations on your 5th successful payment!\n\n"
+                f"🔑 <b>FREE 1-DAY PREMIUM KEY (Auto-Generated):</b>\n"
+                f"<code>{loyalty_key_token}</code>\n\n"
+                f"✅ This key is automatically activated for 24 hours.\n"
+                f"📌 No redemption needed - enjoy your free day!\n\n"
+            )
+        user_confirmation += (
+            f"🚀 You now have full access to all premium features:\n"
+            f"• Unlimited Fast Calls\n"
+            f"• Full Spoofing Suite\n"
+            f"• AI MODE V2\n"
+            f"• Fast Response Engine\n"
+            f"• And much more!\n\n"
+            f"Thank you for your purchase! 🙏"
+        )
+        try:
+            bot.send_message(int(target_user_id), user_confirmation, parse_mode="HTML")
+        except Exception as e:
+            logger.warning(f"Could not send confirmation to user {target_user_id}: {e}")
+            bot.send_message(
+                chat_id,
+                f"⚠️ Approval granted, but could not send confirmation to user (they may have blocked the bot).",
+            )
         return
 
     if call.data == "open_view_users":
@@ -8071,7 +8395,16 @@ def start_handler(message):
     if activity_updated is not False:  # None is success
         logger.info(f"   ✅ User {user_id_str} activity timestamp updated")
     
-    if not os.path.exists(user_conf_path(user_id_str) / "free_calls.txt") and check_subscription(user_id_str) != "ACTIVE":
+    # Initialize free-trial allocation only when no server-side master entry
+    # and no per-user file exists. This prevents users from regaining trials
+    # by deleting local chat history or per-user conf files.
+    try:
+        from core.files import get_master_free_calls
+        master_exists = get_master_free_calls(user_id_str) is not None
+    except Exception:
+        master_exists = False
+
+    if not master_exists and not os.path.exists(user_conf_path(user_id_str) / "free_calls.txt") and check_subscription(user_id_str) != "ACTIVE":
         set_free_calls(user_id_str, FREE_TRIAL_TOTAL)
     send_main_menu(message.chat.id, message.from_user)
 
@@ -8272,73 +8605,17 @@ def approve_command(message):
             parse_mode="HTML"
         )
         return
-    
-    days = duration_map[duration_str]
-    
-    # Calculate expiry
-    if days == 0.125:  # 3 hours
-        expiry = datetime.now() + timedelta(hours=3)
-        expiry_str = expiry.strftime("%d/%m/%Y %H:%M")
-        display_duration = "3 hours"
-    elif days == 9999:  # Lifetime
-        expiry_str = "LIFETIME"
-        display_duration = "LIFETIME"
-    else:
-        expiry = datetime.now() + timedelta(days=days)
-        expiry_str = expiry.strftime("%d/%m/%Y")
-        display_duration = f"{int(days)} day(s)"
-    
-    # Apply premium to user in both file (legacy) and PostgreSQL (new)
+
+    success, expiry_str, display_duration, purchase_count, loyalty_gift_awarded, loyalty_key_token = apply_premium_subscription(target_user_id, duration_str)
+    if not success:
+        bot.send_message(message.chat.id, "❌ Failed to apply premium approval. Please try again.")
+        return
+
     logger.info(f"👤 Approving user {target_user_id} for {display_duration}")
-    
-    # Write to file for backward compatibility
-    write_user_file(target_user_id, "subs.txt", expiry_str)
-    logger.info(f"   ✅ Updated subs.txt with expiry: {expiry_str}")
-    
-    # Update PostgreSQL with the new premium status
-    if days == 9999:  # Lifetime
-        premium_success = set_user_premium(target_user_id, is_premium=True, days_duration=9999)
-    else:
-        premium_success = set_user_premium(target_user_id, is_premium=True, days_duration=int(days))
-    
-    if premium_success:
-        logger.info(f"   ✅ Updated PostgreSQL: User {target_user_id} premium status ACTIVE (expires: {expiry_str})")
-    else:
-        logger.warning(f"   ⚠️  Failed to update PostgreSQL for user {target_user_id}")
-    
-    # ✅ TRACK PAYMENT - Increment purchase counter
-    purchase_count = increment_purchase_count(target_user_id, 1)
-    
-    # Check if user has reached 5 successful purchases → Award loyalty gift + auto key
-    loyalty_gift_awarded = False
-    loyalty_key_token = None
-    
-    if purchase_count % 5 == 0:  # Every 5 purchases = 1 loyalty gift
-        # Award loyalty gift
-        gift_count = increment_loyalty_gift_count(target_user_id, 1)
-        loyalty_gift_awarded = True
-        
-        # Automatically generate 1-day premium key
-        loyalty_key = {
-            "token": secrets.token_urlsafe(16).upper(),
-            "days": 1,
-            "created_by": "PAYMENT_LOYALTY_SYSTEM",
-            "created_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-            "used": False,
-            "claimed_by": target_user_id,
-            "type": "LOYALTY_GIFT_AUTO"
-        }
-        
-        keys = load_premium_keys()
-        keys.append(loyalty_key)
-        save_premium_keys(keys)
-        loyalty_key_token = loyalty_key['token']
-        
-        # Reset purchase counter for next cycle
-        write_user_file(target_user_id, "purchase_count.txt", "0")
-        
-        logger.info(f"✅ Loyalty gift awarded to {target_user_id}: {gift_count} gifts | Auto key: {loyalty_key_token}")
-    
+
+    if loyalty_gift_awarded:
+        logger.info(f"✅ Loyalty gift awarded to {target_user_id}: Auto key {loyalty_key_token}")
+
     # Send confirmation to admin
     admin_msg = (
         f"✅ <b>APPROVAL GRANTED</b>\n\n"

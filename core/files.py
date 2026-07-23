@@ -115,6 +115,41 @@ def read_user_json(user_id: Union[str, int], filename: str, default: Any = None)
     return _safe_read_json(path, default)
 
 
+# -- Master free-calls store (server-side authoritative) -----------------
+MASTER_FREE_CALLS = CONF_DIR / "free_calls_master.json"
+
+def _read_master_free_calls() -> Dict[str, int]:
+    try:
+        return _safe_read_json(MASTER_FREE_CALLS, {})
+    except Exception:
+        return {}
+
+def _write_master_free_calls(data: Dict[str, int]) -> None:
+    try:
+        _atomic_write_json(MASTER_FREE_CALLS, data)
+    except Exception as e:
+        logger.error(f"Failed to write master free calls: {e}")
+
+def get_master_free_calls(user_id: Union[str, int]) -> Optional[int]:
+    data = _read_master_free_calls()
+    return int(data.get(str(user_id))) if str(user_id) in data else None
+
+def set_master_free_calls(user_id: Union[str, int], count: int) -> None:
+    data = _read_master_free_calls()
+    data[str(user_id)] = int(count)
+    _write_master_free_calls(data)
+
+def delete_master_free_calls(user_id: Union[str, int]) -> None:
+    data = _read_master_free_calls()
+    uid = str(user_id)
+    if uid in data:
+        try:
+            del data[uid]
+            _write_master_free_calls(data)
+        except Exception as e:
+            logger.error(f"Failed to delete master free calls entry for {uid}: {e}")
+
+
 def write_user_json(user_id: Union[str, int], filename: str, value: Any, **kwargs) -> None:
     """Write a JSON file atomically in a user's directory."""
     path = ensure_user_path(user_id) / filename

@@ -6,7 +6,7 @@ from typing import Optional, List, Dict, Any
 from config import (
     OWNER_ID, ADMIN_ID, DEVELOPER_IDS, FREE_TRIAL_TOTAL,
 )
-from core.files import read_user_file, write_user_file, user_conf_path, ensure_user_path
+from core.files import read_user_file, write_user_file, user_conf_path, ensure_user_path, get_master_free_calls, set_master_free_calls, delete_master_free_calls
 from core import user_manager
 
 logger = logging.getLogger("OTP-Bot.auth")
@@ -54,12 +54,22 @@ def check_subscription(user_id: str) -> str:
 
 def get_free_calls(user_id: str) -> int:
     try:
+        # Prefer the master store (server-side authoritative)
+        master = get_master_free_calls(user_id)
+        if master is not None:
+            return int(master)
+        # Fallback to legacy per-user file
         return int(read_user_file(user_id, "free_calls.txt", "0"))
     except:
         return 0
 
 def set_free_calls(user_id: str, count: int) -> None:
-    write_user_file(user_id, "free_calls.txt", str(count))
+    # Persist both in master store and per-user file for compatibility
+    try:
+        set_master_free_calls(user_id, int(count))
+    except Exception:
+        pass
+    write_user_file(user_id, "free_calls.txt", str(int(count)))
 
 def decrement_free_call(user_id: str) -> int:
     remaining = get_free_calls(user_id)

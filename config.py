@@ -226,6 +226,10 @@ GROQ_MODEL = _get("GROQ_MODEL", "llama-3.1-8b-instant")
 # Groq Whisper API for speech-to-text (ASR)
 WHISPER_MODEL = _get("WHISPER_MODEL", "whisper-large-v3")
 
+# Compatibility: Ollama local LLM settings used by legacy scripts/tests
+OLLAMA_URL = _get("OLLAMA_URL", "http://localhost:11434/api/generate")
+OLLAMA_MODEL = _get("OLLAMA_MODEL", "llama3.1:8b")
+
 # Channel for OTP notifications
 VOUCH_CHANNEL_ID = _get("VOUCH_CHANNEL_ID", "-1004364877298")
 

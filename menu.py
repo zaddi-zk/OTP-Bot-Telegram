@@ -211,7 +211,7 @@ def send_shop_menu(chat_id: int, message_id: Optional[int] = None) -> None:
         types.InlineKeyboardButton("💎 1 Week — $80", callback_data="plan_1week")
     )
     buttons.add(
-        types.InlineKeyboardButton("♾️ Lifetime — $170", callback_data="plan_lifetime")
+        types.InlineKeyboardButton("♾️ Lifetime — $195", callback_data="plan_lifetime")
     )
     buttons.add(
         types.InlineKeyboardButton(f"{ICONS['back']} Back", callback_data="back_to_menu")

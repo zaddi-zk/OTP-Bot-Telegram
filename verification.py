@@ -214,7 +214,7 @@ PLAN_MAPPING = {
     "plan_1day": {"name": "1 Day", "price": "$16", "days": 1},
     "plan_3days": {"name": "3 Days", "price": "$35", "days": 3},
     "plan_1week": {"name": "1 Week", "price": "$70", "days": 7},
-    "plan_lifetime": {"name": "Lifetime", "price": "$95", "days": 9999},
+    "plan_lifetime": {"name": "Lifetime", "price": "$195", "days": 9999},
 }
 
 # ======================================================================
