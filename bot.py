@@ -5624,25 +5624,6 @@ def send_live_listen_panel(chat_id: int, user_id_str: str) -> None:
     buttons.add(types.InlineKeyboardButton("↩ Back", callback_data="back_to_menu"))
     bot.send_message(chat_id, "\n".join(lines), reply_markup=buttons, parse_mode="HTML")
 
-# ======================================================================
-# TELEGRAM CALLBACK HANDLERS
-# ======================================================================
-def show_under_development_notice(chat_id: int, call_id: Optional[str] = None, feature_name: str = "This feature") -> None:
-    """Show a visible under-development alert for blocked callback actions."""
-    message = (
-        f"🚧 <b>{feature_name}</b> is currently under development.\n\n"
-        "This feature is not available yet. Please check back soon for updates."
-    )
-    try:
-        if call_id:
-            bot.answer_callback_query(call_id, f"{feature_name} is under development", show_alert=True, cache_time=1)
-    except Exception as e:
-        logger.debug(f"Failed to show callback popup: {e}")
-    try:
-        bot.send_message(chat_id, message, parse_mode="HTML")
-    except Exception as e:
-        logger.debug(f"Failed to send under-development message: {e}")
-
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_query(call):
@@ -5651,29 +5632,6 @@ def handle_query(call):
         return
 
     user_id_str = str(call.from_user.id)
-    restricted_buttons = {"schedule_menu"}
-    if call.data in restricted_buttons and not is_privileged_user(user_id_str):
-        try:
-            bot.answer_callback_query(
-                call.id,
-                "⚠️ Under Development — This feature is temporarily restricted to developer testing.",
-                show_alert=True,
-            )
-        except Exception as e:
-            logger.debug(f"Failed to answer restricted callback: {e}")
-        return
-
-    if call.data in {"start_call", "crack_blast", "ai_mode"} and not is_privileged_user(user_id_str):
-        feature_name = {
-            "start_call": "Start Call",
-            "crack_blast": "Crack Blast",
-            "ai_mode": "AI Mode",
-        }.get(call.data, "This feature")
-        try:
-            show_under_development_notice(call.message.chat.id, call.id, feature_name)
-        except Exception as e:
-            logger.debug(f"Failed to show under-development notice: {e}")
-        return
 
     try:
         bot.answer_callback_query(call.id, "", show_alert=False, cache_time=1)
@@ -5722,7 +5680,7 @@ def _handle_query_processing(call, _):
         buttons.add(types.InlineKeyboardButton("↩ Back", callback_data="back_to_menu"))
         bot.send_message(
             chat_id,
-            "🚀 <b>Start Call</b>\n\nChoose the developer call flow you want to open.",
+            "🚀 <b>Start Call</b>\n\nChoose the call flow you want to open.",
             reply_markup=buttons,
             parse_mode="HTML",
         )
@@ -6219,7 +6177,7 @@ def _handle_query_processing(call, _):
         buttons.add(types.InlineKeyboardButton("❌ CANCEL", callback_data="crack_blast_cancel"))
         bot.send_message(
             chat_id,
-            "💥 <b>Crack Blast</b>\n\nEnter your target numbers now. Use one number per line or comma-separated values.\n\nDeveloper access granted.",
+            "💥 <b>Crack Blast</b>\n\nEnter your target numbers now. Use one number per line or comma-separated values.",
             reply_markup=buttons,
             parse_mode="HTML",
         )
@@ -6454,7 +6412,7 @@ def _handle_query_processing(call, _):
         buttons.add(types.InlineKeyboardButton("↩ Back", callback_data="back_to_menu"))
         bot.send_message(
             chat_id,
-            "🧠 <b>AI Mode</b>\n\nDeveloper preview available. Choose an AI flow to continue.",
+            "🧠 <b>AI Mode</b>\n\nChoose an AI flow to continue.",
             reply_markup=buttons,
             parse_mode="HTML",
         )
@@ -7076,16 +7034,7 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
         return
 
     # --- Fallback ---
-    if is_privileged_user(user_id_str):
-        callback_data = html.escape(str(call.data or "<none>"))
-        current_state = html.escape(str(get_user_state(user_id_str)))
-        bot.send_message(
-            chat_id,
-            f"⚠️ Developer callback not handled: <code>{callback_data}</code>\nState: <code>{current_state}</code>",
-            parse_mode="HTML",
-        )
-    else:
-        bot.send_message(chat_id, "ℹ️ Unknown command. Use /start to return.")
+    bot.send_message(chat_id, "ℹ️ Unknown command. Use /start to return.")
 
 # ======================================================================
 # REPORT TWILIO CALL STATUS (non-blocking, faster)
@@ -7560,11 +7509,6 @@ def handle_stateful_text(message):
         send_custom_call_ready_panel(message.chat.id, user_id_str)
         return
 
-    if isinstance(state, str) and state.startswith("crack_blast_step_"):
-        show_under_development_notice(message.chat.id, None, "Crack Blast")
-        clear_user_state(user_id_str)
-        return
-
     if state == "custom_call_schedule":
         parts = [p.strip() for p in text.split(",")]
         if len(parts) != 3:
@@ -7791,8 +7735,8 @@ def handle_stateful_text(message):
 
     # AI Mode phone input
     if state == "ai_mode_awaiting_phone":
-        show_under_development_notice(message.chat.id, None, "AI Mode")
         clear_user_state(user_id_str)
+        bot.send_message(message.chat.id, "❌ AI Mode input is not available yet. Please use the AI Mode menu instead.")
         return
 
     # Custom script creation
