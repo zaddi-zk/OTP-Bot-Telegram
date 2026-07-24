@@ -5714,7 +5714,7 @@ def _handle_query_processing(call, _):
         return
 
     # --- Start call submenu ---
-    if call.data == "start_call":
+    if call.data == "start_call" and not is_developer_user(user_id_str):
         show_under_development_notice(chat_id, call.id, "Start Call")
         return
 
@@ -6203,7 +6203,7 @@ def _handle_query_processing(call, _):
         bot.send_message(chat_id, text, parse_mode="HTML")
         return
 
-    if call.data == "crack_blast":
+    if call.data == "crack_blast" and not is_developer_user(user_id_str):
         show_under_development_notice(chat_id, call.id, "Crack Blast")
         return
 
@@ -6430,7 +6430,7 @@ def _handle_query_processing(call, _):
         return
 
     # --- AI Mode ---
-    if call.data == "ai_mode":
+    if call.data == "ai_mode" and not is_developer_user(user_id_str):
         show_under_development_notice(chat_id, call.id, "AI Mode")
         return
 
