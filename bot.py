@@ -89,6 +89,7 @@ from gtts import gTTS
 from dotenv import load_dotenv
 from handlers.call_flow import amd_callback_flask
 from telebot.apihelper import ApiTelegramException
+import config as app_config
 
 _http = requests.Session()
 _http_retries = Retry(total=2, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])
@@ -145,13 +146,13 @@ MAIN_CHANNEL_ID = _get("MAIN_CHANNEL_ID", "")
 BACKUP_CHANNEL_ID = _get("BACKUP_CHANNEL_ID", "")
 VOUCH_CHANNEL_ID = _get("VOUCH_CHANNEL_ID", "")
 # Admins
-OWNER_ID = _get("OWNER_ID")
+OWNER_ID = _get("OWNER_ID", app_config.OWNER_ID)
 if OWNER_ID is not None:
     try:
         OWNER_ID = int(OWNER_ID)
     except:
         OWNER_ID = None
-ADMIN_ID = _get("ADMIN_ID")
+ADMIN_ID = _get("ADMIN_ID", app_config.ADMIN_ID)
 if ADMIN_ID is not None:
     try:
         ADMIN_ID = int(ADMIN_ID)
@@ -164,6 +165,8 @@ if DEVELOPER_IDS_STR:
         pid = pid.strip()
         if pid and pid.isdigit():
             DEVELOPER_IDS.append(int(pid))
+elif getattr(app_config, "DEVELOPER_IDS", None):
+    DEVELOPER_IDS = [int(pid) for pid in app_config.DEVELOPER_IDS if str(pid).strip().isdigit()]
 # Free trial
 FREE_TRIAL_TOTAL = int(_get("FREE_TRIAL_CALLS", "5"))
 # Payment addresses
