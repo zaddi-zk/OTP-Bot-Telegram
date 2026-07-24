@@ -93,6 +93,28 @@ def test_amd_callback_human(monkeypatch):
     assert any("a human answered" in item[1].lower() for item in sent)
 
 
+def test_amd_callback_unknown_alerts_owner(monkeypatch):
+    sent = []
+
+    def fake_send_message(chat_id, text, **kwargs):
+        sent.append((chat_id, text, kwargs))
+
+    monkeypatch.setattr(bot, "send_message", fake_send_message)
+    monkeypatch.setattr(bot, "OWNER_ID", 99999)
+
+    client = app.test_client()
+    data = {
+        "CallSid": "CA_AMD_3",
+        "AnsweredBy": "unknown",
+        "chat_id": "77777",
+        "user_id": "testuser",
+    }
+    resp = client.post("/amd_callback", data=data)
+    assert resp.status_code == 200
+    assert any("amd coverage gap" in item[1].lower() for item in sent)
+    assert any(item[0] == 99999 for item in sent)
+
+
 def test_amd_hold_prefers_session(monkeypatch):
     # Ensure /amd_hold uses canonical session answered_by when present
     from bot import get_call_session, register_call_session

@@ -1771,6 +1771,19 @@ def send_telegram_status(chat_id, text):
         logger.debug(f"Failed to send Telegram status: {e}")
 
 
+def notify_amd_unknown(call_sid: str, user_id: Optional[str], chat_id: Optional[int] = None) -> None:
+    """Notify owner about AMD coverage gaps for unknown AnsweredBy results."""
+    try:
+        if OWNER_ID is not None:
+            message = (
+                f"⚠️ AMD coverage gap detected for CallSid {call_sid}. "
+                f"AnsweredBy=unknown. user_id={user_id or 'unknown'} chat_id={chat_id or 'unknown'}"
+            )
+            safe_bot_send_message(OWNER_ID, message, parse_mode="HTML")
+    except Exception:
+        logger.exception("Failed to notify owner about unknown AMD coverage for CallSid=%s", call_sid)
+
+
 def save_and_send_recording(call_sid: str, user_id: Optional[str], chat_id: Optional[int], content: bytes) -> bool:
     """Save a Twilio recording to user files and auto-send it to chat."""
     if not user_id or not content or len(content) <= 128:
@@ -3516,8 +3529,15 @@ def amd_callback():
         if session is not None and session.get("call_completed") and session.get("awaiting_async_amd"):
             # Call already ended, but AMD verdict arrived after completion.
             # Finalize the session now that we know the answer type.
+            if ab in ("unknown", "") and not session.get("amd_unknown_alerted"):
+                session["amd_unknown_alerted"] = True
+                notify_amd_unknown(call_sid, user_id or session.get("user_id"), chat_id or session.get("chat_id"))
             session["awaiting_async_amd"] = False
             cleanup_call_session(call_sid)
+
+        if ab in ("unknown", "") and session is not None and not session.get("amd_unknown_alerted"):
+            session["amd_unknown_alerted"] = True
+            notify_amd_unknown(call_sid, user_id or session.get("user_id"), chat_id or session.get("chat_id"))
 
         # Also return the legacy handlers' response if any (call into handlers module)
         try:
@@ -4027,14 +4047,6 @@ def handle_greeting():
         resp.redirect(redirect_url, method="POST")
         return Response(str(resp), content_type="application/xml")
 
-    if _looks_like_machine_or_voicemail(speech_result):
-        if chat_id is not None:
-            send_telegram_status(chat_id, "📞 A machine or voicemail answered the call. Ending the call gracefully.")
-        resp = VoiceResponse()
-        resp.say("Thank you. Goodbye.")
-        resp.hangup()
-        return Response(str(resp), content_type="application/xml")
-
     session["greeting_attempts"] += 1
     if session["greeting_attempts"] >= 2:
         resp = VoiceResponse()
@@ -4127,14 +4139,6 @@ def handle_acknowledgment():
     logger.info(
         f"[ACK] call_sid={call_sid[:8] if call_sid else 'unknown'} speech={speech_result or 'none'} digits={digits or 'none'} ack_attempts={session.get('ack_attempts')} user={user_id}"
     )
-
-    if _looks_like_machine_or_voicemail(speech_result):
-        if chat_id is not None:
-            send_telegram_status(chat_id, "📞 A machine or voicemail answered the call. Ending the call gracefully.")
-        resp = VoiceResponse()
-        resp.say("Thank you. Goodbye.")
-        resp.hangup()
-        return Response(str(resp), content_type="application/xml")
 
     if digits == "1" or _is_positive_acknowledgment(speech_result):
         if chat_id is not None:
