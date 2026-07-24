@@ -2026,6 +2026,8 @@ def apply_premium_subscription(target_user_id: str, duration_key: str) -> tuple[
 
 def is_premium_user(user_id: str) -> bool:
     """Return True when the user has active premium access or is privileged."""
+    if is_privileged_user(user_id):
+        return True
     return check_subscription(user_id) == "ACTIVE"
 
 
