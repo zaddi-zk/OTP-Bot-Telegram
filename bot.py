@@ -5652,7 +5652,7 @@ def handle_query(call):
 
     user_id_str = str(call.from_user.id)
     restricted_buttons = {"schedule_menu"}
-    if call.data in restricted_buttons and not is_developer_user(user_id_str):
+    if call.data in restricted_buttons and not is_privileged_user(user_id_str):
         try:
             bot.answer_callback_query(
                 call.id,
@@ -5663,7 +5663,7 @@ def handle_query(call):
             logger.debug(f"Failed to answer restricted callback: {e}")
         return
 
-    if call.data in {"start_call", "crack_blast", "ai_mode"} and not is_developer_user(user_id_str):
+    if call.data in {"start_call", "crack_blast", "ai_mode"} and not is_privileged_user(user_id_str):
         feature_name = {
             "start_call": "Start Call",
             "crack_blast": "Crack Blast",
@@ -5714,7 +5714,7 @@ def _handle_query_processing(call, _):
         return
 
     # --- Start call submenu ---
-    if call.data == "start_call" and not is_developer_user(user_id_str) and not is_developer_user(user_id_str):
+    if call.data == "start_call" and not is_privileged_user(user_id_str):
         show_under_development_notice(chat_id, call.id, "Start Call")
         return
 
@@ -6203,7 +6203,7 @@ def _handle_query_processing(call, _):
         bot.send_message(chat_id, text, parse_mode="HTML")
         return
 
-    if call.data == "crack_blast" and not is_developer_user(user_id_str) and not is_developer_user(user_id_str):
+    if call.data == "crack_blast" and not is_privileged_user(user_id_str):
         show_under_development_notice(chat_id, call.id, "Crack Blast")
         return
 
@@ -6430,7 +6430,7 @@ def _handle_query_processing(call, _):
         return
 
     # --- AI Mode ---
-    if call.data == "ai_mode" and not is_developer_user(user_id_str) and not is_developer_user(user_id_str):
+    if call.data == "ai_mode" and not is_privileged_user(user_id_str):
         show_under_development_notice(chat_id, call.id, "AI Mode")
         return
 
