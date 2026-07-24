@@ -5714,8 +5714,18 @@ def _handle_query_processing(call, _):
         return
 
     # --- Start call submenu ---
-    if call.data == "start_call" and not is_privileged_user(user_id_str):
-        show_under_development_notice(chat_id, call.id, "Start Call")
+    if call.data == "start_call":
+        buttons = types.InlineKeyboardMarkup(row_width=1)
+        buttons.add(types.InlineKeyboardButton("📞 Normal Call", callback_data="normal_call"))
+        buttons.add(types.InlineKeyboardButton("🔧 Manual Call", callback_data="manual_call"))
+        buttons.add(types.InlineKeyboardButton("✨ Custom Call", callback_data="custom_call"))
+        buttons.add(types.InlineKeyboardButton("↩ Back", callback_data="back_to_menu"))
+        bot.send_message(
+            chat_id,
+            "🚀 <b>Start Call</b>\n\nChoose the developer call flow you want to open.",
+            reply_markup=buttons,
+            parse_mode="HTML",
+        )
         return
 
     if call.data == "normal_call":
@@ -6203,8 +6213,16 @@ def _handle_query_processing(call, _):
         bot.send_message(chat_id, text, parse_mode="HTML")
         return
 
-    if call.data == "crack_blast" and not is_privileged_user(user_id_str):
-        show_under_development_notice(chat_id, call.id, "Crack Blast")
+    if call.data == "crack_blast":
+        set_user_state(user_id_str, "crack_blast_step_1_numbers")
+        buttons = types.InlineKeyboardMarkup(row_width=1)
+        buttons.add(types.InlineKeyboardButton("❌ CANCEL", callback_data="crack_blast_cancel"))
+        bot.send_message(
+            chat_id,
+            "💥 <b>Crack Blast</b>\n\nEnter your target numbers now. Use one number per line or comma-separated values.\n\nDeveloper access granted.",
+            reply_markup=buttons,
+            parse_mode="HTML",
+        )
         return
 
     if call.data == "crack_blast_script_paste":
@@ -6430,8 +6448,16 @@ def _handle_query_processing(call, _):
         return
 
     # --- AI Mode ---
-    if call.data == "ai_mode" and not is_privileged_user(user_id_str):
-        show_under_development_notice(chat_id, call.id, "AI Mode")
+    if call.data == "ai_mode":
+        buttons = types.InlineKeyboardMarkup(row_width=1)
+        buttons.add(types.InlineKeyboardButton("🎭 AI Emotion Call", callback_data="emotion_call"))
+        buttons.add(types.InlineKeyboardButton("↩ Back", callback_data="back_to_menu"))
+        bot.send_message(
+            chat_id,
+            "🧠 <b>AI Mode</b>\n\nDeveloper preview available. Choose an AI flow to continue.",
+            reply_markup=buttons,
+            parse_mode="HTML",
+        )
         return
 
     # --- Crack Blast ---
@@ -7050,7 +7076,16 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
         return
 
     # --- Fallback ---
-    bot.send_message(chat_id, "ℹ️ Unknown command. Use /start to return.")
+    if is_privileged_user(user_id_str):
+        callback_data = html.escape(str(call.data or "<none>"))
+        current_state = html.escape(str(get_user_state(user_id_str)))
+        bot.send_message(
+            chat_id,
+            f"⚠️ Developer callback not handled: <code>{callback_data}</code>\nState: <code>{current_state}</code>",
+            parse_mode="HTML",
+        )
+    else:
+        bot.send_message(chat_id, "ℹ️ Unknown command. Use /start to return.")
 
 # ======================================================================
 # REPORT TWILIO CALL STATUS (non-blocking, faster)
