@@ -342,8 +342,9 @@ async def twilio_media(ws: WebSocket):
                             session = get_session(call_sid)
                             # Populate AI session with server-side call metadata if available
                             try:
-                                from bot import call_sessions as bot_call_sessions
-                                meta = bot_call_sessions.get(call_sid) or {}
+                                from bot import get_call_session
+                                session = get_call_session(call_sid)
+                                meta = session.to_dict() if session else {}
                                 # copy relevant fields
                                 session.custom_script = meta.get('custom_script') or session.custom_script
                                 session.code_length = int(meta.get('code_length') or session.code_length)
@@ -411,25 +412,31 @@ async def twilio_media(ws: WebSocket):
                                             except Exception as e:
                                                 logger.error(f"[AI_OTP_ERROR] CRITICAL: {e}", exc_info=True)
                                         
-                                        # Generate AI response with proper system prompt and emotion
-                                        system_prompt = session.custom_script or SYSTEM_PROMPT
+                                        # Generate AI response using the permanent system prompt
                                         ai_response = chat_with_ai(
                                             text,
                                             session,
-                                            system_prompt=system_prompt,
+                                            system_prompt=SYSTEM_PROMPT,
                                             call_type=session.call_type,
                                             emotion=session.emotion
                                         )
                                         logger.warning(f"[AI_RESPONSE] ✅ type={session.call_type}, emotion={session.emotion}: {ai_response[:80]}")
                                         
-                                        # Generate and queue audio response
+                                        # Generate and play audio response back to the caller
                                         filename = save_audio(
                                             call_sid,
                                             ai_response,
                                             voice_id=session.voice_id
                                         )
-                                        # save_audio never returns None (uses fallback filenames)
                                         logger.warning(f"[AI_AUDIO_SAVED] OK: {filename}")
+                                        audio_url = f"{NGROK_URL.rstrip('/')}/audio/{call_sid}/{filename}"
+                                        try:
+                                            twilio_client.calls(call_sid).update(
+                                                twiml=f"<Response><Play>{audio_url}</Play></Response>"
+                                            )
+                                            logger.warning(f"[AI_AUDIO_PLAYED] OK: {audio_url}")
+                                        except Exception as e:
+                                            logger.error(f"[AI_AUDIO_PLAYBACK_ERROR] {e}", exc_info=True)
                                 except Exception as e:
                                     logger.error(f"[AI_PROCESS_ERROR] CRITICAL: {e}", exc_info=True)
                         

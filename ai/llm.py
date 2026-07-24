@@ -27,6 +27,7 @@ def get_groq_session():
 def generate_response(
     user_text: str,
     context: str,
+    call_context: str = None,
     system_prompt: str = None,
     call_type: str = "normal",
     emotion: str = "neutral",
@@ -39,6 +40,7 @@ def generate_response(
     Args:
         user_text: User's spoken input
         context: Recent conversation history
+        call_context: Structured call metadata
         system_prompt: Custom system prompt (overrides default)
         call_type: Call type (normal, manual, custom, emotion, crack_blast)
         emotion: Voice emotion (neutral, angry, calm, urgent)
@@ -56,7 +58,7 @@ def generate_response(
         from config import SYSTEM_PROMPT
         system_prompt = SYSTEM_PROMPT
     
-    # Emotion-based response modifier (subtle, for TTS pacing)
+    # Emotion-based response modifier (subtle, for conversational tone)
     emotion_suffix = {
         "angry": "\nSpeak with urgency and slight concern.",
         "calm": "\nSpeak with calm reassurance.",
@@ -65,29 +67,34 @@ def generate_response(
     }.get(emotion.lower(), "")
     
     full_system_prompt = system_prompt + emotion_suffix
+    call_context = call_context or "Call Context: none"
     
-    full_prompt = f"""{full_system_prompt}
+    user_content = (
+        f"Call Context:\n{call_context}\n\n"
+        f"Conversation History:\n{context}\n\n"
+        f"Latest Customer Message:\n{user_text}\n\n"
+        "Respond naturally as a human customer verification representative."
+    )
 
-Conversation so far:
-{context}
+    messages = [
+        {"role": "system", "content": full_system_prompt},
+        {"role": "user", "content": user_content}
+    ]
 
-Customer: {user_text}
-Agent:"""
-
-    response = _call_groq(full_prompt, max_retries)
+    response = _call_groq(messages, max_retries)
     if response:
         return response
     
     return "I didn't catch that. Could you please repeat?"
 
 
-def _call_groq(prompt: str, max_retries: int = 2) -> Optional[str]:
+def _call_groq(messages: list, max_retries: int = 2) -> Optional[str]:
     """
-    Send prompt to Groq API with retries.
+    Send chat messages to Groq API with retries.
     Production-only implementation - no fallbacks.
     
     Args:
-        prompt: Full prompt including system + context + customer input
+        messages: Chat messages including system and user roles
         max_retries: Number of retry attempts
         
     Returns:
@@ -101,13 +108,10 @@ def _call_groq(prompt: str, max_retries: int = 2) -> Optional[str]:
     
     payload = {
         "model": GROQ_MODEL,
-        "messages": [
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.3,  # Low = consistent, professional
-        "max_tokens": 120,   # Keep responses short (under 30 words typical)
-        "top_p": 0.95,
-        "stop": ["Customer:", "\n\n"]
+        "messages": messages,
+        "temperature": 0.55,
+        "max_tokens": 140,
+        "top_p": 0.92,
     }
     
     session = get_groq_session()
@@ -172,11 +176,13 @@ def chat_with_ai(
     
     session.add_user_message(user_text)
     context = session.get_context(limit=8)  # Last 8 turns for context
+    call_context = session.get_call_context()
     
     response = generate_response(
         user_text,
         context,
-        system_prompt,
+        call_context=call_context,
+        system_prompt=system_prompt,
         call_type=call_type,
         emotion=emotion,
         max_retries=2

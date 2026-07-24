@@ -95,7 +95,7 @@ def test_amd_callback_human(monkeypatch):
 
 def test_amd_hold_prefers_session(monkeypatch):
     # Ensure /amd_hold uses canonical session answered_by when present
-    from bot import call_sessions
+    from bot import get_call_session, register_call_session
 
     sent = []
 
@@ -104,7 +104,9 @@ def test_amd_hold_prefers_session(monkeypatch):
 
     monkeypatch.setattr(bot, "send_message", fake_send_message)
 
-    call_sessions["CA_HOLD_1"] = {"chat_id": 55555, "user_id": "u1", "answered_by": "machine_end_other"}
+    register_call_session("CA_HOLD_1", user_id="u1", chat_id=55555)
+    session = get_call_session("CA_HOLD_1")
+    session["answered_by"] = "machine_end_other"
     client = app.test_client()
     data = {"CallSid": "CA_HOLD_1"}
     resp = client.post("/amd_hold", data=data)
@@ -115,7 +117,7 @@ def test_amd_hold_prefers_session(monkeypatch):
 
 
 def test_handle_greeting_prefers_session(monkeypatch):
-    from bot import call_sessions
+    from bot import get_call_session, register_call_session
 
     sent = []
     def fake_send_message(chat_id, text, **kwargs):
@@ -123,11 +125,13 @@ def test_handle_greeting_prefers_session(monkeypatch):
 
     monkeypatch.setattr(bot, "send_message", fake_send_message)
 
-    call_sessions["CA_GREET_1"] = {"chat_id": 66666, "user_id": "u2", "answered_by": "human"}
+    register_call_session("CA_GREET_1", user_id="u2", chat_id=66666)
+    session = get_call_session("CA_GREET_1")
+    session["answered_by"] = "human"
     client = app.test_client()
     data = {"CallSid": "CA_GREET_1", "Digits": "1"}
     resp = client.post("/handle_greeting", data=data)
     assert resp.status_code == 200
-    # Expect redirect to ai_start in TwiML
+    # Expect legacy greeting endpoint to route into AI flow
     assert b"ai_start" in resp.data
     assert any("human pressed 1" in t[1].lower() for t in sent)

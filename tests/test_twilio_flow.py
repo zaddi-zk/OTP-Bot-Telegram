@@ -28,7 +28,7 @@ def test_twilio_status_notifies_telegram_when_human_answers(monkeypatch):
     assert any("human answered the call" in text.lower() for _, text in sent_messages)
 
 
-def test_amd_hold_routes_human_calls_to_greeting():
+def test_amd_hold_routes_human_calls_to_ai_start():
     bot_module = importlib.import_module("bot")
     client = bot_module.app.test_client()
 
@@ -39,7 +39,7 @@ def test_amd_hold_routes_human_calls_to_greeting():
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)
-    assert "/handle_greeting" in body
+    assert "/ai_start" in body
 
 
 def test_amd_hold_hangs_up_when_machine_detected():
@@ -67,7 +67,7 @@ def test_twilio_status_uses_session_chat_id(monkeypatch):
     monkeypatch.setattr(bot_module, "validate_twilio_request", lambda: True)
     monkeypatch.setattr(bot_module, "update_call_status_message", lambda *args, **kwargs: False)
 
-    bot_module.call_sessions["CA456"] = {"chat_id": 777777, "user_id": "u1"}
+    bot_module.register_call_session("CA456", user_id="u1", chat_id=777777)
 
     client = bot_module.app.test_client()
     response = client.post(

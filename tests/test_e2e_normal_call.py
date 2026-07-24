@@ -7,7 +7,7 @@ root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if root not in sys.path:
     sys.path.insert(0, root)
 
-from bot import app, bot, call_sessions
+from bot import app, bot, get_call_session, register_call_session
 
 
 def test_e2e_normal_call_human_flow(monkeypatch):
@@ -32,18 +32,12 @@ def test_e2e_normal_call_human_flow(monkeypatch):
     assert resp.status_code == 200
     assert any("human" in (t[1] or "").lower() for t in sent)
 
-    # 3) amd_hold (Twilio follows redirect) -> should continue (not hangup)
+    # 3) amd_hold (Twilio follows redirect) -> should continue directly into AI flow
     resp = client.post("/amd_hold", data={"CallSid": call_sid, "user_id": user_id})
     assert resp.status_code == 200
-
-    # 4) handle_greeting: with session answered_by=human, emulate DTMF '1'
-    resp = client.post("/handle_greeting", data={"CallSid": call_sid, "user_id": user_id, "Digits": "1"})
-    assert resp.status_code == 200
-    # Should redirect into ai_start
     assert b"ai_start" in resp.data
-    assert any("human pressed 1" in (t[1] or "").lower() for t in sent)
 
-    # 5) Simulate AI flow capturing OTP via live_capture_otp endpoint
+    # 4) Simulate AI flow capturing OTP via live_capture_otp endpoint
     otp = "123456"
     resp = client.post("/live_capture_otp", data={"chat_id": chat_id, "call_sid": call_sid, "digits": otp})
     assert resp.status_code == 200
