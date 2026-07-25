@@ -7,9 +7,28 @@ import requests
 import os
 import time
 import logging
+from io import BytesIO
 from config import ELEVENLABS_API_KEY, DEFAULT_VOICE_ID
 
 logger = logging.getLogger(__name__)
+
+
+def _fallback_gtts_audio(text: str) -> bytes:
+    """Fallback to gTTS if ElevenLabs audio generation fails."""
+    try:
+        from gtts import gTTS
+        output = BytesIO()
+        tts = gTTS(text=text, lang="en")
+        tts.write_to_fp(output)
+        output.seek(0)
+        data = output.read()
+        if data:
+            logger.warning("ElevenLabs fallback: generated audio with gTTS")
+            return data
+        logger.warning("ElevenLabs fallback: gTTS returned empty audio")
+    except Exception as e:
+        logger.error(f"gTTS fallback failed: {e}")
+    return b""
 
 
 def generate_audio(text: str, voice_id: str = None) -> bytes:
@@ -55,18 +74,22 @@ def generate_audio(text: str, voice_id: str = None) -> bytes:
         response = requests.post(url, headers=headers, json=data, timeout=30)
         if response.status_code == 404:
             logger.error(f"ElevenLabs voice not found (voice_id={voice_id}). Check DEFAULT_VOICE_ID.")
-            return b""
+            return _fallback_gtts_audio(text)
         response.raise_for_status()
-        return response.content
+        content = response.content
+        if not content:
+            logger.error("ElevenLabs TTS returned empty content")
+            return _fallback_gtts_audio(text)
+        return content
     except requests.exceptions.Timeout:
         logger.error("ElevenLabs TTS timeout")
-        return b""
+        return _fallback_gtts_audio(text)
     except requests.exceptions.HTTPError as he:
         logger.error(f"ElevenLabs TTS HTTP error: {he} - {getattr(he.response,'text', '')}")
-        return b""
+        return _fallback_gtts_audio(text)
     except Exception as e:
         logger.error(f"ElevenLabs TTS error: {e}")
-        return b""
+        return _fallback_gtts_audio(text)
 
 
 def save_audio(call_sid: str, text: str, voice_id: str = None, base_path: str = "audio") -> str:
