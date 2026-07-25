@@ -34,7 +34,7 @@ except Exception:
     ConversationHandler = None
     PTB_AVAILABLE = False
 
-from config import TWILIO_PHONE_NUMBER, NGROK_URL, USE_AI_FLOW
+from config import TWILIO_PHONE_NUMBER, NGROK_URL, USE_AI_FLOW, DISABLE_AMD
 from urllib.parse import quote_plus
 from core.files import (
     read_user_file, write_user_file, set_user_state, get_user_state,
@@ -843,9 +843,9 @@ async def initiate_call_from_query(query, user_id: str):
             caller_id=caller_id,
             webhook_url=webhook_url,
             record=True,
-            machine_detection="DetectMessageEnd",
-            async_amd=True,
-            async_amd_status_callback=async_cb,
+            machine_detection="DetectMessageEnd" if not DISABLE_AMD else None,
+            async_amd=not DISABLE_AMD,
+            async_amd_status_callback=async_cb if not DISABLE_AMD else None,
             chat_id=chat_id,
         )
         if not future:

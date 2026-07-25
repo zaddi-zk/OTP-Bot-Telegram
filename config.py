@@ -105,6 +105,11 @@ DEFAULT_ELEVENLABS_VOICE_ID = _get("DEFAULT_ELEVENLABS_VOICE_ID", "21m00Tcm4TlvD
 LIVE_LISTEN_URL = _get("LIVE_LISTEN_URL", NGROK_URL)
 LIVE_LISTEN_SECRET = _get("LIVE_LISTEN_SECRET", "")
 
+# Disable Twilio Answering Machine Detection globally.
+# Set DISABLE_AMD=true in environment to avoid sending AMD parameters to Twilio.
+DISABLE_AMD = _get("DISABLE_AMD", "false").lower() in ("true", "1", "yes")
+AMD_ENABLED = not DISABLE_AMD
+
 # Abstract API
 ABSTRACT_API_KEY = _get("ABSTRACT_API_KEY", "")
 

@@ -186,6 +186,9 @@ LIVE_LISTEN_URL = _get("LIVE_LISTEN_URL", NGROK_URL)
 LIVE_LISTEN_SECRET = _get("LIVE_LISTEN_SECRET", "")
 # Twilio validation override
 DISABLE_TWILIO_VALIDATION = _get("DISABLE_TWILIO_VALIDATION", "false").lower() in ("true", "1", "yes")
+# Disable Twilio Answering Machine Detection globally.
+DISABLE_AMD = _get("DISABLE_AMD", "false").lower() in ("true", "1", "yes")
+AMD_ENABLED = not DISABLE_AMD
 # Disable DummyBot fallback in production or when explicitly requested
 DISABLE_DUMMY_BOT = _get("DISABLE_DUMMY_BOT", "false").lower() in ("true", "1", "yes")
 # Vouches channel for live hit posts
@@ -2511,8 +2514,13 @@ def make_spoofed_call(to: str, from_number: str, caller_id: str, webhook_url: st
             except Exception as cleanup_ex:
                 logger.debug(f"Failed to clear stale record.mp3 for user {user_id}: {cleanup_ex}")
 
-        amd_enabled = bool(machine_detection)
+        if DISABLE_AMD:
+            amd_enabled = False
+        else:
+            amd_enabled = bool(machine_detection)
         amd_param = "Enable" if amd_enabled else None
+        if DISABLE_AMD and machine_detection:
+            logger.info("DISABLE_AMD=true; skipping Twilio async AMD parameters for outbound call.")
 
         call_params = {
             "to": to,
@@ -2956,8 +2964,12 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                 )
                 bot.send_message(chat_id, f"✨ Starting Normal Call with current setup:\n\n{setup_summary}")
 
+                endpoint = "amd_hold"
+                if DISABLE_AMD:
+                    endpoint = "ai_start"
+
                 webhook_url = (
-                    f"{NGROK_URL.rstrip('/')}/amd_hold"
+                    f"{NGROK_URL.rstrip('/')}/{endpoint}"
                     f"?user_id={quote_plus(str(user_id_str))}"
                     f"&chat_id={quote_plus(str(chat_id))}"
                     f"&name={quote_plus(name)}"
@@ -3898,7 +3910,10 @@ def voice():
         resp.hangup()
         return Response(str(resp), content_type="application/xml")
 
-    redirect_url = f"/amd_hold?user_id={quote_plus(str(user_id))}"
+    endpoint = "amd_hold"
+    if DISABLE_AMD:
+        endpoint = "ai_start"
+    redirect_url = f"/{endpoint}?user_id={quote_plus(str(user_id))}"
     if chat_id is not None:
         redirect_url += f"&chat_id={quote_plus(str(chat_id))}"
 
@@ -4425,6 +4440,10 @@ def handle_acknowledgment():
             return Response(str(resp), content_type="application/xml")
 
     if digits == "1" or _is_positive_acknowledgment(speech_result):
+        if session is not None:
+            session["answered_by"] = "human"
+            session["amd_decision"] = "human"
+            session["amd_confidence"] = {"human": 1.0}
         if chat_id is not None:
             send_telegram_status(chat_id, "📞 A human answered the call. Continuing with the AI flow.")
         session["ack_attempts"] = 0
@@ -4490,6 +4509,10 @@ def handle_acknowledgment():
         return Response(str(resp), content_type="application/xml")
 
     session["ack_attempts"] += 1
+    if session is not None:
+        session["answered_by"] = "human"
+        session["amd_decision"] = "human"
+        session["amd_confidence"] = {"human": 1.0}
     resp = VoiceResponse()
     resp.redirect(
         _build_ai_flow_redirect_url(

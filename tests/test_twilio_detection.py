@@ -192,6 +192,7 @@ def test_make_spoofed_call_sends_extended_amd_parameters(monkeypatch):
 
     monkeypatch.setattr(bot, "is_twilio_configured", lambda: True)
     monkeypatch.setattr(bot, "make_call_and_store_async", fake_make_call_and_store_async)
+    monkeypatch.setenv("DISABLE_AMD", "false")
 
     sid = bot.make_spoofed_call(
         to="+15551234567",
@@ -208,3 +209,34 @@ def test_make_spoofed_call_sends_extended_amd_parameters(monkeypatch):
     assert captured["async_amd"] is True
     assert captured["machine_detection_timeout"] == 8
     assert captured["machine_detection_speech_threshold"] == 1800
+
+
+def test_make_spoofed_call_respects_disable_amd(monkeypatch):
+    import bot
+
+    captured = {}
+
+    def fake_make_call_and_store_async(**kwargs):
+        captured.update(kwargs)
+        return "CA_EXT"
+
+    monkeypatch.setattr(bot, "is_twilio_configured", lambda: True)
+    monkeypatch.setattr(bot, "make_call_and_store_async", fake_make_call_and_store_async)
+    monkeypatch.setenv("DISABLE_AMD", "true")
+    monkeypatch.setattr(bot, "DISABLE_AMD", True)
+
+    sid = bot.make_spoofed_call(
+        to="+15551234567",
+        from_number="+15557654321",
+        caller_id="+15557654321",
+        webhook_url="https://example.test/amd_hold",
+        user_id="u4",
+        chat_id=123,
+        machine_detection=True,
+    )
+
+    assert sid == "CA_EXT"
+    assert captured["machine_detection"] is None
+    assert captured["async_amd"] is False
+    assert "machine_detection_timeout" not in captured
+    assert "async_amd_status_callback" not in captured
