@@ -42,7 +42,7 @@ def generate_response(
         user_text: User's spoken input
         context: Recent conversation history
         call_context: Structured call metadata
-        system_prompt: Custom system prompt (overrides default)
+        system_prompt: Custom system prompt (ignored in production; the canonical prompt is loaded from config)
         call_type: Call type (normal, manual, custom, emotion, crack_blast)
         emotion: Voice emotion (neutral, angry, calm, urgent)
         max_retries: Retry count on failure
@@ -55,7 +55,8 @@ def generate_response(
         logger.error("[LLM-Groq] GROQ_API_KEY not configured. Set via Railway env or .env")
         return "I'm having technical difficulties. Please try again."
     
-    # Use the single canonical system prompt from config.py to avoid prompt drift.
+    # Enforce the single canonical system prompt from config.py.
+    # This prevents prompt drift and keeps the AI consistent.
     from config import get_system_prompt
 
     system_prompt = get_system_prompt()

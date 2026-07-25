@@ -3762,7 +3762,7 @@ def ai_start():
     - call_type: Call type (normal, manual, custom, emotion, crack_blast) - auto-detected if not provided
     - mode_label: Display label for UI
     """
-    from config import USE_AI_FLOW, NGROK_URL, DEFAULT_VOICE_ID, SYSTEM_PROMPT
+    from config import USE_AI_FLOW, NGROK_URL, DEFAULT_VOICE_ID
     from urllib.parse import quote_plus
     
     user_id = request.values.get("user_id") or request.args.get("user_id")
@@ -4394,6 +4394,10 @@ def handle_acknowledgment():
         confidence = evaluate_amd_confidence(session, answered_by="unknown", speech_result=speech_result, reason="handle_ack_positive")
         decision = get_amd_decision(confidence, fallback="human")
         if decision == "human":
+            if session is not None:
+                session["answered_by"] = "human"
+                session["amd_decision"] = "human"
+                session["amd_confidence"] = confidence
             if chat_id is not None:
                 send_telegram_status(chat_id, "📞 A human answered the call. Continuing with the AI flow.")
             session["ack_attempts"] = 0

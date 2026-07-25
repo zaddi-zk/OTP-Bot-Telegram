@@ -21,7 +21,7 @@ from typing import Optional
 from config import (
     ACCOUNT_SID, AUTH_TOKEN, LIVE_LISTEN_URL, NGROK_URL, LIVE_LISTEN_SECRET,
     DEFAULT_VOICE_ID, VOICE_STABILITY, VOICE_SIMILARITY_BOOST,
-    USE_AI_FLOW, VOUCH_CHANNEL_ID, SYSTEM_PROMPT
+    USE_AI_FLOW, VOUCH_CHANNEL_ID
 )
 from twilio.rest import Client
 from twilio.twiml.voice_response import VoiceResponse, Gather, Start
@@ -416,7 +416,7 @@ async def twilio_media(ws: WebSocket):
                                         ai_response = chat_with_ai(
                                             text,
                                             session,
-                                            system_prompt=SYSTEM_PROMPT,
+                                            system_prompt=None,
                                             call_type=session.call_type,
                                             emotion=session.emotion
                                         )
