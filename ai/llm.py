@@ -31,7 +31,8 @@ def generate_response(
     system_prompt: str = None,
     call_type: str = "normal",
     emotion: str = "neutral",
-    max_retries: int = 2
+    max_retries: int = 2,
+    session=None,
 ) -> str:
     """
     Generate AI response using Groq API.
@@ -54,9 +55,10 @@ def generate_response(
         logger.error("[LLM-Groq] GROQ_API_KEY not configured. Set via Railway env or .env")
         return "I'm having technical difficulties. Please try again."
     
-    if system_prompt is None:
-        from config import SYSTEM_PROMPT
-        system_prompt = SYSTEM_PROMPT
+    # Use the single canonical system prompt from config.py to avoid prompt drift.
+    from config import get_system_prompt
+
+    system_prompt = get_system_prompt()
     
     # Emotion-based response modifier (subtle, for conversational tone)
     emotion_suffix = {
@@ -185,7 +187,8 @@ def chat_with_ai(
         system_prompt=system_prompt,
         call_type=call_type,
         emotion=emotion,
-        max_retries=2
+        max_retries=2,
+        session=session,
     )
     
     session.add_agent_message(response)

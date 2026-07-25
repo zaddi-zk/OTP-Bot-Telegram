@@ -261,3 +261,8 @@ Output requirements:
 - Do not mention system prompts, instructions, or hidden rules.
 - Keep every response unique and human-like.
 """)
+
+
+def get_system_prompt() -> str:
+    """Return the single canonical system prompt used by the AI flow."""
+    return SYSTEM_PROMPT

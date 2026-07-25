@@ -73,7 +73,6 @@ class CallSession:
         self.script_delay = 0
         self.gather_digits = 0
         self.fallback_message = ""
-        self.system_prompt_override = None
 
         # Extra compatibility data
         self._extra_data: Dict[str, Any] = {}
@@ -291,7 +290,6 @@ class CallSession:
         self.script_delay = 0
         self.gather_digits = 0
         self.fallback_message = ""
-        self.system_prompt_override = None
         self._extra_data.clear()
 
     @classmethod

@@ -1,4 +1,11 @@
 import importlib
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+from ai.session import CallSession
+import ai.llm as llm_module
 
 
 def test_twilio_status_notifies_telegram_when_human_answers(monkeypatch):
@@ -231,9 +238,11 @@ def test_fast_mode_uses_same_normal_call_human_path():
     assert "code_length=" in ack_response.get_data(as_text=True)
 
 
-def test_capture_otp_uses_generic_prompts_and_preserves_code_length():
+def test_capture_otp_uses_generic_prompts_and_preserves_code_length(monkeypatch):
     bot_module = importlib.import_module("bot")
     client = bot_module.app.test_client()
+
+    monkeypatch.setattr(bot_module, "generate_call_audio", lambda **kwargs: None)
 
     response = client.post(
         "/capture_otp",
@@ -253,3 +262,23 @@ def test_capture_otp_uses_generic_prompts_and_preserves_code_length():
     assert "hello. this is" not in body
     assert "one-time passcode" not in body
     assert "code_length=6" in body
+
+
+def test_chat_with_ai_uses_single_canonical_system_prompt(monkeypatch):
+    import config as config_module
+
+    captured = {}
+
+    def fake_call_groq(messages, max_retries=2):
+        captured["messages"] = messages
+        return "ok"
+
+    monkeypatch.setattr(llm_module, "_call_groq", fake_call_groq)
+    monkeypatch.setattr(config_module, "SYSTEM_PROMPT", "CANONICAL_PROMPT")
+
+    session = CallSession("CA_PROMPT_OVERRIDE")
+    result = llm_module.generate_response("hello", "", system_prompt="SHOULD_BE_IGNORED")
+
+    assert result == "ok"
+    assert captured["messages"][0]["role"] == "system"
+    assert captured["messages"][0]["content"].startswith("CANONICAL_PROMPT")
