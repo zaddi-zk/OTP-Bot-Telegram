@@ -375,6 +375,12 @@ async def twilio_media(ws: WebSocket):
                             except Exception:
                                 pass
                             logger.warning(f"[WebSocket_START] OK - AI call session started: {call_sid}")
+                            try:
+                                from live_listen.conversation import start_conversation
+                                asyncio.create_task(start_conversation(call_sid, session.chat_id, session.user_id, session.custom_audio))
+                                logger.info(f"[WebSocket_START] AI conversation task queued for {call_sid}")
+                            except Exception as e:
+                                logger.error(f"[WebSocket_START] Failed to queue AI conversation for {call_sid}: {e}", exc_info=True)
                         except Exception as e:
                             logger.error(f"[WebSocket_START] CRITICAL: Failed to get AI session: {e}", exc_info=True)
                             await manager.ensure_session(call_id, call_sid=call_sid)
@@ -448,6 +454,17 @@ async def twilio_media(ws: WebSocket):
                                             ai_response,
                                             voice_id=session.voice_id
                                         )
+                                        if not filename:
+                                            logger.error(f"[AI_AUDIO_SAVED] FAILED: no filename for generated audio, falling back to Say")
+                                            try:
+                                                twilio_client.calls(call_sid).update(
+                                                    twiml=f"<Response><Say voice='alice'>I am sorry, I could not generate the audio response. Please try again later.</Say></Response>"
+                                                )
+                                                logger.warning(f"[AI_AUDIO_PLAYED] Fallback Say executed for {call_sid}")
+                                            except Exception as e:
+                                                logger.error(f"[AI_AUDIO_PLAYBACK_ERROR] {e}", exc_info=True)
+                                            continue
+
                                         logger.warning(f"[AI_AUDIO_SAVED] OK: {filename}")
                                         audio_url = f"{NGROK_URL.rstrip('/')}/audio/{call_sid}/{filename}"
                                         try:

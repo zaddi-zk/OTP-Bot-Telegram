@@ -8,6 +8,7 @@ import os
 import time
 import logging
 from io import BytesIO
+from typing import Optional
 from config import ELEVENLABS_API_KEY, DEFAULT_VOICE_ID
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ def _fallback_gtts_audio(text: str) -> bytes:
         tts.write_to_fp(output)
         output.seek(0)
         data = output.read()
+        logger.info(f"gTTS fallback returned {len(data) if data is not None else 0} bytes")
         if data:
             logger.warning("ElevenLabs fallback: generated audio with gTTS")
             return data
@@ -77,6 +79,7 @@ def generate_audio(text: str, voice_id: str = None) -> bytes:
             return _fallback_gtts_audio(text)
         response.raise_for_status()
         content = response.content
+        logger.info(f"ElevenLabs TTS returned {len(content) if content is not None else 0} bytes")
         if not content:
             logger.error("ElevenLabs TTS returned empty content")
             return _fallback_gtts_audio(text)
@@ -115,18 +118,13 @@ def save_audio(call_sid: str, text: str, voice_id: str = None, base_path: str = 
         filename = f"{int(time.time())}.mp3"
         filepath = os.path.join(dir_path, filename)
         
-        if audio_bytes:
-            # Write real audio
-            with open(filepath, "wb") as f:
-                f.write(audio_bytes)
-            logger.info(f"Saved audio: {filepath}")
-        else:
-            # No audio generated - write silent placeholder to prevent dead air
-            # This is 100ms of silence (prevents "no response" perception)
-            logger.warning(f"Creating silent placeholder: {filepath}")
-            with open(filepath, "wb") as f:
-                f.write(b"")
-        
+        if not audio_bytes:
+            logger.warning(f"No audio generated for call_sid={call_sid}; returning None for fallback handling")
+            return None
+
+        with open(filepath, "wb") as f:
+            f.write(audio_bytes)
+        logger.info(f"Saved audio: {filepath}")
         return filename
     except Exception as e:
         logger.error(f"Failed to save audio: {e}")

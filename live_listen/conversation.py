@@ -144,45 +144,24 @@ def _resolve_conversation_voice_id(voice_id: Optional[str]) -> str:
 
 
 async def generate_tts_and_publish(call_sid: str, text: str, filename_prefix: str = 'tts', voice_id: Optional[str] = None) -> Optional[str]:
-    """Generate MP3 with ElevenLabs, save to `conf/{call_sid}/{filename_prefix}.mp3` and return public URL.
+    """Generate MP3 audio and inject it into the live Twilio call.
 
-    Then inject into the live Twilio call by updating the call TwiML to play the audio.
+    Uses `ai.tts.save_audio` so fallbacks (gTTS) apply if ElevenLabs fails.
     """
     session = await conv_manager.get_session(call_sid)
-    out_path = os.path.join(session.conf_path(), f"{filename_prefix}.mp3")
+    voice_id = _resolve_conversation_voice_id(voice_id or get_user_voice_id(session.user_id))
     try:
-        if eleven_client is None:
-            print('ElevenLabs not configured; cannot generate TTS')
+        filename = save_audio(call_sid, text, voice_id=voice_id, base_path='audio')
+        if not filename:
+            print('TTS save_audio failed; no audio file created')
             return None
-        voice_id = _resolve_conversation_voice_id(voice_id or get_user_voice_id(session.user_id))
-        for attempt in range(2):
-            try:
-                gen = eleven_client.text_to_speech.convert(
-                    voice_id=voice_id,
-                    model_id='eleven_flash_v2_5',
-                    text=text,
-                    output_format='mp3_44100_128'
-                )
-                with open(out_path, 'wb') as f:
-                    for chunk in gen:
-                        if chunk:
-                            f.write(chunk)
-                if os.path.getsize(out_path) == 0:
-                    raise ValueError('ElevenLabs returned empty audio payload')
-                # Make public URL via NGROK + /audio route
-                url = f"{NGROK_URL.rstrip('/')}/audio?user_id={quote_plus(session.user_id or call_sid)}&file={quote_plus(os.path.basename(out_path))}"
-                # Instruct Twilio to play the generated audio now
-                try:
-                    twilio_client.calls(call_sid).update(twiml=f"<Response><Play>{url}</Play></Response>")
-                except Exception as e:
-                    print('Twilio play injection failed:', e)
-                return url
-            except Exception as e:
-                print('TTS generation attempt failed:', e)
-                if attempt == 0 and voice_id != get_default_voice_id():
-                    voice_id = get_default_voice_id()
-                    continue
-                return None
+        url = f"{NGROK_URL.rstrip('/')}/audio/{call_sid}/{quote_plus(filename)}"
+        try:
+            twilio_client.calls(call_sid).update(twiml=f"<Response><Play>{url}</Play></Response>")
+            return url
+        except Exception as e:
+            print('Twilio play injection failed:', e)
+            return None
     except Exception as e:
         print('TTS generation failed:', e)
         return None
