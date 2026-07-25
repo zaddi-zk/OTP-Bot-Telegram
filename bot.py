@@ -102,6 +102,45 @@ _http.mount("https://", HTTPAdapter(max_retries=_http_retries, pool_connections=
 _http.mount("http://", HTTPAdapter(max_retries=_http_retries, pool_connections=10, pool_maxsize=20))
 REQ_TIMEOUT = (5, 10)  # connect_timeout, read_timeout
 
+
+def _notify_live_listen_start(call_sid: str, chat_id: Optional[int] = None, user_id: Optional[str] = None):
+    """Notify the Live Listen service to start tracking a call.
+    Tries /conversation/start first; on 404 or failure, falls back to /ai_start.
+    """
+    if not LIVE_LISTEN_URL:
+        logger.debug("No LIVE_LISTEN_URL configured; skipping live listen notify")
+        return
+
+    payload = {"call_sid": call_sid}
+    if chat_id is not None:
+        payload["chat_id"] = chat_id
+    headers = {}
+    try:
+        resp = _http.post(f"{LIVE_LISTEN_URL.rstrip('/')}/conversation/start", json=payload, timeout=REQ_TIMEOUT, headers=headers)
+        if resp.status_code == 200:
+            logger.info("Live listen conversation.start OK for %s", call_sid)
+            return
+        if resp.status_code == 404:
+            logger.warning("/conversation/start returned 404; falling back to /ai_start for %s", call_sid)
+        else:
+            logger.warning("/conversation/start returned %s for %s; falling back to /ai_start", resp.status_code, call_sid)
+    except Exception as e:
+        logger.warning("Error calling /conversation/start: %s - falling back to /ai_start", e)
+
+    # Fallback to ai_start (best-effort)
+    try:
+        params = {}
+        if user_id:
+            params["user_id"] = user_id
+        if chat_id is not None:
+            params["chat_id"] = chat_id
+        # POST to ai_start without blocking; ignore response code
+        _http.post(f"{LIVE_LISTEN_URL.rstrip('/')}/ai_start", json={"call_sid": call_sid, "chat_id": chat_id}, timeout=REQ_TIMEOUT)
+        logger.info("Fallback ai_start notified for %s", call_sid)
+    except Exception as e:
+        logger.error("Fallback to /ai_start failed for %s: %s", call_sid, e)
+
+
 # ======================================================================
 # CONFIGURATION
 # ======================================================================
@@ -2833,11 +2872,7 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
                     live_buttons.add(types.InlineKeyboardButton("🎧 LIVE LISTEN", callback_data="live_listen"))
                     bot.send_message(chat_id, "🎯 Emotion call started. Tap LIVE LISTEN to open the monitoring panel.", reply_markup=live_buttons)
                     try:
-                        _http.post(
-                            f"{LIVE_LISTEN_URL}/conversation/start",
-                            json={"call_sid": resolved_sid, "chat_id": chat_id},
-                            timeout=REQ_TIMEOUT,
-                        )
+                        _notify_live_listen_start(resolved_sid, chat_id, user_id_str)
                     except Exception:
                         pass
                 else:
@@ -2866,11 +2901,7 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
                                 except Exception:
                                     pass
                                 try:
-                                    _http.post(
-                                        f"{LIVE_LISTEN_URL}/conversation/start",
-                                        json={"call_sid": final_sid, "chat_id": chat_id},
-                                        timeout=REQ_TIMEOUT,
-                                    )
+                                    _notify_live_listen_start(final_sid, chat_id, user_id_str)
                                 except Exception:
                                     pass
                                 try:
@@ -3020,11 +3051,10 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                     except Exception:
                         logger.exception("Failed to store call metadata in future callback")
                     try:
-                        _http.post(
-                            f"{LIVE_LISTEN_URL}/conversation/start",
-                            json={"call_sid": final_sid, "chat_id": chat_id},
-                            timeout=REQ_TIMEOUT,
-                        )
+                        try:
+                            _notify_live_listen_start(final_sid, chat_id, user_id_str)
+                        except Exception:
+                            pass
                     except Exception:
                         pass
 
@@ -3057,11 +3087,7 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                     except Exception:
                         logger.exception("Failed to record last setup hash")
                     try:
-                        _http.post(
-                            f"{LIVE_LISTEN_URL}/conversation/start",
-                            json={"call_sid": resolved_sid, "chat_id": chat_id},
-                            timeout=REQ_TIMEOUT,
-                        )
+                        _notify_live_listen_start(resolved_sid, chat_id, user_id_str)
                     except Exception:
                         pass
                 else:
@@ -3090,11 +3116,7 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                                 except Exception:
                                     logger.exception("Failed to store call metadata in future callback")
                                 try:
-                                    _http.post(
-                                        f"{LIVE_LISTEN_URL}/conversation/start",
-                                        json={"call_sid": final_sid, "chat_id": chat_id},
-                                        timeout=REQ_TIMEOUT,
-                                    )
+                                                _notify_live_listen_start(final_sid, chat_id, user_id_str)
                                 except Exception:
                                     pass
                                 try:
@@ -3774,7 +3796,7 @@ def ai_start():
     - call_type: Call type (normal, manual, custom, emotion, crack_blast) - auto-detected if not provided
     - mode_label: Display label for UI
     """
-    from config import USE_AI_FLOW, NGROK_URL, DEFAULT_VOICE_ID
+    from config import USE_AI_FLOW, NGROK_URL, LIVE_LISTEN_URL, DEFAULT_VOICE_ID
     from urllib.parse import quote_plus
     
     user_id = request.values.get("user_id") or request.args.get("user_id")
@@ -3875,10 +3897,21 @@ def ai_start():
     resp = VoiceResponse()
     start = Start()
     
-    # WebSocket URL for audio streaming (stripped of protocol for wss:// format)
-    stream_url = f"wss://{NGROK_URL.replace('https://', '').replace('http://', '')}/twilio/media"
-    start.stream(url=stream_url)
+    # Prefer LIVE_LISTEN_URL in environments where the AI websocket is mounted separately.
+    # Fall back to NGROK_URL if LIVE_LISTEN_URL is not configured.
+    media_host = LIVE_LISTEN_URL or NGROK_URL
+    media_host = media_host.strip().rstrip('/')
+    if media_host.startswith('http://'):
+        media_host = media_host.replace('http://', 'ws://', 1)
+    elif media_host.startswith('https://'):
+        media_host = media_host.replace('https://', 'wss://', 1)
+    else:
+        media_host = f"wss://{media_host}"
+    stream_url = f"{media_host}/twilio/media"
+    logger.info(f"[AI_START] Streaming Media URL={stream_url}")
+    start.stream(url=stream_url, track="both")
     resp.append(start)
+    resp.pause(length=60)
     
     if chat_id:
         try:
@@ -6027,11 +6060,7 @@ def _handle_query_processing(call, _):
                 live_buttons.add(types.InlineKeyboardButton("🎧 LIVE LISTEN", callback_data="live_listen"))
                 bot.send_message(chat_id, "🎯 Manual call started. Tap LIVE LISTEN to open the monitoring panel.", reply_markup=live_buttons)
                 try:
-                    _http.post(
-                        f"{LIVE_LISTEN_URL}/conversation/start",
-                        json={"call_sid": sid, "chat_id": chat_id},
-                        timeout=REQ_TIMEOUT,
-                    )
+                    _notify_live_listen_start(sid, chat_id, user_id_str)
                 except Exception:
                     pass
                 user_obj = types.User(id=call.from_user.id, is_bot=False, first_name=read_user_file(user_id_str, "Name.txt") or "User")
@@ -6160,11 +6189,7 @@ def _handle_query_processing(call, _):
                 live_buttons.add(types.InlineKeyboardButton("🎧 LIVE LISTEN", callback_data="live_listen"))
                 bot.send_message(chat_id, "🎯 Custom call started. Tap LIVE LISTEN to open the monitoring panel.", reply_markup=live_buttons)
                 try:
-                    _http.post(
-                        f"{LIVE_LISTEN_URL}/conversation/start",
-                        json={"call_sid": sid, "chat_id": chat_id},
-                        timeout=REQ_TIMEOUT,
-                    )
+                    _notify_live_listen_start(sid, chat_id, user_id_str)
                 except Exception:
                     pass
                 user_obj = types.User(id=call.from_user.id, is_bot=False, first_name=read_user_file(user_id_str, "Name.txt") or "User")
