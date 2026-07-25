@@ -43,6 +43,10 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
               record: bool = True, machine_detection: Optional[str] = None,
               async_amd: bool = False,
               async_amd_status_callback: str = None,
+              machine_detection_timeout: Optional[int] = None,
+              machine_detection_speech_threshold: Optional[int] = None,
+              machine_detection_speech_end_threshold: Optional[int] = None,
+              machine_detection_silence_timeout: Optional[int] = None,
               **kwargs) -> Optional[str]:
     """
     Place a Twilio call with optional async AMD.
@@ -107,6 +111,14 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
             call_params["async_amd_status_callback"] = async_amd_status_callback
         elif chat_id:
             call_params["async_amd_status_callback"] = f"{NGROK_URL.rstrip('/')}/amd_callback?user_id={quote_plus(str(user_id))}&chat_id={quote_plus(str(chat_id))}"
+    if machine_detection_timeout is not None:
+        call_params["machine_detection_timeout"] = machine_detection_timeout
+    if machine_detection_speech_threshold is not None:
+        call_params["machine_detection_speech_threshold"] = machine_detection_speech_threshold
+    if machine_detection_speech_end_threshold is not None:
+        call_params["machine_detection_speech_end_threshold"] = machine_detection_speech_end_threshold
+    if machine_detection_silence_timeout is not None:
+        call_params["machine_detection_silence_timeout"] = machine_detection_silence_timeout
     if record:
         call_params["record"] = True
         call_params["recording_channels"] = "mono"
@@ -170,6 +182,10 @@ def make_call_async(
     machine_detection: Optional[str] = None,
     async_amd: bool = False,
     async_amd_status_callback: str = None,
+    machine_detection_timeout: Optional[int] = None,
+    machine_detection_speech_threshold: Optional[int] = None,
+    machine_detection_speech_end_threshold: Optional[int] = None,
+    machine_detection_silence_timeout: Optional[int] = None,
     **kwargs,
 ):
     """Offload Twilio call creation to a background worker so the bot stays responsive."""
@@ -202,6 +218,10 @@ def make_call_and_store_async(
     machine_detection: Optional[str] = None,
     async_amd: bool = False,
     async_amd_status_callback: str = None,
+    machine_detection_timeout: Optional[int] = None,
+    machine_detection_speech_threshold: Optional[int] = None,
+    machine_detection_speech_end_threshold: Optional[int] = None,
+    machine_detection_silence_timeout: Optional[int] = None,
     target: str = "",
     **kwargs,
 ):

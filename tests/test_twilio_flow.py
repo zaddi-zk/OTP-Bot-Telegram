@@ -56,6 +56,20 @@ def test_amd_hold_hangs_up_when_machine_detected():
     assert "Hangup" in body or "Goodbye" in body
 
 
+def test_amd_hold_routes_unknown_to_acknowledgment():
+    bot_module = importlib.import_module("bot")
+    client = bot_module.app.test_client()
+
+    response = client.post(
+        "/amd_hold",
+        data={"user_id": "u1", "chat_id": "123", "AnsweredBy": "unknown"},
+    )
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "/handle_acknowledgment" in body
+
+
 def test_twilio_status_uses_session_chat_id(monkeypatch):
     bot_module = importlib.import_module("bot")
     sent_messages = []

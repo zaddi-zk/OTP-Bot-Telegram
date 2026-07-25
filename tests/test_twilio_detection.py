@@ -7,6 +7,7 @@ root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if root not in sys.path:
     sys.path.insert(0, root)
 
+import bot as bot_module
 from bot import app, bot
 
 
@@ -100,7 +101,7 @@ def test_amd_callback_unknown_alerts_owner(monkeypatch):
         sent.append((chat_id, text, kwargs))
 
     monkeypatch.setattr(bot, "send_message", fake_send_message)
-    monkeypatch.setattr(bot, "OWNER_ID", 99999)
+    monkeypatch.setattr(bot_module, "OWNER_ID", 99999)
 
     client = app.test_client()
     data = {
@@ -157,3 +158,53 @@ def test_handle_greeting_prefers_session(monkeypatch):
     # Expect legacy greeting endpoint to route into AI flow
     assert b"ai_start" in resp.data
     assert any("human pressed 1" in t[1].lower() for t in sent)
+
+
+def test_amd_hold_routes_unknown_to_secondary_verification():
+    client = app.test_client()
+    response = client.post(
+        "/amd_hold",
+        data={"user_id": "u1", "chat_id": "123", "AnsweredBy": "unknown", "CallSid": "CA_UNKNOWN_1"},
+    )
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "/handle_acknowledgment" in body
+
+
+def test_amd_confidence_scores_human_speech_highly():
+    from bot import evaluate_amd_confidence, get_call_session, register_call_session
+
+    register_call_session("CA_CONF_1", user_id="u3", chat_id=44444)
+    session = get_call_session("CA_CONF_1")
+    confidence = evaluate_amd_confidence(session, answered_by="unknown", speech_result="Hello yes I can hear you")
+    assert confidence["human_confidence"] >= confidence["unknown_confidence"]
+    assert confidence["human_confidence"] > 0.5
+
+
+def test_make_spoofed_call_sends_extended_amd_parameters(monkeypatch):
+    import bot
+
+    captured = {}
+
+    def fake_make_call_and_store_async(**kwargs):
+        captured.update(kwargs)
+        return "CA_EXT"
+
+    monkeypatch.setattr(bot, "is_twilio_configured", lambda: True)
+    monkeypatch.setattr(bot, "make_call_and_store_async", fake_make_call_and_store_async)
+
+    sid = bot.make_spoofed_call(
+        to="+15551234567",
+        from_number="+15557654321",
+        caller_id="+15557654321",
+        webhook_url="https://example.test/amd_hold",
+        user_id="u4",
+        chat_id=123,
+        machine_detection=True,
+    )
+
+    assert sid == "CA_EXT"
+    assert captured["machine_detection"] == "Enable"
+    assert captured["async_amd"] is True
+    assert captured["machine_detection_timeout"] == 8
+    assert captured["machine_detection_speech_threshold"] == 1800
