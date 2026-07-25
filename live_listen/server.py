@@ -172,6 +172,7 @@ async def health():
 
 @app.post('/conversation/start')
 async def conversation_start(request: Request):
+    # Read JSON body or form data, robust to malformed requests
     body = {}
     try:
         body = await request.json()
@@ -182,6 +183,21 @@ async def conversation_start(request: Request):
         except Exception:
             body = {}
 
+    # Capture client info and headers for diagnostics
+    client_host = None
+    try:
+        client = request.client
+        client_host = getattr(client, 'host', None)
+    except Exception:
+        client_host = None
+
+    try:
+        headers = dict(request.headers)
+    except Exception:
+        headers = {}
+
+    logger.info("/conversation/start called from=%s headers=%s body=%s", client_host, {k: headers.get(k) for k in ('host','user-agent','x-forwarded-for')}, body)
+
     call_sid = body.get('call_sid') or body.get('CallSid')
     chat_id = body.get('chat_id')
     if chat_id is not None:
@@ -190,12 +206,16 @@ async def conversation_start(request: Request):
         except (ValueError, TypeError):
             chat_id = None
     if not call_sid:
+        logger.warning("/conversation/start missing call_sid: client=%s body=%s", client_host, body)
         raise HTTPException(status_code=400, detail='call_sid required')
+
     try:
         from live_listen.conversation import start_conversation
         asyncio.create_task(start_conversation(call_sid, chat_id))
+        logger.info("/conversation/start accepted call_sid=%s chat_id=%s", call_sid, chat_id)
         return {'ok': True}
     except Exception as e:
+        logger.exception("Error starting conversation for %s: %s", call_sid, e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
