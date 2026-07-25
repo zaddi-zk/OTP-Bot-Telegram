@@ -1,6 +1,7 @@
 import importlib
 import os
 import sys
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -282,3 +283,76 @@ def test_chat_with_ai_uses_single_canonical_system_prompt(monkeypatch):
     assert result == "ok"
     assert captured["messages"][0]["role"] == "system"
     assert captured["messages"][0]["content"].startswith("CANONICAL_PROMPT")
+
+
+def test_fast_mode_writes_normal_call_setup_without_custom_script(monkeypatch):
+    bot_module = importlib.import_module("bot")
+    from core.files import read_user_file, user_conf_path
+
+    user_id = "123456789"
+    conf_dir = user_conf_path(user_id)
+    for name in [
+        "Name.txt",
+        "Company Name.txt",
+        "phonenum.txt",
+        "Caller ID.txt",
+        "From Name.txt",
+        "Language.txt",
+        "Delivery.txt",
+        "Digits.txt",
+        "call_mode_label.txt",
+        "custom_script.txt",
+    ]:
+        path = conf_dir / name
+        if path.exists():
+            path.unlink()
+
+    monkeypatch.setattr(bot_module, "is_premium_user", lambda uid: True)
+    sent_messages = []
+    monkeypatch.setattr(bot_module.bot, "send_message", lambda chat_id, text, **kwargs: sent_messages.append((chat_id, text)))
+
+    bot_module.set_user_state(user_id, "fast_mode_awaiting")
+    message = SimpleNamespace(
+        from_user=SimpleNamespace(id=123456789),
+        chat=SimpleNamespace(id=12345),
+        text="Alice, Acme Bank, +15551234567, +15557654321, Support Team, en, sms, 6",
+    )
+
+    bot_module.handle_stateful_text(message)
+
+    assert read_user_file(user_id, "Name.txt", "") == "Alice"
+    assert read_user_file(user_id, "Company Name.txt", "") == "Acme Bank"
+    assert read_user_file(user_id, "phonenum.txt", "") == "+15551234567"
+    assert read_user_file(user_id, "Caller ID.txt", "") == "+15557654321"
+    assert read_user_file(user_id, "From Name.txt", "") == "Support Team"
+    assert read_user_file(user_id, "Language.txt", "") == "en"
+    assert read_user_file(user_id, "Delivery.txt", "") == "sms"
+    assert read_user_file(user_id, "Digits.txt", "") == "6"
+    assert read_user_file(user_id, "CodeLength.txt", "") == "6"
+    assert read_user_file(user_id, "call_mode_label.txt", "") == "Fast Mode"
+    assert not (conf_dir / "custom_script.txt").exists()
+    assert bot_module.get_user_state(user_id) == "normal_call_step_9_voice"
+
+
+def test_manual_calls_use_custom_script_as_system_prompt(monkeypatch):
+    import config as config_module
+
+    captured = {}
+
+    def fake_call_groq(messages, max_retries=2):
+        captured["messages"] = messages
+        return "ok"
+
+    monkeypatch.setattr(llm_module, "_call_groq", fake_call_groq)
+    monkeypatch.setattr(config_module, "SYSTEM_PROMPT", "CANONICAL_PROMPT")
+
+    session = CallSession("CA_PROMPT_CUSTOM")
+    session.call_type = "manual"
+    session.custom_script = "CUSTOM_SCRIPT_INSTRUCTIONS"
+
+    result = llm_module.generate_response("hello", "", session=session)
+
+    assert result == "ok"
+    assert captured["messages"][0]["role"] == "system"
+    assert captured["messages"][0]["content"].startswith("CUSTOM_SCRIPT_INSTRUCTIONS")
+    assert "CANONICAL_PROMPT" not in captured["messages"][0]["content"]

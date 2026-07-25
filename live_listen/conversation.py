@@ -156,6 +156,12 @@ async def generate_tts_and_publish(call_sid: str, text: str, filename_prefix: st
             print('TTS save_audio failed; no audio file created')
             return None
         url = f"{NGROK_URL.rstrip('/')}/audio/{call_sid}/{quote_plus(filename)}"
+        logger.info(
+            "[AUDIO_URL] call_sid=%s generated_filename=%s public_url=%s",
+            call_sid,
+            filename,
+            url,
+        )
         try:
             twilio_client.calls(call_sid).update(twiml=f"<Response><Play>{url}</Play></Response>")
             return url

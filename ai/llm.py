@@ -55,12 +55,22 @@ def generate_response(
         logger.error("[LLM-Groq] GROQ_API_KEY not configured. Set via Railway env or .env")
         return "I'm having technical difficulties. Please try again."
     
-    # Enforce the single canonical system prompt from config.py.
-    # This prevents prompt drift and keeps the AI consistent.
+    # Select the active system prompt by call mode.
+    # Normal/fast flows always use the canonical prompt from config.
+    # Manual/custom flows use the custom script as the prompt override.
     from config import get_system_prompt
 
-    system_prompt = get_system_prompt()
-    
+    canonical_prompt = get_system_prompt()
+    selected_prompt = canonical_prompt
+
+    if session is not None:
+        session_call_type = getattr(session, "call_type", None) or call_type
+        session_custom_script = getattr(session, "custom_script", None)
+        custom_script = session_custom_script or None
+
+        if custom_script and str(session_call_type).lower() in {"manual", "custom", "manual_call", "custom_call"}:
+            selected_prompt = custom_script.strip()
+
     # Emotion-based response modifier (subtle, for conversational tone)
     emotion_suffix = {
         "angry": "\nSpeak with urgency and slight concern.",
@@ -68,10 +78,10 @@ def generate_response(
         "urgent": "\nSpeak with professional urgency.",
         "neutral": ""
     }.get(emotion.lower(), "")
-    
-    full_system_prompt = system_prompt + emotion_suffix
+
+    full_system_prompt = selected_prompt + emotion_suffix
     call_context = call_context or "Call Context: none"
-    
+
     user_content = (
         f"Call Context:\n{call_context}\n\n"
         f"Conversation History:\n{context}\n\n"

@@ -554,9 +554,31 @@ async def get_audio_file(call_sid: str, filename: str):
     Returns: MP3 audio file or 404
     """
     filepath = f"audio/{call_sid}/{filename}"
-    if os.path.exists(filepath):
+    resolved_path = os.path.abspath(filepath)
+    exists = os.path.exists(filepath)
+    logger.info(
+        "[AUDIO_READ] requested_call_sid=%s requested_filename=%s cwd=%s resolved_abs_path=%s exists=%s",
+        call_sid,
+        filename,
+        os.getcwd(),
+        resolved_path,
+        exists,
+    )
+    if exists:
         from fastapi.responses import FileResponse
         return FileResponse(filepath, media_type="audio/mpeg")
     else:
-        logger.warning(f"Audio file not found: {filepath}")
+        directory = os.path.dirname(resolved_path)
+        try:
+            contents = sorted(os.listdir(directory)) if os.path.isdir(directory) else []
+        except Exception as list_exc:
+            contents = [f"<list_error: {list_exc}>"]
+        logger.warning(
+            "[AUDIO_READ_MISSING] requested_call_sid=%s requested_filename=%s checked_path=%s directory=%s contents=%s",
+            call_sid,
+            filename,
+            resolved_path,
+            directory,
+            contents,
+        )
         return {"error": "Not found"}, 404

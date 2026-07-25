@@ -124,7 +124,14 @@ def save_audio(call_sid: str, text: str, voice_id: str = None, base_path: str = 
 
         with open(filepath, "wb") as f:
             f.write(audio_bytes)
-        logger.info(f"Saved audio: {filepath}")
+        logger.info(
+            "[AUDIO_WRITE] call_sid=%s filename=%s cwd=%s abs_path=%s exists_after_write=%s",
+            call_sid,
+            filename,
+            os.getcwd(),
+            os.path.abspath(filepath),
+            os.path.exists(filepath),
+        )
         return filename
     except Exception as e:
         logger.error(f"Failed to save audio: {e}")
