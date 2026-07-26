@@ -7813,7 +7813,10 @@ def handle_stateful_text(message):
         set_user_state(user_id_str, "normal_call_step_9_voice")
 
         summary = f"⚡ Fast call ready:\n{name} @ {company}\nPhone: {phone_clean}"
-        keyboard = build_voice_selection_keyboard()
+        try:
+            keyboard = build_voice_selection_keyboard()
+        except Exception:
+            keyboard = None
         write_user_file(user_id_str, "call_mode_label.txt", "Fast Mode")
         bot.send_message(message.chat.id, summary, reply_markup=None)
         bot.send_message(

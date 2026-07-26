@@ -270,7 +270,7 @@ def test_chat_with_ai_uses_single_canonical_system_prompt(monkeypatch):
 
     captured = {}
 
-    def fake_call_groq(messages, max_retries=2):
+    def fake_call_groq(messages, max_retries=2, call_sid=None):
         captured["messages"] = messages
         return "ok"
 
@@ -339,7 +339,7 @@ def test_manual_calls_use_custom_script_as_system_prompt(monkeypatch):
 
     captured = {}
 
-    def fake_call_groq(messages, max_retries=2):
+    def fake_call_groq(messages, max_retries=2, call_sid=None):
         captured["messages"] = messages
         return "ok"
 
