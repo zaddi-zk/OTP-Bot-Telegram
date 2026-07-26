@@ -44,13 +44,13 @@ try:
             logger_temp = logging.getLogger(__name__)
             logger_temp.error("[STARTUP] Groq Whisper ASR initialization failed - transcription disabled")
             # Stub: return empty string if ASR unavailable
-            def process_ulaw_buffer(ulaw_bytes: bytes) -> str:
+            def process_ulaw_buffer(ulaw_bytes: bytes, context: dict | None = None) -> str:
                 return ""
     except (ImportError, Exception) as e:
         logger_temp = logging.getLogger(__name__)
         logger_temp.error(f"[STARTUP] ASR import failed: {e} - transcription disabled")
         # Stub: return empty string if ASR unavailable
-        def process_ulaw_buffer(ulaw_bytes: bytes) -> str:
+        def process_ulaw_buffer(ulaw_bytes: bytes, context: dict | None = None) -> str:
             return ""
     
     AI_AVAILABLE = True
@@ -526,7 +526,7 @@ async def twilio_media(ws: WebSocket):
                                     except Exception:
                                         logger.debug("[AI_PROCESS] buffer conversion skipped/failed")
 
-                                    text = process_ulaw_buffer(buf_bytes)
+                                    text = process_ulaw_buffer(buf_bytes, context={"call_sid": call_sid, "chat_id": session.chat_id if session else None, "user_id": session.user_id if session and hasattr(session, 'user_id') else None})
                                     audio_buffer.clear()
 
                                     if text and len(text) > 1:

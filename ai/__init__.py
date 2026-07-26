@@ -17,7 +17,7 @@ except ImportError:
     # Provide stub functions if ASR fails to import
     def transcribe_pcm16(pcm_16k_bytes: bytes) -> str:
         return ""
-    def process_ulaw_buffer(ulaw_bytes: bytes) -> str:
+    def process_ulaw_buffer(ulaw_bytes: bytes, context: dict | None = None) -> str:
         return ""
 
 __all__ = [

@@ -9,6 +9,7 @@ import struct
 import logging
 from io import BytesIO
 from config import GROQ_API_KEY, WHISPER_MODEL
+from core.logging_utils import structured_log, build_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,7 @@ def transcribe_audio_buffer(audio_bytes: bytes, audio_format: str = "wav") -> st
         Transcribed text (empty string if no speech or API error)
     """
     if not audio_bytes or len(audio_bytes) < 512:
+        structured_log(logger, logging.WARNING, "EMPTY_PAYLOAD or too small for transcription", call_sid=None, stage="ASR_PRECHECK", payload_len=len(audio_bytes) if audio_bytes else 0)
         return ""
     
     if not GROQ_API_KEY or "YOUR_" in GROQ_API_KEY:
@@ -140,46 +142,52 @@ def transcribe_audio_buffer(audio_bytes: bytes, audio_format: str = "wav") -> st
     
     try:
         session = get_groq_session()
-        
+
         # Prepare audio file
         audio_file = BytesIO(audio_bytes)
         audio_file.name = f"audio.{audio_format}"
-        
+
         files = {
             "file": (f"audio.{audio_format}", audio_file),
         }
-        
+
         data = {
             "model": WHISPER_MODEL,
             "language": "en",
         }
-        
+
+        structured_log(logger, logging.DEBUG, "ASR_REQUEST", stage="ASR_REQUEST", payload_len=len(audio_bytes), audio_format=audio_format)
+
         response = session.post(
             GROQ_WHISPER_URL,
             files=files,
             data=data,
             timeout=30
         )
-        
+
+        structured_log(logger, logging.DEBUG, "ASR_RESPONSE", stage="ASR_RESPONSE", status_code=response.status_code)
+
         if response.status_code == 200:
             result = response.json()
             text = result.get("text", "").strip()
             if text:
-                logger.debug(f"[ASR] Transcribed: {text[:100]}...")
+                structured_log(logger, logging.INFO, "ASR_FINAL_TRANSCRIPT", stage="ASR_RESULT", transcript=text[:100])
+            else:
+                structured_log(logger, logging.WARNING, "EMPTY_TRANSCRIPT", stage="ASR_RESULT")
             return text
         else:
-            logger.error(f"[ASR] Groq API error {response.status_code}: {response.text}")
+            structured_log(logger, logging.ERROR, "GROQ_API_ERROR", stage="ASR_ERROR", status=response.status_code, response=response.text[:200])
             return ""
-            
+
     except requests.Timeout:
-        logger.error("[ASR] Groq API request timed out (30s)")
+        structured_log(logger, logging.ERROR, "ASR_TIMEOUT", stage="ASR_ERROR")
         return ""
     except Exception as e:
-        logger.error(f"[ASR] Transcription error: {e}")
+        structured_log(logger, logging.ERROR, "ASR_EXCEPTION", stage="ASR_ERROR", error=str(e))
         return ""
 
 
-def process_ulaw_buffer(ulaw_bytes: bytes) -> str:
+def process_ulaw_buffer(ulaw_bytes: bytes, context: dict | None = None) -> str:
     """
     Convert Twilio µ-law (8kHz) audio to text via Groq Whisper.
     
@@ -192,23 +200,45 @@ def process_ulaw_buffer(ulaw_bytes: bytes) -> str:
     Returns:
         Transcribed text (empty string if error)
     """
+    ctx = context or {}
+    call_sid = ctx.get("call_sid") if isinstance(ctx, dict) else None
+    stage = "ULAW_PROCESS"
+
     if not ulaw_bytes:
+        structured_log(logger, logging.WARNING, "NO_MEDIA_RECEIVED", call_sid=call_sid, stage=stage)
         return ""
-    
+
     try:
+        payload_len = len(ulaw_bytes)
+        structured_log(logger, logging.DEBUG, "ULAW_BUFFER_RECEIVED", call_sid=call_sid, stage=stage, payload_len=payload_len)
+
         # Convert µ-law (8kHz) to PCM16 (16kHz)
         pcm_16k = _ulaw_to_pcm16(ulaw_bytes)
         if not pcm_16k:
+            structured_log(logger, logging.ERROR, "ULAW_DECODE_FAILED", call_sid=call_sid, stage=stage)
             return ""
-        
+
+        decoded_len = len(pcm_16k)
+        if decoded_len < 320:  # arbitrary threshold for too-short audio (~20ms at 16kHz)
+            structured_log(logger, logging.WARNING, "PCM_TOO_SHORT", call_sid=call_sid, stage=stage, pcm_len=decoded_len)
+
+        structured_log(logger, logging.DEBUG, "PCM_READY", call_sid=call_sid, stage=stage, pcm_len=decoded_len)
+
         # Build WAV file with proper headers
         wav_data = _build_wav_header(pcm_16k, sample_rate=16000, channels=1, sample_width=2)
-        
+        structured_log(logger, logging.DEBUG, "WAV_BUILT", call_sid=call_sid, stage=stage, wav_len=len(wav_data))
+
         # Transcribe via Groq
-        return transcribe_audio_buffer(wav_data, audio_format="wav")
-        
+        transcript = transcribe_audio_buffer(wav_data, audio_format="wav")
+        if transcript:
+            structured_log(logger, logging.INFO, "TRANSCRIBE_SUCCESS", call_sid=call_sid, stage=stage, transcript=transcript[:200])
+        else:
+            structured_log(logger, logging.WARNING, "TRANSCRIBE_EMPTY", call_sid=call_sid, stage=stage)
+
+        return transcript
+
     except Exception as e:
-        logger.error(f"[ASR] Audio processing error: {e}")
+        structured_log(logger, logging.ERROR, "ASR_PROCESSING_EXCEPTION", call_sid=call_sid, stage=stage, error=str(e))
         return ""
 
 
