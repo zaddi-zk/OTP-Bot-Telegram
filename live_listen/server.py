@@ -168,6 +168,15 @@ async def startup_event():
         else:
             logger_startup.error("[ROUTE_CHECK] Flask Mount is registered before /twilio/media WebSocket route")
             print("[ROUTE_CHECK] Flask Mount is registered before /twilio/media WebSocket route", file=sys.stdout)
+            raise RuntimeError("[ROUTE_CHECK] Invalid routing configuration: Flask mount precedes /twilio/media WebSocket route")
+    elif mount_index is not None and twilio_index is None:
+        logger_startup.error("[ROUTE_CHECK] /twilio/media WebSocket route missing while Flask mount exists")
+        print("[ROUTE_CHECK] /twilio/media WebSocket route missing while Flask mount exists", file=sys.stdout)
+        raise RuntimeError("[ROUTE_CHECK] Invalid routing configuration: /twilio/media WebSocket route missing")
+    elif mount_index is None and twilio_index is None:
+        logger_startup.error("[ROUTE_CHECK] No Flask mount and no /twilio/media WebSocket route registered")
+        print("[ROUTE_CHECK] No Flask mount and no /twilio/media WebSocket route registered", file=sys.stdout)
+        raise RuntimeError("[ROUTE_CHECK] Invalid routing configuration: missing both Flask mount and /twilio/media WebSocket route")
 
     try:
         from bot import get_runtime_mode, bot, USE_WEBHOOK, set_telegram_webhook, mark_webhook_mode

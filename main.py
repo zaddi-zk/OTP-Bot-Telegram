@@ -37,6 +37,13 @@ if not logger.handlers:
     logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
+logger.warning("[MAIN_STARTUP] Imported FastAPI app; router has %s routes", len(fastapi_app.router.routes))
+print(f"[MAIN_ROUTE_TABLE] Imported FastAPI app; router has {len(fastapi_app.router.routes)} routes")
+for idx, route in enumerate(fastapi_app.router.routes):
+    route_path = getattr(route, "path", None) or getattr(route, "prefix", None)
+    logger.warning("[MAIN_ROUTE_TABLE] %s: %s %s", idx, route.__class__.__name__, route_path)
+    print(f"[MAIN_ROUTE_TABLE] {idx}: {route.__class__.__name__} {route_path}")
+
 
 def ensure_conf_dir() -> None:
     try:
