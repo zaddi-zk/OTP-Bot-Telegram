@@ -7,9 +7,11 @@ import requests
 import os
 import time
 import logging
+import traceback
 from io import BytesIO
 from typing import Optional
 from config import ELEVENLABS_API_KEY, DEFAULT_VOICE_ID
+from core.logging_utils import structured_log
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +35,7 @@ def _fallback_gtts_audio(text: str) -> bytes:
     return b""
 
 
-def generate_audio(text: str, voice_id: str = None) -> bytes:
+def generate_audio(text: str, voice_id: str = None, call_sid: str | None = None) -> bytes:
     """
     Generate MP3 audio using ElevenLabs.
     
@@ -45,7 +47,8 @@ def generate_audio(text: str, voice_id: str = None) -> bytes:
         MP3 audio bytes (empty bytes if error)
     """
     voice_id = voice_id or DEFAULT_VOICE_ID
-    
+    structured_log(logger, logging.INFO, "TTS_BEGIN", call_sid=call_sid, stage="TTS_BEGIN", voice_id=voice_id, text_preview=text[:160])
+
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
     headers = {
         "Accept": "audio/mpeg",
@@ -81,16 +84,22 @@ def generate_audio(text: str, voice_id: str = None) -> bytes:
         content = response.content
         logger.info(f"ElevenLabs TTS returned {len(content) if content is not None else 0} bytes")
         if not content:
+            structured_log(logger, logging.WARNING, "TTS_SKIPPED", call_sid=call_sid, stage="TTS_COMPLETE", reason="empty_content")
             logger.error("ElevenLabs TTS returned empty content")
             return _fallback_gtts_audio(text)
+        structured_log(logger, logging.INFO, "TTS_STREAMING", call_sid=call_sid, stage="TTS_STREAMING", bytes=len(content))
+        structured_log(logger, logging.INFO, "TTS_COMPLETE", call_sid=call_sid, stage="TTS_COMPLETE", bytes=len(content))
         return content
     except requests.exceptions.Timeout:
+        structured_log(logger, logging.ERROR, "TIMEOUT", call_sid=call_sid, stage="TTS_TIMEOUT", timer_name="elevenlabs_tts", elapsed_ms=30000, who_created="ai.tts.generate_audio", reason="request_timeout")
         logger.error("ElevenLabs TTS timeout")
         return _fallback_gtts_audio(text)
     except requests.exceptions.HTTPError as he:
+        structured_log(logger, logging.ERROR, "EXCEPTION", call_sid=call_sid, stage="TTS_EXCEPTION", reason="elevenlabs_http_error", error=str(he), traceback=traceback.format_exc())
         logger.error(f"ElevenLabs TTS HTTP error: {he} - {getattr(he.response,'text', '')}")
         return _fallback_gtts_audio(text)
     except Exception as e:
+        structured_log(logger, logging.ERROR, "EXCEPTION", call_sid=call_sid, stage="TTS_EXCEPTION", reason="tts_generation_exception", error=str(e), traceback=traceback.format_exc())
         logger.error(f"ElevenLabs TTS error: {e}")
         return _fallback_gtts_audio(text)
 
@@ -109,7 +118,7 @@ def save_audio(call_sid: str, text: str, voice_id: str = None, base_path: str = 
     Returns:
         Filename (e.g., "1234567890.mp3") or placeholder filename if failed
     """
-    audio_bytes = generate_audio(text, voice_id)
+    audio_bytes = generate_audio(text, voice_id, call_sid=call_sid)
     
     try:
         dir_path = os.path.join(base_path, call_sid)
@@ -119,6 +128,7 @@ def save_audio(call_sid: str, text: str, voice_id: str = None, base_path: str = 
         filepath = os.path.join(dir_path, filename)
         
         if not audio_bytes:
+            structured_log(logger, logging.WARNING, "TTS_SKIPPED", call_sid=call_sid, stage="TTS_COMPLETE", reason="no_audio_bytes")
             logger.warning(f"No audio generated for call_sid={call_sid}; returning None for fallback handling")
             return None
 

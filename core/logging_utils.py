@@ -1,5 +1,6 @@
 import logging
 import json
+import traceback
 from datetime import datetime
 
 
@@ -26,3 +27,17 @@ def structured_log(logger: logging.Logger, level: int, msg: str, *, call_sid: st
         except Exception:
             extra = f" {kwargs}"
     logger.log(level, f"{ts} {prefix} {msg}{extra}")
+
+
+def log_exception(logger: logging.Logger, *, call_sid: str | None = None, session_id: str | None = None, stage: str | None = None, reason: str | None = None, **kwargs) -> None:
+    structured_log(
+        logger,
+        logging.ERROR,
+        "EXCEPTION",
+        call_sid=call_sid,
+        user_id=session_id,
+        stage=stage,
+        reason=reason,
+        traceback=traceback.format_exc(),
+        **kwargs,
+    )

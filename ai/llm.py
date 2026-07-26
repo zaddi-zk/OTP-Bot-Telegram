@@ -8,8 +8,10 @@ Production-only: No fallbacks to local LLM.
 import requests
 import logging
 import time
+import traceback
 from typing import Optional
 from config import GROQ_API_KEY, GROQ_MODEL
+from core.logging_utils import structured_log
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +53,12 @@ def generate_response(
         AI agent's response
     """
     
+    call_sid = getattr(session, "call_sid", None)
+    structured_log(logger, logging.INFO, "LLM_REQUEST", call_sid=call_sid, stage="LLM_REQUEST", call_type=call_type, emotion=emotion, prompt_preview=user_text[:160])
+
     if not GROQ_API_KEY or "YOUR_" in GROQ_API_KEY:
         logger.error("[LLM-Groq] GROQ_API_KEY not configured. Set via Railway env or .env")
+        structured_log(logger, logging.WARNING, "LLM_SKIPPED", call_sid=call_sid, stage="LLM_RESPONSE", reason="missing_api_key")
         return "I'm having technical difficulties. Please try again."
     
     # Select the active system prompt by call mode.
@@ -94,14 +100,16 @@ def generate_response(
         {"role": "user", "content": user_content}
     ]
 
-    response = _call_groq(messages, max_retries)
+    response = _call_groq(messages, max_retries, call_sid=call_sid)
     if response:
+        structured_log(logger, logging.INFO, "LLM_RESPONSE", call_sid=call_sid, stage="LLM_RESPONSE", response=response[:200])
         return response
-    
+
+    structured_log(logger, logging.WARNING, "LLM_SKIPPED", call_sid=call_sid, stage="LLM_RESPONSE", reason="llm_unavailable_or_empty_response")
     return "I didn't catch that. Could you please repeat?"
 
 
-def _call_groq(messages: list, max_retries: int = 2) -> Optional[str]:
+def _call_groq(messages: list, max_retries: int = 2, call_sid: str | None = None) -> Optional[str]:
     """
     Send chat messages to Groq API with retries.
     Production-only implementation - no fallbacks.
@@ -128,9 +136,10 @@ def _call_groq(messages: list, max_retries: int = 2) -> Optional[str]:
     }
     
     session = get_groq_session()
-    
+
     for attempt in range(max_retries):
         try:
+            started_at = time.monotonic()
             resp = session.post(url, json=payload, timeout=10, headers=headers)
             
             if resp.status_code == 200:
@@ -143,6 +152,8 @@ def _call_groq(messages: list, max_retries: int = 2) -> Optional[str]:
                     logger.warning("[LLM-Groq] Empty response from API")
                     return None
             elif resp.status_code == 429:
+                elapsed_ms = int((time.monotonic() - started_at) * 1000)
+                structured_log(logger, logging.WARNING, "TIMEOUT", call_sid=call_sid, stage="LLM_TIMEOUT", timer_name="groq_chat_completion", elapsed_ms=elapsed_ms, who_created="ai.llm._call_groq", reason="rate_limited")
                 logger.warning(f"[LLM-Groq] Rate limited (attempt {attempt + 1}/{max_retries})")
                 if attempt < max_retries - 1:
                     time.sleep(1 + attempt * 2)
@@ -152,14 +163,18 @@ def _call_groq(messages: list, max_retries: int = 2) -> Optional[str]:
                 return None
                 
         except requests.Timeout:
+            elapsed_ms = int((time.monotonic() - started_at) * 1000)
+            structured_log(logger, logging.ERROR, "TIMEOUT", call_sid=call_sid, stage="LLM_TIMEOUT", timer_name="groq_chat_completion", elapsed_ms=elapsed_ms, who_created="ai.llm._call_groq", reason="request_timeout")
             logger.warning(f"[LLM-Groq] Timeout (attempt {attempt + 1}/{max_retries})")
             if attempt < max_retries - 1:
                 time.sleep(1)
                 continue
         except Exception as e:
+            structured_log(logger, logging.ERROR, "EXCEPTION", call_sid=call_sid, stage="LLM_EXCEPTION", reason="llm_request_exception", error=str(e), traceback=traceback.format_exc())
             logger.error(f"[LLM-Groq] Error: {e}")
             return None
     
+    structured_log(logger, logging.WARNING, "LLM_SKIPPED", call_sid=call_sid, stage="LLM_RESPONSE", reason="all_retries_exhausted")
     logger.error("[LLM-Groq] All retries exhausted")
     return None
 

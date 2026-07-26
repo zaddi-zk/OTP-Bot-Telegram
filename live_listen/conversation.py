@@ -24,9 +24,12 @@ import os
 import time
 import math
 import random
+import traceback
 from typing import Optional
 from enum import Enum
 from urllib.parse import quote_plus
+
+from core.logging_utils import structured_log
 
 from twilio.rest import Client
 from config import ACCOUNT_SID, AUTH_TOKEN, NGROK_URL
@@ -271,6 +274,7 @@ async def handle_media_event(call_sid: str, audio_bytes: bytes):
     """
     session = await conv_manager.get_session(call_sid)
     session.last_media_time = time.time()
+    structured_log(logger, logging.INFO, "VAD_START_SPEECH", call_sid=call_sid, user_id=session.user_id, stage="VAD_START", bytes=len(audio_bytes))
     # Append to buffer (short-term rolling buffer)
     session.buffer.extend(audio_bytes)
     # Keep buffer limited
@@ -303,7 +307,12 @@ async def handle_media_event(call_sid: str, audio_bytes: bytes):
                 buf = bytes(session.buffer)
                 session.buffer.clear()
             # perform STT asynchronously
+            structured_log(logger, logging.INFO, "VAD_END_SPEECH", call_sid=call_sid, user_id=session.user_id, stage="VAD_END", rms=round(rms, 6), buffer_bytes=len(buf))
             transcript = await stt_transcribe(buf)
+            if not transcript:
+                structured_log(logger, logging.WARNING, "ASR_FAILED", call_sid=call_sid, user_id=session.user_id, stage="ASR_FINAL", reason="empty_transcript")
+            else:
+                structured_log(logger, logging.INFO, "ASR_FINAL", call_sid=call_sid, user_id=session.user_id, stage="ASR_FINAL", transcript=transcript[:160])
             # handle common spoken-digit parsing if applicable
             digits = parse_spoken_digits(transcript)
             if digits:
@@ -374,6 +383,7 @@ async def handle_captured_transcript(call_sid: str, transcript: str):
         return
 
     # Fallback: ask to repeat
+    structured_log(logger, logging.WARNING, "NO_SPEECH_RECOVERY", call_sid=call_sid, stage="NO_SPEECH_RECOVERY", reason="capture_transcript_failed", transcript_preview=(transcript or '')[:160])
     await play_with_filler(call_sid, 'Sorry, I did not catch that. Could you repeat the code slowly?')
     async with session.lock:
         session.state = ConversationState.PROMPT_FOR_CODE
