@@ -2582,7 +2582,8 @@ def make_spoofed_call(to: str, from_number: str, caller_id: str, webhook_url: st
             call_params["record"] = True
             call_params["recording_channels"] = "mono"
             call_params["recording_status_callback_event"] = ["completed"]
-        call_params["status_callback_event"] = ["queued", "ringing", "answered", "completed"]
+        call_params["status_callback_event"] = ["queued", "ringing", "answered", "completed", "busy", "failed", "no-answer", "canceled"]
+        logger.info("Twilio outbound call params: %s", {k: v for k, v in call_params.items() if k not in {'url', 'async_amd_status_callback'}})
         if amd_param:
             call_params["machine_detection"] = amd_param
             call_params["async_amd"] = True
@@ -2613,6 +2614,16 @@ def make_spoofed_call(to: str, from_number: str, caller_id: str, webhook_url: st
                 "record": call_record,
                 "machine_detection": amd_param,
                 "async_amd": bool(amd_param),
+                "status_callback_event": [
+                    "queued",
+                    "ringing",
+                    "answered",
+                    "completed",
+                    "busy",
+                    "failed",
+                    "no-answer",
+                    "canceled",
+                ],
                 "target": to,
             }
             if amd_param:
