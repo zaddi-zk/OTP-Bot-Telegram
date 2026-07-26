@@ -116,8 +116,9 @@ async def stt_transcribe(audio_bytes: bytes) -> str:
         tmp = os.path.join('conf', 'stt_last.wav')
         with open(tmp, 'wb') as f:
             f.write(audio_bytes)
+        print(f"[STT_DUMP] Wrote {len(audio_bytes)} bytes to {tmp}")
     except Exception:
-        pass
+        print("[STT_DUMP] Failed to write STT dump")
     # In production, call your STT provider here and return transcript string.
     return ''
 

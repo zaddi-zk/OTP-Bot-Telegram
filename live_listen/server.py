@@ -405,12 +405,18 @@ async def twilio_media(ws: WebSocket):
         ws.client,
         {"path": ws.scope.get("path"), "type": ws.scope.get("type"), "query_string": ws.scope.get("query_string")},
     )
+    # Log connect
+    logger.info("[WS_CONNECT] Twilio Media WebSocket connecting client=%s path=%s", ws.client, ws.scope.get('path'))
     await ws.accept()
     call_id = None
     call_sid = None
     session = None
     audio_buffer = bytearray()
     BUFFER_SIZE = 8000  # ~1 second of 8kHz µ-law
+    # Per-connection diagnostics
+    media_event_count = 0
+    total_media_bytes = 0
+    last_event = None
     
     try:
         while True:
@@ -421,11 +427,14 @@ async def twilio_media(ws: WebSocket):
                 continue
 
             event = data.get('event')
+            logger.info("[TWILIO_EVENT] event=%s keys=%s call_sid=%s", event, list(data.keys()), call_sid)
+            last_event = event
             
             # ============ START EVENT ============
             if event == 'start':
                 call_sid = data.get('start', {}).get('callSid')
                 call_id = call_sid
+                logger.info("[TWILIO_START] call_sid=%s caller=%s", call_sid, data.get('start', {}).get('from'))
                 
                 # Initialize session state
                 if USE_AI_FLOW:
@@ -471,28 +480,65 @@ async def twilio_media(ws: WebSocket):
             elif event == 'media':
                 media = data.get('media', {})
                 payload_b64 = media.get('payload')
-                
+
+                media_event_count += 1
+                if payload_b64:
+                    try:
+                        logger.debug("[MEDIA_PAYLOAD] base64_len=%d media_seq=%s", len(payload_b64), media.get('sequence'))
+                    except Exception:
+                        pass
+
                 if payload_b64 and call_id:
                     try:
                         audio_bytes = base64.b64decode(payload_b64)
-                        
+                        total_media_bytes += len(audio_bytes)
+                        logger.info("[MEDIA_DECODE] media_count=%d decoded_bytes=%d total_bytes=%d", media_event_count, len(audio_bytes), total_media_bytes)
+                        # Attempt µ-law -> PCM conversion for diagnostic logging
+                        try:
+                            import audioop
+                            try:
+                                pcm = audioop.ulaw2lin(audio_bytes, 2)
+                                logger.info("[ULAW_CONVERT] success media_count=%d pcm_bytes=%d", media_event_count, len(pcm))
+                            except Exception as e:
+                                logger.warning("[ULAW_CONVERT] conversion failed for media_count=%d: %s", media_event_count, e)
+                                pcm = None
+                        except Exception:
+                            logger.debug("[ULAW_CONVERT] audioop not available - skipping conversion")
+
                         # AI FLOW
                         if USE_AI_FLOW and AI_AVAILABLE and session:
                             # BROADCAST TO LIVE LISTEN clients first
                             await manager.broadcast_media(call_id, audio_bytes)
-                            
+
                             audio_buffer.extend(audio_bytes)
-                            
+                            logger.debug("[AI_BUFFER] buffered_bytes=%d buffer_len=%d", len(audio_bytes), len(audio_buffer))
+
                             # Process when buffer reaches ~1 second
                             if len(audio_buffer) >= BUFFER_SIZE:
                                 try:
-                                    # Transcribe audio
-                                    text = process_ulaw_buffer(bytes(audio_buffer))
+                                    buf_bytes = bytes(audio_buffer)
+                                    logger.info("[AI_PROCESS] processing_buffer_bytes=%d", len(buf_bytes))
+                                    # For diagnostics try to convert the whole buffer to PCM
+                                    try:
+                                        import audioop as _audioop
+                                        _pcm_buf = _audioop.ulaw2lin(buf_bytes, 2)
+                                        logger.info("[AI_PROCESS] buffer_ulaw_converted_pcm_bytes=%d", len(_pcm_buf))
+                                    except Exception:
+                                        logger.debug("[AI_PROCESS] buffer conversion skipped/failed")
+
+                                    text = process_ulaw_buffer(buf_bytes)
                                     audio_buffer.clear()
-                                    
+
                                     if text and len(text) > 1:
                                         logger.warning(f"[AI_TRANSCRIBE] OK: {text}")
-                                        
+                                    else:
+                                        # Log reasons for no-capture fallback
+                                        if not text:
+                                            logger.warning("[AI_TRANSCRIBE_EMPTY] transcript empty for call_sid=%s buffer_bytes=%d", call_sid, len(buf_bytes))
+                                        else:
+                                            logger.warning("[AI_TRANSCRIBE_SHORT] transcript too short='%s' for call_sid=%s", text, call_sid)
+
+                                    if text and len(text) > 1:
                                         # Check for OTP
                                         otp = extract_otp(text, code_length=session.code_length)
                                         if otp:
@@ -514,7 +560,7 @@ async def twilio_media(ws: WebSocket):
                                                 logger.warning(f"[AI_OTP_SENT] OK: Sent to channel and user chat_id={session.chat_id}")
                                             except Exception as e:
                                                 logger.error(f"[AI_OTP_ERROR] CRITICAL: {e}", exc_info=True)
-                                        
+
                                         # Generate AI response using the permanent system prompt
                                         ai_response = chat_with_ai(
                                             text,
@@ -524,7 +570,7 @@ async def twilio_media(ws: WebSocket):
                                             emotion=session.emotion
                                         )
                                         logger.warning(f"[AI_RESPONSE] ✅ type={session.call_type}, emotion={session.emotion}: {ai_response[:80]}")
-                                        
+
                                         # Generate and play audio response back to the caller
                                         filename = save_audio(
                                             call_sid,
@@ -553,7 +599,7 @@ async def twilio_media(ws: WebSocket):
                                             logger.error(f"[AI_AUDIO_PLAYBACK_ERROR] {e}", exc_info=True)
                                 except Exception as e:
                                     logger.error(f"[AI_PROCESS_ERROR] CRITICAL: {e}", exc_info=True)
-                        
+
                         # TRADITIONAL FLOW (fallback)
                         else:
                             if USE_AI_FLOW and not AI_AVAILABLE:
@@ -562,6 +608,7 @@ async def twilio_media(ws: WebSocket):
                                 logger.debug(f"[TRADITIONAL_FLOW] USE_AI_FLOW=false")
                             
                             await manager.broadcast_media(call_id, audio_bytes)
+                            logger.debug("[TRADITIONAL_BUFFER] queued bytes=%d for call_sid=%s", len(audio_bytes), call_id)
                             try:
                                 from live_listen.conversation import handle_media_event
                                 asyncio.create_task(handle_media_event(call_id, audio_bytes))
