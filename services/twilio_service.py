@@ -61,7 +61,10 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
     public_base = build_public_base_url() or NGROK_URL
     webhook_url = webhook_url or f"{public_base.rstrip('/')}/ai_start?user_id={user_id}"
     if async_amd_status_callback is None:
-        async_amd_status_callback = f"{public_base.rstrip('/')}/amd_callback"
+        async_amd_status_callback = f"{public_base.rstrip('/')}/amd_callback?user_id={quote_plus(str(user_id))}"
+        chat_id = kwargs.get("chat_id")
+        if chat_id:
+            async_amd_status_callback += f"&chat_id={quote_plus(str(chat_id))}"
 
     # Always include the minimal required params. Recording is enforced by callers
     # via `record=True` (default). AMD parameters are only added if explicitly

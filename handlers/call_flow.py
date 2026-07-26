@@ -813,8 +813,9 @@ async def initiate_call_from_query(query, user_id: str):
     phone = read_user_file(user_id, "phonenum.txt", "")
     caller_id = read_user_file(user_id, "Caller ID.txt", TWILIO_PHONE_NUMBER)
 
+    public_base = build_public_base_url() or NGROK_URL
     webhook_url = (
-        f"{NGROK_URL.rstrip('/')}/amd_hold"
+        f"{public_base.rstrip('/')}/ai_start"
         f"?user_id={quote_plus(str(user_id))}"
         f"&chat_id={quote_plus(str(chat_id))}"
         f"&name={quote_plus(name)}"
@@ -829,7 +830,7 @@ async def initiate_call_from_query(query, user_id: str):
 
     try:
         # Ensure AMD callback contains user/chat so the handler can correlate
-        async_cb = f"{NGROK_URL.rstrip('/')}/amd_callback?user_id={quote_plus(str(user_id))}"
+        async_cb = f"{public_base.rstrip('/')}/amd_callback?user_id={quote_plus(str(user_id))}"
         if chat_id:
             async_cb += f"&chat_id={quote_plus(str(chat_id))}"
 

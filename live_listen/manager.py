@@ -10,8 +10,11 @@ Core responsibilities:
 """
 import asyncio
 import json
+import logging
 import time
 from typing import Dict, Optional, Set
+
+logger = logging.getLogger(__name__)
 
 
 class LiveListenSession:
@@ -24,6 +27,7 @@ class LiveListenSession:
         self.created_at = time.time()
         self.lock = asyncio.Lock()
         self.cleanup_task = None
+        self.first_audio_frame_sent = False
 
     def to_dict(self):
         return {
@@ -91,17 +95,33 @@ class SessionManager:
                 if s.cleanup_task is None:
                     s.cleanup_task = asyncio.create_task(self._delayed_cleanup(call_id, delay=1))
 
-    async def broadcast_media(self, call_id: str, payload: bytes):
+    async def broadcast_media(self, call_id: str, payload: bytes, sequence: Optional[str] = None):
         """Relay binary payload to all connected clients for a session."""
         s = self.sessions.get(call_id)
         if not s:
             return
         to_remove = []
         async with s.lock:
+            if not s.first_audio_frame_sent:
+                s.first_audio_frame_sent = True
+                logger.info(
+                    "[CALL_MILESTONE] FIRST_AUDIO_FRAME_SENT_TO_TWILIO bytes=%d call_sid=%s sequence=%s",
+                    len(payload),
+                    s.call_sid or call_id,
+                    sequence or "unknown",
+                )
             for ws in list(s.clients):
                 try:
                     await ws.send_bytes(payload)
-                except Exception:
+                except Exception as e:
+                    logger.error(
+                        "[WS_SEND_ERROR] call_id=%s client=%s sequence=%s error=%s",
+                        call_id,
+                        getattr(ws, 'client', None),
+                        sequence or "unknown",
+                        e,
+                        exc_info=True,
+                    )
                     to_remove.append(ws)
             for ws in to_remove:
                 s.clients.discard(ws)

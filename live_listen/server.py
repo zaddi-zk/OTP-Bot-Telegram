@@ -449,7 +449,7 @@ async def twilio_media(ws: WebSocket):
                         # AI FLOW
                         if USE_AI_FLOW and AI_AVAILABLE and session:
                             # BROADCAST TO LIVE LISTEN clients first
-                            await manager.broadcast_media(call_id, audio_bytes)
+                            await manager.broadcast_media(call_id, audio_bytes, sequence=media.get('sequence'))
 
                             audio_buffer.extend(audio_bytes)
                             logger.debug("[AI_BUFFER] buffered_bytes=%d buffer_len=%d", len(audio_bytes), len(audio_buffer))
@@ -567,7 +567,7 @@ async def twilio_media(ws: WebSocket):
                                 logger.warning(f"[FALLBACK] Using traditional flow - AI unavailable")
                             elif not USE_AI_FLOW:
                                 logger.debug(f"[TRADITIONAL_FLOW] USE_AI_FLOW=false")
-                            await manager.broadcast_media(call_id, audio_bytes)
+                            await manager.broadcast_media(call_id, audio_bytes, sequence=media.get('sequence'))
                             logger.debug("[TRADITIONAL_BUFFER] queued bytes=%d for call_sid=%s", len(audio_bytes), call_id)
                     
                     except Exception as e:
