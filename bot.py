@@ -87,6 +87,14 @@ from twilio.request_validator import RequestValidator
 from requests.auth import HTTPBasicAuth
 from gtts import gTTS
 from dotenv import load_dotenv
+from config import (
+    build_public_base_url,
+    build_media_stream_url,
+    USE_AI_FLOW,
+    DEFAULT_VOICE_ID,
+    DATABASE_URL,
+    USE_POSTGRES,
+)
 from handlers.call_flow import amd_callback_flask
 from telebot.apihelper import ApiTelegramException
 try:
@@ -213,8 +221,8 @@ LIVE_LISTEN_URL = _get("LIVE_LISTEN_URL", NGROK_URL)
 LIVE_LISTEN_SECRET = _get("LIVE_LISTEN_SECRET", "")
 # Twilio validation override
 DISABLE_TWILIO_VALIDATION = _get("DISABLE_TWILIO_VALIDATION", "false").lower() in ("true", "1", "yes")
-# Disable Twilio Answering Machine Detection globally.
-DISABLE_AMD = _get("DISABLE_AMD", "false").lower() in ("true", "1", "yes")
+# Disable Twilio Answering Machine Detection globally (default: disabled for simpler Media Stream flow)
+DISABLE_AMD = _get("DISABLE_AMD", "true").lower() in ("true", "1", "yes")
 AMD_ENABLED = not DISABLE_AMD
 # Disable DummyBot fallback in production or when explicitly requested
 DISABLE_DUMMY_BOT = _get("DISABLE_DUMMY_BOT", "false").lower() in ("true", "1", "yes")
@@ -336,7 +344,6 @@ app = Flask(__name__)
 # Ensure the user database is ready on startup.
 def _startup_diagnostics():
     """Check and log configuration status on startup."""
-    from config import DATABASE_URL, USE_POSTGRES, build_public_base_url
     
     logger.info("\n" + "="*70)
     logger.info("🔧 STARTUP DIAGNOSTICS")
@@ -2615,6 +2622,7 @@ def make_spoofed_call(to: str, from_number: str, caller_id: str, webhook_url: st
                 "record": call_record,
                 "machine_detection": amd_param,
                 "async_amd": bool(amd_param),
+                "chat_id": chat_id,
                 "status_callback_event": [
                     "queued",
                     "ringing",
@@ -2824,7 +2832,6 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
 
         def _start():
             try:
-                from config import USE_AI_FLOW, DEFAULT_VOICE_ID
                 
                 name = read_user_file(user_id_str, "Name.txt", "Customer")
                 company = read_user_file(user_id_str, "Company Name.txt", "your bank")
@@ -2973,8 +2980,6 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
 
         def _start():
             try:
-                # Determine webhook based on USE_AI_FLOW
-                from config import USE_AI_FLOW, DEFAULT_VOICE_ID, build_public_base_url
                 
                 if not USE_AI_FLOW:
                     bot.send_message(chat_id, "❌ AI flow is disabled. Cannot start Normal Call.")
@@ -3810,7 +3815,6 @@ def ai_start():
     - call_type: Call type (normal, manual, custom, emotion, crack_blast) - auto-detected if not provided
     - mode_label: Display label for UI
     """
-    from config import USE_AI_FLOW, DEFAULT_VOICE_ID, build_public_base_url, build_media_stream_url
     from urllib.parse import quote_plus
     
     user_id = request.values.get("user_id") or request.args.get("user_id")
@@ -3926,7 +3930,6 @@ def ai_start():
 
 def _build_voice_twiml(call_sid: str, user_id: str, chat_id: Optional[int], answered_by: Optional[str], request_obj=None) -> Response:
     """Return TwiML for the Twilio voice webhook path, logging each milestone once."""
-    from config import build_media_stream_url, build_public_base_url
 
     session = get_call_session(call_sid) if call_sid else None
     if session is None and call_sid:
@@ -5250,7 +5253,6 @@ def send_crack_script_list(chat_id: int, user_id: str) -> None:
 
 
 def launch_crackblast_campaign(user_id: str, chat_id: int) -> None:
-    from config import USE_AI_FLOW, DEFAULT_VOICE_ID
     
     config = get_crackblast_config(user_id)
     numbers = config["numbers"]
@@ -6090,7 +6092,6 @@ def _handle_query_processing(call, _):
 
         def _start_manual_call():
             try:
-                from config import USE_AI_FLOW, DEFAULT_VOICE_ID as CONFIG_DEFAULT_VOICE_ID
                 
                 name = read_user_file(user_id_str, "Name.txt", "Customer")
                 company = read_user_file(user_id_str, "Company Name.txt", "your bank")
@@ -6218,7 +6219,6 @@ def _handle_query_processing(call, _):
 
         def _start_custom_call():
             try:
-                from config import USE_AI_FLOW, DEFAULT_VOICE_ID as CONFIG_DEFAULT_VOICE_ID
                 
                 name = read_user_file(user_id_str, "Name.txt", "Customer")
                 company = read_user_file(user_id_str, "Company Name.txt", "your bank")
