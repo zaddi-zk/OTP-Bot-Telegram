@@ -85,6 +85,11 @@ class LoggingWSGIMiddleware:
             logger.error("[FLASK_MOUNT_ASGI] WebSocket scope reached Flask mount wrapper: %s - rejecting at wrapper", path)
             await send({"type": "websocket.close", "code": 1003})
             return
+        if scope_type != "http":
+            logger.error("[FLASK_MOUNT_ASGI] Non-HTTP scope reached Flask mount wrapper: %s type=%s - rejecting", path, scope_type)
+            await send({"type": "http.response.start", "status": 500, "headers": [(b"content-type", b"text/plain; charset=utf-8")]})
+            await send({"type": "http.response.body", "body": b"Unsupported ASGI scope type for Flask mount", "more_body": False})
+            return
         return await self.wsgi_middleware(scope, receive, send)
 
 if USE_AI_FLOW and AI_AVAILABLE:
@@ -129,10 +134,40 @@ async def startup_event():
         return f"{name}('{path}')"
 
     route_table = [format_route(route) for route in app.router.routes]
+    websocket_routes = [line for line in route_table if line.startswith('APIWebSocketRoute(') or line.startswith('WebSocketRoute(')]
+    twilio_media_route = [line for line in websocket_routes if '/twilio/media' in line]
+    mount_routes = [i for i, route in enumerate(route_table) if route.startswith('Mount(')]
+    twilio_index = next((i for i, route in enumerate(route_table) if '/twilio/media' in route), None)
+    mount_index = mount_routes[0] if mount_routes else None
+
     logger_startup.warning("[ROUTE_TABLE] %s", "\n" + "\n".join(route_table))
     print("[ROUTE_TABLE]", file=sys.stdout)
-    for line in route_table:
-        print(line, file=sys.stdout)
+    for idx, line in enumerate(route_table):
+        print(f"{idx}: {line}", file=sys.stdout)
+
+    if websocket_routes:
+        logger_startup.warning("[WEBSOCKET_ROUTES] %s", "\n" + "\n".join(websocket_routes))
+        print("[WEBSOCKET_ROUTES]", file=sys.stdout)
+        for line in websocket_routes:
+            print(line, file=sys.stdout)
+    else:
+        logger_startup.warning("[WEBSOCKET_ROUTES] none registered")
+        print("[WEBSOCKET_ROUTES] none registered", file=sys.stdout)
+
+    if not twilio_media_route:
+        logger_startup.error("[ROUTE_CHECK] /twilio/media WebSocket route NOT registered")
+        print("[ROUTE_CHECK] /twilio/media WebSocket route NOT registered", file=sys.stdout)
+    else:
+        logger_startup.warning("[ROUTE_CHECK] /twilio/media WebSocket route registered")
+        print("[ROUTE_CHECK] /twilio/media WebSocket route registered", file=sys.stdout)
+
+    if mount_index is not None and twilio_index is not None:
+        if mount_index > twilio_index:
+            logger_startup.warning("[ROUTE_CHECK] Flask Mount is registered after /twilio/media WebSocket route")
+            print("[ROUTE_CHECK] Flask Mount is registered after /twilio/media WebSocket route", file=sys.stdout)
+        else:
+            logger_startup.error("[ROUTE_CHECK] Flask Mount is registered before /twilio/media WebSocket route")
+            print("[ROUTE_CHECK] Flask Mount is registered before /twilio/media WebSocket route", file=sys.stdout)
 
     try:
         from bot import get_runtime_mode, bot, USE_WEBHOOK, set_telegram_webhook, mark_webhook_mode
