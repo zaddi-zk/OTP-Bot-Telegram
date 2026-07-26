@@ -1549,15 +1549,24 @@ def update_call_status_message(call_sid: str, text: str, final: bool = False) ->
         return False
     status_chat_id = session.get("status_chat_id") or session.get("chat_id")
     status_message_id = session.get("status_message_id")
-    if not status_chat_id or not status_message_id:
+    if not status_chat_id:
         return False
+
     try:
-        if final:
-            kb = types.InlineKeyboardMarkup(row_width=1)
-            kb.add(types.InlineKeyboardButton("🏠 MAIN MENU", callback_data="show_main_menu"))
-            bot.edit_message_text(text, status_chat_id, status_message_id, reply_markup=kb, parse_mode="HTML")
-        else:
-            bot.edit_message_text(text, status_chat_id, status_message_id)
+        if status_message_id:
+            if final:
+                kb = types.InlineKeyboardMarkup(row_width=1)
+                kb.add(types.InlineKeyboardButton("🏠 MAIN MENU", callback_data="show_main_menu"))
+                bot.edit_message_text(text, status_chat_id, status_message_id, reply_markup=kb, parse_mode="HTML")
+            else:
+                bot.edit_message_text(text, status_chat_id, status_message_id)
+            return True
+
+        # Fallback: if there is no existing status message, send a new one and save it.
+        msg = bot.send_message(status_chat_id, text)
+        if msg and getattr(msg, "message_id", None):
+            session["status_message_id"] = msg.message_id
+            session["status_chat_id"] = status_chat_id
         return True
     except Exception as e:
         logger.debug(f"Failed to update status message for CallSid={call_sid}: {e}")
@@ -3885,7 +3894,7 @@ def ai_start():
         mode_label=mode_label
     )
     
-    # Build TwiML: start the Media Stream
+    # Build TwiML: start the Media Stream for AI flow.
     resp = VoiceResponse()
     stream_url = build_media_stream_url()
     logger.info(f"[AI_START] Streaming Media URL={stream_url}")

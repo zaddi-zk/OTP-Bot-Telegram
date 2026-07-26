@@ -590,10 +590,125 @@ async def twilio_status(request: Request):
     form = await request.form()
     call_sid = form.get('CallSid')
     status = form.get('CallStatus')
+    answered_by = form.get('AnsweredBy') or form.get('answered_by')
+    chat_id = form.get('chat_id') or form.get('chatId') or request.query_params.get('chat_id') or request.query_params.get('chatId')
+    user_id = form.get('user_id') or form.get('userId') or request.query_params.get('user_id') or request.query_params.get('userId')
+    status_message_id = form.get('status_message_id') or form.get('statusMessageId') or request.query_params.get('status_message_id') or request.query_params.get('statusMessageId')
+
+    # Basic validation
     if not call_sid or not status:
         return JSONResponse({'ok': False}, status_code=400)
+
     # Map Twilio status to manager state and broadcast
     await manager.set_state(call_sid, status)
+
+    # Best-effort: forward the same status into the Flask/bot updater so Telegram
+    # shows Ringing / In-progress / Completed messages. Do this safely to avoid
+    # introducing crashes in the FastAPI handler.
+    try:
+        try:
+            # Import at runtime to avoid circular imports on startup
+            import bot as bot_module
+        except Exception:
+            bot_module = None
+
+        if bot_module:
+            session = None
+            try:
+                session = bot_module.get_call_session(call_sid)
+            except Exception:
+                session = None
+
+            if session is None:
+                try:
+                    session = bot_module.register_call_session(
+                        call_sid,
+                        user_id=user_id,
+                        chat_id=int(chat_id) if chat_id and str(chat_id).isdigit() else chat_id,
+                        endpoint="/twilio/status",
+                        mode_label="Call Status",
+                        status_chat_id=int(chat_id) if chat_id and str(chat_id).isdigit() else chat_id,
+                    )
+                except Exception as e:
+                    logger.debug("[TW_STATUS] failed to register status session: %s", e)
+                    session = None
+
+            if session is not None and status_message_id:
+                try:
+                    session["status_message_id"] = int(status_message_id) if str(status_message_id).isdigit() else status_message_id
+                    if chat_id and not session.get("status_chat_id"):
+                        session["status_chat_id"] = int(chat_id) if str(chat_id).isdigit() else chat_id
+                except Exception:
+                    pass
+
+            # Build status text similar to bot.py:/twilio/status
+            status_text = None
+            final_status = False
+            s = str(status)
+            if s == "queued":
+                status_text = "⏳ Call queued. Awaiting ring..."
+            elif s == "ringing":
+                status_text = "📞 Ringing..."
+            elif s == "in-progress":
+                status_text = "▶️ Call in progress..."
+            elif s == "completed":
+                status_text = "✅ Call ended."
+                final_status = True
+            elif s == "failed":
+                status_text = "❌ Call failed."
+                final_status = True
+            elif s == "no-answer":
+                status_text = "⏱️ No answer."
+                final_status = True
+            elif s == "busy":
+                status_text = "📵 Line busy."
+                final_status = True
+            elif s == "canceled":
+                status_text = "❌ Call canceled."
+                final_status = True
+
+            if status_text:
+                updated = False
+                try:
+                    updated = bot_module.update_call_status_message(call_sid, status_text, final=final_status)
+                except Exception:
+                    updated = False
+
+                if not updated and chat_id:
+                    try:
+                        msg = bot_module.safe_bot_send_message(int(chat_id), status_text)
+                        if msg is not None and getattr(msg, "message_id", None) and session is not None:
+                            session["status_message_id"] = msg.message_id
+                            session["status_chat_id"] = int(chat_id)
+                    except Exception:
+                        logger.debug("[TW_STATUS_FORWARD] fallback send failed for %s", call_sid)
+
+            # If final and completed, send final summary similar to Flask path
+            if final_status and s == "completed":
+                try:
+                    session = bot_module.get_call_session(call_sid)
+                    answered_by_text = (session.get("answered_by") if session else None) or answered_by or "unknown"
+                    detection_text = bot_module.get_answered_by_label(answered_by_text)
+                    summary = (
+                        f"✅ Call ended.\n"
+                        f"{detection_text}\n"
+                        f"CallSid: {call_sid}"
+                    )
+                    if not bot_module.update_call_status_message(call_sid, summary, final=True):
+                        status_chat = None
+                        if session is not None:
+                            status_chat = session.get("status_chat_id") or session.get("chat_id")
+                        if status_chat:
+                            try:
+                                bot_module.bot.send_message(int(status_chat), summary)
+                            except Exception:
+                                pass
+                except Exception:
+                    logger.debug("[TW_STATUS_FORWARD] Failed to send final call summary for %s", call_sid)
+
+    except Exception as e:
+        logger.error(f"[TW_STATUS_FORWARD] Unexpected error while forwarding status for {call_sid}: {e}")
+
     return {'ok': True}
 
 
