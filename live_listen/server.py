@@ -67,6 +67,24 @@ except Exception as e:
 
 logger = logging.getLogger(__name__)
 
+class LoggingWSGIMiddleware:
+    def __init__(self, wsgi_app):
+        self.wsgi_middleware = WSGIMiddleware(wsgi_app)
+
+    async def __call__(self, scope, receive, send):
+        path = scope.get("path")
+        scope_type = scope.get("type")
+        headers = {k.decode(): v.decode() for k, v in scope.get("headers", []) if k in (b"host", b"upgrade", b"connection")}
+        logger.warning(
+            "[FLASK_MOUNT_ASGI] incoming scope type=%s path=%s headers=%s",
+            scope_type,
+            path,
+            headers,
+        )
+        if scope_type == "websocket":
+            logger.warning("[FLASK_MOUNT_ASGI] WebSocket request reached Flask mount wrapper: %s", path)
+        return await self.wsgi_middleware(scope, receive, send)
+
 if USE_AI_FLOW and AI_AVAILABLE:
     logger.warning("[STARTUP] OK - AI FLOW ENABLED - All AI modules available")
 elif USE_AI_FLOW and not AI_AVAILABLE:
@@ -144,7 +162,8 @@ def mount_flask_app():
         from bot import app as flask_app
         logger.warning("[FLASK_MOUNT] Flask app imported successfully")
         # Mount Flask app at root so /telegram_webhook is accessible
-        app.mount("", WSGIMiddleware(flask_app))
+        logging_wrapper = LoggingWSGIMiddleware(flask_app)
+        app.mount("", logging_wrapper)
         logger.warning("[FLASK_MOUNT] ✅ Flask app mounted to FastAPI - Telegram webhook accessible")
     except Exception as e:
         logger.error(f"[FLASK_MOUNT_ERROR] ⚠️ Could not mount Flask app: {e} - Telegram webhook may not be accessible", exc_info=True)
@@ -328,6 +347,13 @@ async def twilio_media(ws: WebSocket):
     If USE_AI_FLOW is enabled, routes to AI handler.
     Otherwise, forwards to traditional manager.
     """
+    logger.warning(
+        "[WS_HANDLER] twilio_media handler entered path=%s type=%s client=%s scope=%s",
+        ws.scope.get("path"),
+        ws.scope.get("type"),
+        ws.client,
+        {"path": ws.scope.get("path"), "type": ws.scope.get("type"), "query_string": ws.scope.get("query_string")},
+    )
     await ws.accept()
     call_id = None
     call_sid = None
