@@ -82,7 +82,9 @@ class LoggingWSGIMiddleware:
             headers,
         )
         if scope_type == "websocket":
-            logger.warning("[FLASK_MOUNT_ASGI] WebSocket request reached Flask mount wrapper: %s", path)
+            logger.error("[FLASK_MOUNT_ASGI] WebSocket scope reached Flask mount wrapper: %s - rejecting at wrapper", path)
+            await send({"type": "websocket.close", "code": 1003})
+            return
         return await self.wsgi_middleware(scope, receive, send)
 
 if USE_AI_FLOW and AI_AVAILABLE:
@@ -112,7 +114,26 @@ async def startup_event():
     print(msg_startup, file=sys.stderr, flush=True)
     print(msg_startup, file=sys.stdout, flush=True)
     logger_startup.warning(msg_startup)
-    
+
+    # Dump the FastAPI route table at startup for precise routing diagnostics
+    def format_route(r):
+        name = r.__class__.__name__
+        path = getattr(r, 'path', None)
+        if path is None:
+            path = getattr(r, 'prefix', None)
+        if path is None:
+            if name == 'Mount':
+                path = '/'
+            else:
+                path = str(r)
+        return f"{name}('{path}')"
+
+    route_table = [format_route(route) for route in app.router.routes]
+    logger_startup.warning("[ROUTE_TABLE] %s", "\n" + "\n".join(route_table))
+    print("[ROUTE_TABLE]", file=sys.stdout)
+    for line in route_table:
+        print(line, file=sys.stdout)
+
     try:
         from bot import get_runtime_mode, bot, USE_WEBHOOK, set_telegram_webhook, mark_webhook_mode
         from bot import start_bot_polling, force_delete_telegram_webhook
@@ -167,11 +188,6 @@ def mount_flask_app():
         logger.warning("[FLASK_MOUNT] ✅ Flask app mounted to FastAPI - Telegram webhook accessible")
     except Exception as e:
         logger.error(f"[FLASK_MOUNT_ERROR] ⚠️ Could not mount Flask app: {e} - Telegram webhook may not be accessible", exc_info=True)
-
-# Mount Flask app
-logger.warning("[SERVER_INIT] About to mount Flask app...")
-mount_flask_app()
-logger.warning("[SERVER_INIT] Flask app mount complete. FastAPI app ready to start.")
 
 
 
@@ -608,3 +624,9 @@ async def get_audio_file(call_sid: str, filename: str):
             contents,
         )
         return {"error": "Not found"}, 404
+
+# Mount Flask app after defining all native FastAPI routes.
+# This ensures WebSocket routes like /twilio/media are matched by FastAPI first.
+logger.warning("[SERVER_INIT] About to mount Flask app...")
+mount_flask_app()
+logger.warning("[SERVER_INIT] Flask app mount complete. FastAPI app ready to start.")
