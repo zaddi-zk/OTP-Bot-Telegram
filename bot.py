@@ -3926,8 +3926,10 @@ def ai_start():
         except Exception:
             pass
     
-    logger.info(f"[AI_START] ✅ Starting Media Stream for {mode_label}: {call_sid}")
-    return Response(str(resp), content_type="application/xml")
+    twiml_str = str(resp)
+    logger.warning(f"[AI_START] ✅ Starting Media Stream for {mode_label}: {call_sid}")
+    logger.warning(f"[AI_START] TwiML response: {twiml_str}")
+    return Response(twiml_str, content_type="application/xml")
 
 def _build_voice_twiml(call_sid: str, user_id: str, chat_id: Optional[int], answered_by: Optional[str], request_obj=None) -> Response:
     """Return TwiML for the Twilio voice webhook path, logging each milestone once."""
