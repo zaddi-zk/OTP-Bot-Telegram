@@ -608,7 +608,7 @@ async def twilio_status(request: Request):
     if not call_sid or not status:
         return JSONResponse({'ok': False}, status_code=400)
 
-    logger.info("TWILIO STATUS: call=%s status=%s answered_by=%s chat_id=%s user_id=%s", call_sid, status, answered_by, chat_id, user_id)
+    logger.warning("TWILIO STATUS: call=%s status=%s answered_by=%s chat_id=%s user_id=%s", call_sid, status, answered_by, chat_id, user_id)
 
     # Map Twilio status to manager state and broadcast
     await manager.set_state(call_sid, status)
