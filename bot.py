@@ -4967,17 +4967,31 @@ def twilio_status():
 
     try:
         try:
-            call_sid = request.form.get("CallSid")
-            status = request.form.get("CallStatus")
-            answered_by = request.form.get("AnsweredBy") or request.form.get("answered_by") or request.args.get("AnsweredBy") or request.args.get("answered_by")
-            chat_id = request.form.get("chat_id") or request.args.get("chat_id")
-            user_id = request.form.get("user_id") or request.args.get("user_id")
+            call_sid = request.values.get("CallSid")
+            status = request.values.get("CallStatus")
+            answered_by = (
+                request.values.get("AnsweredBy")
+                or request.values.get("answered_by")
+            )
+            chat_id = request.values.get("chat_id")
+            user_id = request.values.get("user_id")
         except Exception as parse_ex:
             logger.warning(f"Twilio status payload parsing failed: {parse_ex}")
             return Response("OK", status=200)
 
         if not call_sid:
-            logger.warning("Twilio status webhook received without CallSid. Ignoring.")
+            logger.warning(
+                "Twilio status webhook received without CallSid. payload args=%s form=%s",
+                request.args.to_dict(flat=False),
+                request.form.to_dict(flat=False),
+            )
+            return Response("OK", status=200)
+
+        if not status:
+            logger.warning(
+                "Twilio status webhook received without CallStatus. payload values=%s",
+                request.values.to_dict(flat=False),
+            )
             return Response("OK", status=200)
 
         if call_sid:
@@ -4993,7 +5007,13 @@ def twilio_status():
 
         normalized_answered = normalize_answered_by(answered_by)
         logger.info(
-            f"📊 Call status update: {call_sid} -> {status} (answered_by={normalized_answered or 'unknown'} user_id={user_id} chat_id={chat_id})"
+            "📊 Call status update: %s -> %s (answered_by=%s user_id=%s chat_id=%s) payload_values=%s",
+            call_sid,
+            status,
+            normalized_answered or "unknown",
+            user_id,
+            chat_id,
+            request.values.to_dict(flat=False),
         )
 
         status_text = None
@@ -5014,8 +5034,30 @@ def twilio_status():
             status_text = "⏱️ No answer."
             final_status = True
         elif status == "busy":
+            # Twilio may post a transient 'busy' status; confirm via API before
+            # treating the call as final. This helps avoid flaky busy reports.
             status_text = "📵 Line busy."
             final_status = True
+            try:
+                client = twilio_client or get_twilio_client()
+                if client:
+                    # Try a quick double-check: fetch current call status
+                    fetched = None
+                    try:
+                        fetched = client.calls(call_sid).fetch().status
+                    except Exception as _e:
+                        logger.debug(f"Busy verify fetch failed for {call_sid}: {_e}")
+                    # If fetch returns something other than 'busy', do not finalize yet
+                    if fetched and fetched != "busy":
+                        logger.info(
+                            "Twilio status callback indicated 'busy' for %s but API shows '%s' — deferring finalization",
+                            call_sid,
+                            fetched,
+                        )
+                        status_text = f"⚠️ Busy reported but Twilio API shows {fetched}. Awaiting final update."
+                        final_status = False
+            except Exception as e:
+                logger.debug(f"Error during busy verification for {call_sid}: {e}")
         elif status == "canceled":
             status_text = "❌ Call canceled."
             final_status = True
