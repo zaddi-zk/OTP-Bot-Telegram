@@ -26,6 +26,7 @@ _call_executor = ThreadPoolExecutor(
     max_workers=max(4, min(16, (os.cpu_count() or 1) * 2)),
     thread_name_prefix="twilio-call",
 )
+_logged_call_created_sids = set()
 
 
 def get_twilio_client():
@@ -129,8 +130,6 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
             "Ignoring unsupported Twilio call create parameter 'caller_id'; using from_=%s",
             from_number,
         )
-
-_logged_call_created_sids = set()
 
     try:
         # Offload Twilio API call creation to a background thread worker so
