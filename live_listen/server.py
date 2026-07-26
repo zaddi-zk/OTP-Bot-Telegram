@@ -337,6 +337,12 @@ async def websocket_live(websocket: WebSocket, call_id: Optional[str] = None):
         await websocket.close()
 
 
+@app.get('/twilio/media-test')
+async def twilio_media_test():
+    """Test endpoint to verify FastAPI routing works for /twilio/media path."""
+    return {"ok": True, "message": "FastAPI routing works for /twilio/media path"}
+
+
 @app.websocket('/twilio/media')
 async def twilio_media(ws: WebSocket):
     """Twilio Media Streams WebSocket endpoint.
@@ -345,12 +351,16 @@ async def twilio_media(ws: WebSocket):
     If USE_AI_FLOW is enabled, routes to AI handler.
     Otherwise, forwards to traditional manager.
     """
+    try:
+        await ws.accept()
+    except Exception as e:
+        logger.error(f"[WS_ACCEPT_ERROR] WebSocket accept failed: {e}", exc_info=True)
+        return
     logger.warning(
-        "[WS_HANDLER] twilio_media handler entered path=%s type=%s client=%s scope=%s",
+        "[WS_HANDLER] twilio_media handler entered path=%s type=%s client=%s",
         ws.scope.get("path"),
         ws.scope.get("type"),
         ws.client,
-        {"path": ws.scope.get("path"), "type": ws.scope.get("type"), "query_string": ws.scope.get("query_string")},
     )
     # Log connect
     logger.info("[WS_CONNECT] Twilio Media WebSocket connecting client=%s path=%s", ws.client, ws.scope.get('path'))
