@@ -6,6 +6,7 @@ import os
 import json
 from pathlib import Path
 from typing import Optional, List, Dict, Any
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -166,6 +167,59 @@ REQUIRED_CHANNELS = [ch for ch in [MAIN_CHANNEL_ID, BACKUP_CHANNEL_ID] if ch]
 # =============================================================================
 # Helper functions
 # =============================================================================
+def _normalize_public_base_url(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    value = str(value).strip()
+    if not value:
+        return None
+    if "://" not in value:
+        value = f"https://{value}"
+    parsed = urlparse(value)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    if parsed.hostname in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}:
+        return None
+    return value.rstrip("/")
+
+
+def build_public_base_url() -> str:
+    """Return one canonical public base URL for webhooks and media stream endpoints."""
+    candidates = [
+        os.getenv("PUBLIC_URL"),
+        os.getenv("BASE_URL"),
+        os.getenv("WEBHOOK_URL"),
+        os.getenv("NGROK_URL"),
+        os.getenv("LIVE_LISTEN_URL"),
+        _get("PUBLIC_URL", ""),
+        _get("BASE_URL", ""),
+        _get("WEBHOOK_URL", ""),
+        _get("NGROK_URL", ""),
+        _get("LIVE_LISTEN_URL", ""),
+    ]
+    for candidate in candidates:
+        normalized = _normalize_public_base_url(candidate)
+        if normalized:
+            return normalized
+    return ""
+
+
+def build_media_stream_url() -> str:
+    """Build the public Twilio Media Stream websocket URL."""
+    base_url = build_public_base_url()
+    if not base_url:
+        raise ValueError("No public base URL configured for Twilio media streams")
+    if base_url.startswith("http://"):
+        base_url = base_url.replace("http://", "ws://", 1)
+    elif base_url.startswith("https://"):
+        base_url = base_url.replace("https://", "wss://", 1)
+    elif not base_url.startswith(("ws://", "wss://")):
+        base_url = f"wss://{base_url}"
+    return f"{base_url.rstrip('/')}/twilio/media"
+
+
 def is_twilio_configured() -> bool:
     """Check if Twilio credentials are properly set."""
     if not ACCOUNT_SID or "YOUR_" in ACCOUNT_SID:

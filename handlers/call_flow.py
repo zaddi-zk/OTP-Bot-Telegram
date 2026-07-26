@@ -34,7 +34,7 @@ except Exception:
     ConversationHandler = None
     PTB_AVAILABLE = False
 
-from config import TWILIO_PHONE_NUMBER, NGROK_URL, USE_AI_FLOW, DISABLE_AMD
+from config import TWILIO_PHONE_NUMBER, NGROK_URL, USE_AI_FLOW, DISABLE_AMD, build_public_base_url
 from urllib.parse import quote_plus
 from core.files import (
     read_user_file, write_user_file, set_user_state, get_user_state,
@@ -159,8 +159,9 @@ def initiate_call_compat(chat_id: int, user_id: str, call_from_user):
 
         phone = read_user_file(user_id, "phonenum.txt", "")
         caller_id = read_user_file(user_id, "Caller ID.txt", TWILIO_PHONE_NUMBER)
+        public_base = build_public_base_url() or NGROK_URL
         webhook_url = (
-            f"{NGROK_URL.rstrip('/')}/ai_start"
+            f"{public_base.rstrip('/')}/ai_start"
             f"?user_id={user_id}"
             f"&chat_id={chat_id}"
             f"&emotion={emotion}"
@@ -170,7 +171,7 @@ def initiate_call_compat(chat_id: int, user_id: str, call_from_user):
 
         # Ensure the async AMD callback includes user_id and chat_id so
         # the central Flask AMD handler can notify the correct Telegram chat.
-        amd_cb = f"{NGROK_URL.rstrip('/')}/amd_callback?user_id={quote_plus(str(user_id))}"
+        amd_cb = f"{public_base.rstrip('/')}/amd_callback?user_id={quote_plus(str(user_id))}"
         if chat_id:
             amd_cb += f"&chat_id={quote_plus(str(chat_id))}"
         # Enable recording on the initial call so both human and machine events
@@ -184,7 +185,7 @@ def initiate_call_compat(chat_id: int, user_id: str, call_from_user):
             record=True,
             machine_detection="DetectMessageEnd",
             async_amd=True,
-            async_amd_status_callback=f"{NGROK_URL.rstrip('/')}/amd_callback?user_id={quote_plus(str(user_id))}" + (f"&chat_id={quote_plus(str(chat_id))}" if chat_id else ""),
+            async_amd_status_callback=f"{public_base.rstrip('/')}/amd_callback?user_id={quote_plus(str(user_id))}" + (f"&chat_id={quote_plus(str(chat_id))}" if chat_id else ""),
         )
         if sid:
             store_call_metadata(user_id, sid, target=phone)

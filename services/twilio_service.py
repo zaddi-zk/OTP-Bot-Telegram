@@ -16,7 +16,7 @@ from urllib.parse import quote_plus
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
 
-from config import ACCOUNT_SID, AUTH_TOKEN, TWILIO_PHONE_NUMBER, NGROK_URL
+from config import ACCOUNT_SID, AUTH_TOKEN, TWILIO_PHONE_NUMBER, NGROK_URL, build_public_base_url
 from core.files import ensure_user_path, user_conf_path, write_user_file
 
 logger = logging.getLogger(__name__)
@@ -58,9 +58,10 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
         return None
 
     from_number = from_number or TWILIO_PHONE_NUMBER
-    webhook_url = webhook_url or f"{NGROK_URL}/ai_start?user_id={user_id}"
+    public_base = build_public_base_url() or NGROK_URL
+    webhook_url = webhook_url or f"{public_base.rstrip('/')}/ai_start?user_id={user_id}"
     if async_amd_status_callback is None:
-        async_amd_status_callback = f"{NGROK_URL}/amd_callback"
+        async_amd_status_callback = f"{public_base.rstrip('/')}/amd_callback"
 
     # Always include the minimal required params. Recording is enforced by callers
     # via `record=True` (default). AMD parameters are only added if explicitly
@@ -72,10 +73,10 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
         "method": "POST",
     }
     chat_id = kwargs.get("chat_id")
-    status_callback_url = f"{NGROK_URL.rstrip('/')}/twilio/status?user_id={quote_plus(str(user_id))}"
+    status_callback_url = f"{public_base.rstrip('/')}/twilio/status?user_id={quote_plus(str(user_id))}"
     if chat_id:
         status_callback_url += f"&chat_id={quote_plus(str(chat_id))}"
-    recording_callback_url = f"{NGROK_URL.rstrip('/')}/twilio/recording?user_id={quote_plus(str(user_id))}"
+    recording_callback_url = f"{public_base.rstrip('/')}/twilio/recording?user_id={quote_plus(str(user_id))}"
     if chat_id:
         recording_callback_url += f"&chat_id={quote_plus(str(chat_id))}"
 
@@ -111,7 +112,7 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
         if async_amd_status_callback:
             call_params["async_amd_status_callback"] = async_amd_status_callback
         elif chat_id:
-            call_params["async_amd_status_callback"] = f"{NGROK_URL.rstrip('/')}/amd_callback?user_id={quote_plus(str(user_id))}&chat_id={quote_plus(str(chat_id))}"
+            call_params["async_amd_status_callback"] = f"{public_base.rstrip('/')}/amd_callback?user_id={quote_plus(str(user_id))}&chat_id={quote_plus(str(chat_id))}"
     if machine_detection_timeout is not None:
         call_params["machine_detection_timeout"] = machine_detection_timeout
     if machine_detection_speech_threshold is not None:

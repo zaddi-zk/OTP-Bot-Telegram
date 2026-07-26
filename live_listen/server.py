@@ -21,7 +21,7 @@ from typing import Optional
 from config import (
     ACCOUNT_SID, AUTH_TOKEN, LIVE_LISTEN_URL, NGROK_URL, LIVE_LISTEN_SECRET,
     DEFAULT_VOICE_ID, VOICE_STABILITY, VOICE_SIMILARITY_BOOST,
-    USE_AI_FLOW, VOUCH_CHANNEL_ID
+    USE_AI_FLOW, VOUCH_CHANNEL_ID, build_public_base_url
 )
 from twilio.rest import Client
 from twilio.twiml.voice_response import VoiceResponse, Gather, Start
@@ -532,7 +532,7 @@ async def twilio_media(ws: WebSocket):
                                             continue
 
                                         logger.warning(f"[AI_AUDIO_SAVED] OK: {filename}")
-                                        audio_host = LIVE_LISTEN_URL or NGROK_URL or ""
+                                        audio_host = build_public_base_url() or LIVE_LISTEN_URL or NGROK_URL or ""
                                         audio_host = audio_host.strip().rstrip('/')
                                         if audio_host.startswith('wss://'):
                                             audio_host = 'https://' + audio_host[len('wss://'):]

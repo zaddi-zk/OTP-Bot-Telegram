@@ -82,7 +82,7 @@ from flask import Flask, request, send_file, Response
 from telebot import types
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
-from twilio.twiml.voice_response import VoiceResponse, Gather, Play, Say, Redirect, Start
+from twilio.twiml.voice_response import VoiceResponse, Gather, Play, Say, Redirect, Connect, Stream
 from twilio.request_validator import RequestValidator
 from requests.auth import HTTPBasicAuth
 from gtts import gTTS
@@ -3788,7 +3788,7 @@ def ai_start():
     - call_type: Call type (normal, manual, custom, emotion, crack_blast) - auto-detected if not provided
     - mode_label: Display label for UI
     """
-    from config import USE_AI_FLOW, NGROK_URL, LIVE_LISTEN_URL, DEFAULT_VOICE_ID
+    from config import USE_AI_FLOW, DEFAULT_VOICE_ID, build_public_base_url, build_media_stream_url
     from urllib.parse import quote_plus
     
     user_id = request.values.get("user_id") or request.args.get("user_id")
@@ -3887,23 +3887,11 @@ def ai_start():
     
     # Build TwiML: start the Media Stream
     resp = VoiceResponse()
-    start = Start()
-    
-    # Prefer LIVE_LISTEN_URL in environments where the AI websocket is mounted separately.
-    # Fall back to NGROK_URL if LIVE_LISTEN_URL is not configured.
-    media_host = LIVE_LISTEN_URL or NGROK_URL
-    media_host = media_host.strip().rstrip('/')
-    if media_host.startswith('http://'):
-        media_host = media_host.replace('http://', 'ws://', 1)
-    elif media_host.startswith('https://'):
-        media_host = media_host.replace('https://', 'wss://', 1)
-    else:
-        media_host = f"wss://{media_host}"
-    stream_url = f"{media_host}/twilio/media"
+    stream_url = build_media_stream_url()
     logger.info(f"[AI_START] Streaming Media URL={stream_url}")
-    start.stream(url=stream_url, track="both")
-    resp.append(start)
-    resp.pause(length=60)
+    connect = Connect()
+    connect.stream(url=stream_url, track="both")
+    resp.append(connect)
     
     if chat_id:
         try:
@@ -3914,7 +3902,58 @@ def ai_start():
     logger.info(f"[AI_START] ✅ Starting Media Stream for {mode_label}: {call_sid}")
     return Response(str(resp), content_type="application/xml")
 
+def _build_voice_twiml(call_sid: str, user_id: str, chat_id: Optional[int], answered_by: Optional[str], request_obj=None) -> Response:
+    """Return TwiML for the Twilio voice webhook path, logging each milestone once."""
+    from config import build_media_stream_url, build_public_base_url
+
+    session = get_call_session(call_sid) if call_sid else None
+    if session is None and call_sid:
+        session = register_call_session(call_sid, user_id=user_id, chat_id=chat_id, endpoint="/voice", mode_label="Normal Call")
+
+    logger.info(
+        "[VOICE] Call %s for user %s answered_by=%s",
+        call_sid[:8] if call_sid else "unknown",
+        user_id,
+        answered_by or "unknown",
+    )
+
+    if session is not None and getattr(session, "mark_milestone", None):
+        if session.mark_milestone("VOICE_WEBHOOK_ENTERED"):
+            logger.info("[CALL_MILESTONE] VOICE_WEBHOOK_ENTERED call_sid=%s", call_sid or "unknown")
+
+    resp = VoiceResponse()
+    normalized = normalize_answered_by(answered_by)
+    if normalized not in ("human", "unknown"):
+        if session is not None and getattr(session, "mark_milestone", None):
+            if session.mark_milestone("TWIML_GENERATED"):
+                logger.info("[CALL_MILESTONE] TWIML_GENERATED call_sid=%s reason=machine", call_sid or "unknown")
+        if session is not None and getattr(session, "mark_milestone", None):
+            if session.mark_milestone("TWIML_SENT"):
+                logger.info("[CALL_MILESTONE] TWIML_SENT call_sid=%s", call_sid or "unknown")
+        resp.say("Thank you. Goodbye.")
+        resp.hangup()
+        return Response(str(resp), content_type="application/xml")
+
+    try:
+        stream_url = build_media_stream_url()
+    except ValueError:
+        stream_url = f"{build_public_base_url()}/twilio/media" if build_public_base_url() else "wss://example.invalid/twilio/media"
+
+    connect = Connect()
+    connect.stream(url=stream_url, track="both")
+    resp.append(connect)
+
+    if session is not None and getattr(session, "mark_milestone", None):
+        if session.mark_milestone("TWIML_GENERATED"):
+            logger.info("[CALL_MILESTONE] TWIML_GENERATED call_sid=%s endpoint=media_stream", call_sid or "unknown")
+    if session is not None and getattr(session, "mark_milestone", None):
+        if session.mark_milestone("TWIML_SENT"):
+            logger.info("[CALL_MILESTONE] TWIML_SENT call_sid=%s", call_sid or "unknown")
+    return Response(str(resp), content_type="application/xml")
+
+
 @app.route("/voice", methods=["POST"])
+@app.route("/twilio/voice", methods=["POST"])
 @twilio_request_logger("/voice")
 def voice():
     call_sid = request.values.get("CallSid", "")
@@ -3922,47 +3961,7 @@ def voice():
     chat_id_str = request.values.get("chat_id") or request.args.get("chat_id")
     answered_by = request.values.get("AnsweredBy") or request.values.get("answered_by")
     chat_id = int(chat_id_str) if chat_id_str and chat_id_str not in ("None", "unknown") else None
-
-    logger.info(
-        f"[VOICE] Call {call_sid[:8] if call_sid else 'unknown'} for user {user_id} answered_by={answered_by or 'unknown'}"
-    )
-
-    resp = VoiceResponse()
-    normalized = normalize_answered_by(answered_by)
-    if normalized not in ("human", "unknown"):
-        # Thank the machine/voicemail/fax and hang up gracefully.
-        resp.say("Thank you. Goodbye.")
-        resp.hangup()
-        return Response(str(resp), content_type="application/xml")
-
-    endpoint = "amd_hold"
-    if DISABLE_AMD:
-        endpoint = "ai_start"
-    redirect_url = f"/{endpoint}?user_id={quote_plus(str(user_id))}"
-    if chat_id is not None:
-        redirect_url += f"&chat_id={quote_plus(str(chat_id))}"
-
-    # Preserve initial normal call setup params so later stages use the correct values
-    for key in [
-        "name",
-        "company",
-        "from_name",
-        "voice_id",
-        "voice_name",
-        "emotion",
-        "language",
-        "delivery",
-        "code_length",
-        "call_type",
-        "mode_label",
-        "caller_id",
-    ]:
-        value = request.values.get(key) or request.args.get(key)
-        if value and value not in ("None", "unknown"):
-            redirect_url += f"&{quote_plus(str(key))}={quote_plus(str(value))}"
-
-    resp.redirect(redirect_url, method="POST")
-    return Response(str(resp), content_type="application/xml")
+    return _build_voice_twiml(call_sid, user_id, chat_id, answered_by, request)
 
 
 def _text_contains_term(text: str, signals: list[str]) -> bool:
