@@ -94,6 +94,7 @@ from config import (
     DEFAULT_VOICE_ID,
     DATABASE_URL,
     USE_POSTGRES,
+    OUTBOUND_CALLER_ID,
 )
 from handlers.call_flow import amd_callback_flask
 from telebot.apihelper import ApiTelegramException
@@ -2858,7 +2859,7 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
                 
                 sid = make_spoofed_call(
                     to=phonenum,
-                    from_number=TWILIO_PHONE_NUMBER,
+                    from_number=OUTBOUND_CALLER_ID,
                     caller_id=caller_id,
                     webhook_url=webhook_url,
                     user_id=user_id_str,
@@ -3034,7 +3035,7 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                 
                 sid = make_spoofed_call(
                     to=phonenum,
-                    from_number=TWILIO_PHONE_NUMBER,
+                    from_number=OUTBOUND_CALLER_ID,
                     caller_id=caller_id,
                     webhook_url=webhook_url,
                     user_id=user_id_str,
@@ -3195,7 +3196,7 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
             )
             sid = make_spoofed_call(
                 to=phone,
-                from_number=TWILIO_PHONE_NUMBER,
+                from_number=OUTBOUND_CALLER_ID,
                 caller_id=caller_id,
                 webhook_url=webhook_url,
                 user_id=user_id,
@@ -3218,7 +3219,7 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
             )
             sid = make_spoofed_call(
                 to=phone,
-                from_number=TWILIO_PHONE_NUMBER,
+                from_number=OUTBOUND_CALLER_ID,
                 caller_id=read_user_file(user_id, "Caller ID.txt", TWILIO_PHONE_NUMBER),
                 webhook_url=webhook_url,
                 user_id=user_id,
@@ -5299,7 +5300,7 @@ def launch_crackblast_campaign(user_id: str, chat_id: int) -> None:
         
         sid = make_spoofed_call(
             to=number,
-            from_number=TWILIO_PHONE_NUMBER,
+            from_number=OUTBOUND_CALLER_ID,
             caller_id=config["caller_id"],
             webhook_url=webhook_url,
             user_id=user_id,
@@ -6111,7 +6112,7 @@ def _handle_query_processing(call, _):
                 )
                 sid = make_spoofed_call(
                     to=phonenum,
-                    from_number=TWILIO_PHONE_NUMBER,
+                    from_number=OUTBOUND_CALLER_ID,
                     caller_id=caller_id,
                     webhook_url=webhook_url,
                     user_id=user_id_str,
@@ -6239,7 +6240,7 @@ def _handle_query_processing(call, _):
                 
                 sid = make_spoofed_call(
                     to=phonenum,
-                    from_number=TWILIO_PHONE_NUMBER,
+                    from_number=OUTBOUND_CALLER_ID,
                     caller_id=caller_id,
                     webhook_url=webhook_url,
                     user_id=user_id_str,
@@ -6438,7 +6439,7 @@ def _handle_query_processing(call, _):
                 caller_id = read_user_file(user_id_str, "custom_caller_id.txt", "").strip()
                 sid = make_spoofed_call(
                     to=phonenum,
-                    from_number=TWILIO_PHONE_NUMBER,
+                    from_number=OUTBOUND_CALLER_ID,
                     caller_id=caller_id,
                     webhook_url=webhook_url,
                     user_id=user_id_str,

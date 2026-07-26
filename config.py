@@ -51,6 +51,11 @@ TWILIO_ACCOUNT_SID = ACCOUNT_SID
 AUTH_TOKEN = _get("TWILIO_AUTH_TOKEN", "YOUR_TWILIO_AUTH_TOKEN_HERE")
 TWILIO_AUTH_TOKEN = AUTH_TOKEN
 TWILIO_PHONE_NUMBER = _get("TWILIO_PHONE_NUMBER", "+1234567890")
+# Separate outbound caller ID: toll-free numbers (+1855, +1888, +1800) are often
+# blocked by carriers for outbound calls. Set OUTBOUND_CALLER_ID to a local
+# (non-toll-free) Twilio number to bypass carrier spam filters. Falls back to
+# TWILIO_PHONE_NUMBER if not set.
+OUTBOUND_CALLER_ID = _get("OUTBOUND_CALLER_ID", "").strip() or TWILIO_PHONE_NUMBER
 NGROK_URL = _get("NGROK_URL", "https://your-ngrok-url.ngrok-free.dev")
 NGROK_TOKEN = _get("NGROK_TOKEN", "")
 

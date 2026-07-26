@@ -16,7 +16,7 @@ from urllib.parse import quote_plus
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
 
-from config import ACCOUNT_SID, AUTH_TOKEN, TWILIO_PHONE_NUMBER, NGROK_URL, build_public_base_url
+from config import ACCOUNT_SID, AUTH_TOKEN, TWILIO_PHONE_NUMBER, OUTBOUND_CALLER_ID, NGROK_URL, build_public_base_url
 from core.files import ensure_user_path, user_conf_path, write_user_file
 
 logger = logging.getLogger(__name__)
@@ -57,7 +57,7 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
     if not client:
         return None
 
-    from_number = from_number or TWILIO_PHONE_NUMBER
+    from_number = from_number or OUTBOUND_CALLER_ID
     public_base = build_public_base_url() or NGROK_URL
     webhook_url = webhook_url or f"{public_base.rstrip('/')}/ai_start?user_id={user_id}"
     if async_amd_status_callback is None:
@@ -88,26 +88,9 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
     call_params["status_callback_method"] = "POST"
     call_params["recording_status_callback"] = recording_callback_url
     call_params["recording_status_callback_method"] = "POST"
-    # If a custom from_number was provided, ensure it's owned by this Twilio account.
-    try:
-        if from_number and from_number != TWILIO_PHONE_NUMBER:
-            try:
-                owned = client.incoming_phone_numbers.list(phone_number=from_number)
-                if not owned:
-                    logger.warning("Provided from_number %s not owned by this Twilio account. Falling back to %s", from_number, TWILIO_PHONE_NUMBER)
-                    from_number = TWILIO_PHONE_NUMBER
-                    call_params["from_"] = from_number
-                else:
-                    call_params["from_"] = from_number
-            except Exception:
-                # If the ownership check fails for any reason, fallback to configured number
-                logger.debug("Could not verify ownership of from_number %s; using configured TWILIO_PHONE_NUMBER", from_number)
-                from_number = TWILIO_PHONE_NUMBER
-                call_params["from_"] = from_number
-        else:
-            call_params["from_"] = from_number
-    except Exception:
-        call_params["from_"] = from_number
+    # Pass through caller-provided from_number as-is (spoof support).
+    # Twilio will reject unverified numbers server-side if not whitelisted.
+    call_params["from_"] = from_number
     if machine_detection:
         call_params["machine_detection"] = machine_detection
     if async_amd:
