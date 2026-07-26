@@ -178,11 +178,17 @@ def transcribe_audio_buffer(audio_bytes: bytes, audio_format: str = "wav", conte
             result = response.json()
             text = result.get("text", "").strip()
             if text:
+                if ctx.get("session") and getattr(ctx["session"], "mark_milestone", None) and ctx["session"].mark_milestone("FIRST_ASR_FINAL"):
+                    logger.info("[CALL_MILESTONE] FIRST_ASR_FINAL call_sid=%s transcript_preview=%s", call_sid, text[:80])
                 structured_log(logger, logging.INFO, "ASR_FINAL", call_sid=call_sid, user_id=session_id, stage="ASR_FINAL", transcript=text[:200])
             else:
+                if ctx.get("session") and getattr(ctx["session"], "mark_milestone", None) and ctx["session"].mark_milestone("FIRST_ASR_FINAL"):
+                    logger.info("[CALL_MILESTONE] FIRST_ASR_FINAL call_sid=%s reason=empty_transcript", call_sid)
                 structured_log(logger, logging.WARNING, "ASR_FAILED", call_sid=call_sid, user_id=session_id, stage="ASR_FINAL", reason="empty_transcript")
             return text
         else:
+            if ctx.get("session") and getattr(ctx["session"], "mark_milestone", None) and ctx["session"].mark_milestone("FIRST_ASR_FINAL"):
+                logger.info("[CALL_MILESTONE] FIRST_ASR_FINAL call_sid=%s reason=groq_http_error status_code=%s", call_sid, response.status_code)
             structured_log(logger, logging.ERROR, "ASR_FAILED", call_sid=call_sid, user_id=session_id, stage="ASR_FINAL", reason="groq_http_error", status_code=response.status_code, response=response.text[:200])
             return ""
 

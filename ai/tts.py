@@ -35,7 +35,7 @@ def _fallback_gtts_audio(text: str) -> bytes:
     return b""
 
 
-def generate_audio(text: str, voice_id: str = None, call_sid: str | None = None) -> bytes:
+def generate_audio(text: str, voice_id: str = None, call_sid: str | None = None, session: object = None) -> bytes:
     """
     Generate MP3 audio using ElevenLabs.
     
@@ -82,6 +82,8 @@ def generate_audio(text: str, voice_id: str = None, call_sid: str | None = None)
             return _fallback_gtts_audio(text)
         response.raise_for_status()
         content = response.content
+        if session and getattr(session, "mark_milestone", None) and session.mark_milestone("FIRST_TTS_RESPONSE"):
+            logger.info("[CALL_MILESTONE] FIRST_TTS_RESPONSE call_sid=%s bytes=%d", call_sid, len(content) if content else 0)
         logger.info(f"ElevenLabs TTS returned {len(content) if content is not None else 0} bytes")
         if not content:
             structured_log(logger, logging.WARNING, "TTS_SKIPPED", call_sid=call_sid, stage="TTS_COMPLETE", reason="empty_content")
@@ -104,7 +106,7 @@ def generate_audio(text: str, voice_id: str = None, call_sid: str | None = None)
         return _fallback_gtts_audio(text)
 
 
-def save_audio(call_sid: str, text: str, voice_id: str = None, base_path: str = "audio") -> str:
+def save_audio(call_sid: str, text: str, voice_id: str = None, base_path: str = "audio", session: object = None) -> str:
     """
     Generate audio, save to disk, return filename.
     If ElevenLabs fails, returns a silent placeholder to prevent dead air.
@@ -118,7 +120,7 @@ def save_audio(call_sid: str, text: str, voice_id: str = None, base_path: str = 
     Returns:
         Filename (e.g., "1234567890.mp3") or placeholder filename if failed
     """
-    audio_bytes = generate_audio(text, voice_id, call_sid=call_sid)
+    audio_bytes = generate_audio(text, voice_id, call_sid=call_sid, session=session)
     
     try:
         dir_path = os.path.join(base_path, call_sid)

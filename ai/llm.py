@@ -55,6 +55,8 @@ def generate_response(
     
     call_sid = getattr(session, "call_sid", None)
     structured_log(logger, logging.INFO, "LLM_REQUEST", call_sid=call_sid, stage="LLM_REQUEST", call_type=call_type, emotion=emotion, prompt_preview=user_text[:160])
+    if session and getattr(session, "mark_milestone", None) and session.mark_milestone("FIRST_LLM_REQUEST"):
+        logger.info("[CALL_MILESTONE] FIRST_LLM_REQUEST call_sid=%s prompt_preview=%s", call_sid, user_text[:80])
 
     if not GROQ_API_KEY or "YOUR_" in GROQ_API_KEY:
         logger.error("[LLM-Groq] GROQ_API_KEY not configured. Set via Railway env or .env")
@@ -102,6 +104,8 @@ def generate_response(
 
     response = _call_groq(messages, max_retries, call_sid=call_sid)
     if response:
+        if session and getattr(session, "mark_milestone", None) and session.mark_milestone("FIRST_LLM_RESPONSE"):
+            logger.info("[CALL_MILESTONE] FIRST_LLM_RESPONSE call_sid=%s response_preview=%s", call_sid, response[:80])
         structured_log(logger, logging.INFO, "LLM_RESPONSE", call_sid=call_sid, stage="LLM_RESPONSE", response=response[:200])
         return response
 

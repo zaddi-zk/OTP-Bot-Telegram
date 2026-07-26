@@ -130,11 +130,16 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
             from_number,
         )
 
+_logged_call_created_sids = set()
+
     try:
         # Offload Twilio API call creation to a background thread worker so
         # no heavy blocking network I/O happens in the main request handler.
         call = asyncio.run(asyncio.to_thread(client.calls.create, **call_params))
         logger.info(f"Call created: {call.sid} -> {to}")
+        if call.sid not in _logged_call_created_sids:
+            _logged_call_created_sids.add(call.sid)
+            logger.info("CALL CREATED")
         return call.sid
     except TwilioRestException as e:
         logger.error(f"Twilio error: {e}")
@@ -165,6 +170,9 @@ async def start_call(to_number, from_number, webhook_url):
         )
 
         logging.info(f"✅ Outbound call initiated successfully: SID={call.sid}. forced full-call recording: ON.")
+        if call.sid not in _logged_call_created_sids:
+            _logged_call_created_sids.add(call.sid)
+            logging.info("CALL CREATED")
         return call.sid
 
     except Exception as e:

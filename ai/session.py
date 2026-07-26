@@ -6,9 +6,12 @@ Supports all call types: Normal, Manual, Custom, AI Emotion, Crack Blast.
 
 from __future__ import annotations
 
+import logging
 import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class CallSession:
@@ -73,6 +76,9 @@ class CallSession:
         self.script_delay = 0
         self.gather_digits = 0
         self.fallback_message = ""
+
+        # Lifecycle milestone tracking for one-time logs per call
+        self.milestones_logged: Dict[str, bool] = {}
 
         # Extra compatibility data
         self._extra_data: Dict[str, Any] = {}
@@ -235,6 +241,15 @@ class CallSession:
     def set_goal(self, goal: str) -> None:
         self.current_goal = goal.strip()
 
+    def mark_milestone(self, name: str) -> bool:
+        """Mark a milestone as emitted once per session."""
+        if not name:
+            return False
+        if self.milestones_logged.get(name):
+            return False
+        self.milestones_logged[name] = True
+        return True
+
     def complete(self, reason: Optional[str] = None) -> None:
         self.call_completed = True
         self.end_reason = reason
@@ -317,6 +332,8 @@ class SessionManager:
             if session is None:
                 session = CallSession(call_sid, user_id=user_id, chat_id=chat_id)
                 self._sessions[call_sid] = session
+                if session.mark_milestone("SESSION_CREATED"):
+                    logger.info("[CALL_MILESTONE] SESSION_CREATED call_sid=%s", call_sid)
             if user_id is not None:
                 session.user_id = user_id
             if chat_id is not None:

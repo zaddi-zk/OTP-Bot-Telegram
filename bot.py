@@ -104,41 +104,29 @@ REQ_TIMEOUT = (5, 10)  # connect_timeout, read_timeout
 
 
 def _notify_live_listen_start(call_sid: str, chat_id: Optional[int] = None, user_id: Optional[str] = None):
-    """Notify the Live Listen service to start tracking a call.
-    Tries /conversation/start first; on 404 or failure, falls back to /ai_start.
+    """Notify the Live Listen service that a call has been created.
+
+    This is only used for live panel session bootstrapping when a separate
+    live listen service is configured.
     """
-    if not LIVE_LISTEN_URL:
-        logger.debug("No LIVE_LISTEN_URL configured; skipping live listen notify")
+    if not LIVE_LISTEN_URL or not call_sid:
         return
 
     payload = {"call_sid": call_sid}
     if chat_id is not None:
         payload["chat_id"] = chat_id
-    headers = {}
     try:
-        resp = _http.post(f"{LIVE_LISTEN_URL.rstrip('/')}/conversation/start", json=payload, timeout=REQ_TIMEOUT, headers=headers)
+        resp = _http.post(
+            f"{LIVE_LISTEN_URL.rstrip('/')}/conversation/start",
+            json=payload,
+            timeout=REQ_TIMEOUT,
+        )
         if resp.status_code == 200:
-            logger.info("Live listen conversation.start OK for %s", call_sid)
-            return
-        if resp.status_code == 404:
-            logger.warning("/conversation/start returned 404; falling back to /ai_start for %s", call_sid)
+            logger.info("Live listen notify OK for %s", call_sid)
         else:
-            logger.warning("/conversation/start returned %s for %s; falling back to /ai_start", resp.status_code, call_sid)
+            logger.warning("Live listen notify returned %s for %s", resp.status_code, call_sid)
     except Exception as e:
-        logger.warning("Error calling /conversation/start: %s - falling back to /ai_start", e)
-
-    # Fallback to ai_start (best-effort)
-    try:
-        params = {}
-        if user_id:
-            params["user_id"] = user_id
-        if chat_id is not None:
-            params["chat_id"] = chat_id
-        # POST to ai_start without blocking; ignore response code
-        _http.post(f"{LIVE_LISTEN_URL.rstrip('/')}/ai_start", json={"call_sid": call_sid, "chat_id": chat_id}, timeout=REQ_TIMEOUT)
-        logger.info("Fallback ai_start notified for %s", call_sid)
-    except Exception as e:
-        logger.error("Fallback to /ai_start failed for %s: %s", call_sid, e)
+        logger.warning("Live listen notify failed for %s: %s", call_sid, e)
 
 
 # ======================================================================

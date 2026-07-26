@@ -9,14 +9,16 @@ Core responsibilities:
 - Manage state transitions and cleanup timers
 """
 import asyncio
+import json
 import time
-from typing import Dict, Set
+from typing import Dict, Optional, Set
 
 
-class CallSession:
-    def __init__(self, call_id: str, call_sid: str = None):
+class LiveListenSession:
+    def __init__(self, call_id: str, call_sid: str = None, chat_id: Optional[int] = None):
         self.call_id = call_id
         self.call_sid = call_sid
+        self.chat_id = chat_id
         self.clients = set()  # set of websocket objects
         self.state = 'disconnected'  # disconnected|ringing|in-progress|completed
         self.created_at = time.time()
@@ -27,6 +29,7 @@ class CallSession:
         return {
             'call_id': self.call_id,
             'call_sid': self.call_sid,
+            'chat_id': self.chat_id,
             'state': self.state,
             'clients': len(self.clients)
         }
@@ -34,18 +37,21 @@ class CallSession:
 
 class SessionManager:
     def __init__(self):
-        # mapping call_id -> CallSession
-        self.sessions: Dict[str, CallSession] = {}
+        # mapping call_id -> LiveListenSession
+        self.sessions: Dict[str, LiveListenSession] = {}
         self._lock = asyncio.Lock()
 
-    async def ensure_session(self, call_id: str, call_sid: str = None) -> CallSession:
+    async def ensure_session(self, call_id: str, call_sid: str = None, chat_id: Optional[int] = None) -> LiveListenSession:
         async with self._lock:
             s = self.sessions.get(call_id)
             if not s:
-                s = CallSession(call_id=call_id, call_sid=call_sid)
+                s = LiveListenSession(call_id=call_id, call_sid=call_sid, chat_id=chat_id)
                 self.sessions[call_id] = s
-            elif call_sid and not s.call_sid:
-                s.call_sid = call_sid
+            else:
+                if call_sid and not s.call_sid:
+                    s.call_sid = call_sid
+                if chat_id is not None and s.chat_id is None:
+                    s.chat_id = chat_id
             return s
 
     async def remove_session(self, call_id: str):
@@ -63,6 +69,7 @@ class SessionManager:
             if state in ('completed', 'failed', 'no-answer', 'canceled'):
                 if s.cleanup_task is None:
                     s.cleanup_task = asyncio.create_task(self._delayed_cleanup(call_id, delay=10))
+        await self.broadcast_state(call_id)
 
     async def _delayed_cleanup(self, call_id: str, delay: int = 10):
         await asyncio.sleep(delay)
@@ -94,6 +101,21 @@ class SessionManager:
             for ws in list(s.clients):
                 try:
                     await ws.send_bytes(payload)
+                except Exception:
+                    to_remove.append(ws)
+            for ws in to_remove:
+                s.clients.discard(ws)
+
+    async def broadcast_state(self, call_id: str):
+        s = self.sessions.get(call_id)
+        if not s:
+            return
+        payload = json.dumps({'type': 'session', 'data': s.to_dict()})
+        to_remove = []
+        async with s.lock:
+            for ws in list(s.clients):
+                try:
+                    await ws.send_text(payload)
                 except Exception:
                     to_remove.append(ws)
             for ws in to_remove:
