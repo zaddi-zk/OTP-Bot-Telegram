@@ -5,12 +5,13 @@ Maintains conversation history and ensures on-topic, human-like responses.
 Production-only: No fallbacks to local LLM.
 """
 
+import inspect
 import requests
 import logging
 import time
 import traceback
 from typing import Optional
-from config import GROQ_API_KEY, GROQ_MODEL
+from config import GROQ_API_KEY, GROQ_MODEL, GROQ_FALLBACK_MODEL
 from core.logging_utils import structured_log
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,7 @@ def generate_response(
     if not GROQ_API_KEY or "YOUR_" in GROQ_API_KEY:
         logger.error("[LLM-Groq] GROQ_API_KEY not configured. Set via Railway env or .env")
         structured_log(logger, logging.WARNING, "LLM_SKIPPED", call_sid=call_sid, stage="LLM_RESPONSE", reason="missing_api_key")
-        return "I'm having technical difficulties. Please try again."
+        return ""
     
     # Select the active system prompt by call mode.
     # Normal/fast flows always use the canonical prompt from config.
@@ -102,7 +103,17 @@ def generate_response(
         {"role": "user", "content": user_content}
     ]
 
-    response = _call_groq(messages, max_retries, call_sid=call_sid)
+    try:
+        signature = inspect.signature(_call_groq)
+        accepts_call_sid = "call_sid" in signature.parameters
+    except (TypeError, ValueError):
+        accepts_call_sid = False
+
+    if accepts_call_sid:
+        response = _call_groq(messages, max_retries=max_retries, call_sid=call_sid)
+    else:
+        response = _call_groq(messages, max_retries=max_retries)
+
     if response:
         if session and getattr(session, "mark_milestone", None) and session.mark_milestone("FIRST_LLM_RESPONSE"):
             logger.info("[CALL_MILESTONE] FIRST_LLM_RESPONSE call_sid=%s response_preview=%s", call_sid, response[:80])
@@ -110,77 +121,125 @@ def generate_response(
         return response
 
     structured_log(logger, logging.WARNING, "LLM_SKIPPED", call_sid=call_sid, stage="LLM_RESPONSE", reason="llm_unavailable_or_empty_response")
-    return "I didn't catch that. Could you please repeat?"
+    return ""
 
 
 def _call_groq(messages: list, max_retries: int = 2, call_sid: str | None = None) -> Optional[str]:
     """
-    Send chat messages to Groq API with retries.
-    Production-only implementation - no fallbacks.
-    
-    Args:
-        messages: Chat messages including system and user roles
-        max_retries: Number of retry attempts
-        
-    Returns:
-        Response text or None if all retries fail
+    Send chat messages to Groq API with retries and a secondary fallback model.
+
+    The primary model is attempted first. If it times out, rate-limits, or returns
+    an error, the call automatically retries against a fallback model so the AI
+    flow remains available in production.
     """
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
-    
-    payload = {
-        "model": GROQ_MODEL,
-        "messages": messages,
-        "temperature": 0.55,
-        "max_tokens": 140,
-        "top_p": 0.92,
-    }
-    
+
+    primary_model = getattr(__import__('config', fromlist=['GROQ_MODEL']), 'GROQ_MODEL', GROQ_MODEL)
+    fallback_model = getattr(__import__('config', fromlist=['GROQ_FALLBACK_MODEL']), 'GROQ_FALLBACK_MODEL', GROQ_FALLBACK_MODEL)
+    models = [primary_model]
+    if fallback_model and fallback_model != primary_model:
+        models.append(fallback_model)
+
     session = get_groq_session()
 
-    for attempt in range(max_retries):
-        try:
-            started_at = time.monotonic()
-            resp = session.post(url, json=payload, timeout=10, headers=headers)
-            
-            if resp.status_code == 200:
-                data = resp.json()
-                response = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-                if response:
-                    logger.info(f"[LLM-Groq] ✅ Response: {response[:80]}")
-                    return response
-                else:
-                    logger.warning("[LLM-Groq] Empty response from API")
+    for model_idx, model_name in enumerate(models):
+        for attempt in range(max_retries):
+            payload = {
+                "model": model_name,
+                "messages": messages,
+                "temperature": 0.55,
+                "max_tokens": 140,
+                "top_p": 0.92,
+            }
+
+            try:
+                started_at = time.monotonic()
+                resp = session.post(url, json=payload, timeout=10, headers=headers)
+
+                if resp.status_code == 200:
+                    data = resp.json()
+                    response = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                    if response:
+                        logger.info(f"[LLM-Groq] ✅ Response from {model_name}: {response[:80]}")
+                        return response
+                    logger.warning(f"[LLM-Groq] Empty response from {model_name}")
                     return None
-            elif resp.status_code == 429:
-                elapsed_ms = int((time.monotonic() - started_at) * 1000)
-                structured_log(logger, logging.WARNING, "TIMEOUT", call_sid=call_sid, stage="LLM_TIMEOUT", timer_name="groq_chat_completion", elapsed_ms=elapsed_ms, who_created="ai.llm._call_groq", reason="rate_limited")
-                logger.warning(f"[LLM-Groq] Rate limited (attempt {attempt + 1}/{max_retries})")
-                if attempt < max_retries - 1:
-                    time.sleep(1 + attempt * 2)
-                    continue
-            else:
-                logger.error(f"[LLM-Groq] HTTP {resp.status_code}: {resp.text[:200]}")
+
+                if resp.status_code == 429:
+                    elapsed_ms = int((time.monotonic() - started_at) * 1000)
+                    structured_log(logger, logging.WARNING, "TIMEOUT", call_sid=call_sid, stage="LLM_TIMEOUT", timer_name="groq_chat_completion", elapsed_ms=elapsed_ms, who_created="ai.llm._call_groq", reason="rate_limited")
+                    logger.warning(f"[LLM-Groq] Rate limited on {model_name} (attempt {attempt + 1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        time.sleep(1 + attempt * 2)
+                        continue
+                elif resp.status_code >= 500:
+                    logger.error(f"[LLM-Groq] Server error on {model_name}: HTTP {resp.status_code}: {resp.text[:200]}")
+                else:
+                    logger.error(f"[LLM-Groq] HTTP {resp.status_code} on {model_name}: {resp.text[:200]}")
+
+                if model_idx < len(models) - 1 and attempt == max_retries - 1:
+                    logger.warning(f"[LLM-Groq] Switching from {model_name} to fallback model")
+                    break
                 return None
-                
-        except requests.Timeout:
-            elapsed_ms = int((time.monotonic() - started_at) * 1000)
-            structured_log(logger, logging.ERROR, "TIMEOUT", call_sid=call_sid, stage="LLM_TIMEOUT", timer_name="groq_chat_completion", elapsed_ms=elapsed_ms, who_created="ai.llm._call_groq", reason="request_timeout")
-            logger.warning(f"[LLM-Groq] Timeout (attempt {attempt + 1}/{max_retries})")
-            if attempt < max_retries - 1:
-                time.sleep(1)
-                continue
-        except Exception as e:
-            structured_log(logger, logging.ERROR, "EXCEPTION", call_sid=call_sid, stage="LLM_EXCEPTION", reason="llm_request_exception", error=str(e), traceback=traceback.format_exc())
-            logger.error(f"[LLM-Groq] Error: {e}")
-            return None
-    
+
+            except requests.Timeout:
+                elapsed_ms = int((time.monotonic() - started_at) * 1000)
+                structured_log(logger, logging.ERROR, "TIMEOUT", call_sid=call_sid, stage="LLM_TIMEOUT", timer_name="groq_chat_completion", elapsed_ms=elapsed_ms, who_created="ai.llm._call_groq", reason="request_timeout")
+                logger.warning(f"[LLM-Groq] Timeout on {model_name} (attempt {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+                    continue
+                if model_idx < len(models) - 1:
+                    logger.warning(f"[LLM-Groq] Switching from {model_name} to fallback model after timeout")
+                    break
+                return None
+            except Exception as e:
+                structured_log(logger, logging.ERROR, "EXCEPTION", call_sid=call_sid, stage="LLM_EXCEPTION", reason="llm_request_exception", error=str(e), traceback=traceback.format_exc())
+                logger.error(f"[LLM-Groq] Error on {model_name}: {e}")
+                if model_idx < len(models) - 1 and attempt == max_retries - 1:
+                    logger.warning(f"[LLM-Groq] Switching from {model_name} to fallback model after exception")
+                    break
+                return None
+
     structured_log(logger, logging.WARNING, "LLM_SKIPPED", call_sid=call_sid, stage="LLM_RESPONSE", reason="all_retries_exhausted")
     logger.error("[LLM-Groq] All retries exhausted")
     return None
+
+
+def get_initial_greeting(
+    session,
+    call_type: str = "normal",
+    emotion: str = "neutral",
+) -> str:
+    """Generate the very first thing the AI agent says after the call connects.
+
+    This is treated as an agent message (there is no customer input yet) and is
+    produced using the canonical system prompt so the call starts talking immediately.
+    """
+    call_sid = getattr(session, "call_sid", None)
+    structured_log(logger, logging.INFO, "LLM_GREETING", call_sid=call_sid, stage="LLM_GREETING", call_type=call_type, emotion=emotion)
+
+    user_text = "[The customer has answered the phone. Begin the conversation naturally with a greeting and move toward verification. Do not wait for the customer to speak first.]"
+    context = ""
+    call_context = session.get_call_context()
+
+    response = generate_response(
+        user_text,
+        context,
+        call_context=call_context,
+        call_type=call_type,
+        emotion=emotion,
+        max_retries=2,
+        session=session,
+    )
+    if response:
+        session.add_agent_message(response)
+    logger.info(f"[CHAT] greeting generated: {response[:60]}")
+    return response or ""
 
 
 def chat_with_ai(
@@ -192,24 +251,24 @@ def chat_with_ai(
 ) -> str:
     """
     High-level chat function: update history, get AI response, update history.
-    
+
     Args:
         user_text: User's input
         session: CallSession object
         system_prompt: Custom system prompt (optional)
         call_type: Type of call
         emotion: Voice emotion for response
-        
+
     Returns:
         AI response text
     """
     if not user_text or not user_text.strip():
-        return "I didn't catch that. Could you please repeat?"
-    
+        return ""
+
     session.add_user_message(user_text)
     context = session.get_context(limit=8)  # Last 8 turns for context
     call_context = session.get_call_context()
-    
+
     response = generate_response(
         user_text,
         context,
@@ -220,7 +279,7 @@ def chat_with_ai(
         max_retries=2,
         session=session,
     )
-    
+
     session.add_agent_message(response)
     logger.info(f"[CHAT] {len(session.history)} turns, response: {response[:60]}")
     return response

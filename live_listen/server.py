@@ -33,7 +33,7 @@ from live_listen.manager import manager
 try:
     from ai.session import get_session, remove_session
     from ai.llm import chat_with_ai
-    from ai.tts import save_audio
+    from ai.tts import save_audio, generate_telephony_audio
     from ai.utils import extract_otp, send_otp_to_channel
     
     # ASR: Initialize Groq Whisper (no external audio libraries needed)
@@ -343,6 +343,42 @@ async def twilio_media_test():
     return {"ok": True, "message": "FastAPI routing works for /twilio/media path"}
 
 
+async def send_media_audio(ws: WebSocket, audio_bytes: bytes, call_sid: str, chunk_size: int = 160):
+    """Send audio bytes over Twilio Media Stream WebSocket.
+    
+    Args:
+        ws: WebSocket connection to Twilio
+        audio_bytes: Raw mu-law 8kHz audio bytes to send
+        call_sid: Call ID for logging
+        chunk_size: Bytes per chunk (160 bytes ≈ 20ms at 8kHz)
+    """
+    if not audio_bytes:
+        logger.warning(f"[MEDIA_SEND] No audio bytes to send for {call_sid}")
+        return
+    
+    try:
+        sequence = 1
+        for i in range(0, len(audio_bytes), chunk_size):
+            chunk = audio_bytes[i:i+chunk_size]
+            payload_b64 = base64.b64encode(chunk).decode('utf-8')
+            
+            media_event = {
+                'event': 'media',
+                'media': {
+                    'payload': payload_b64,
+                    'sequence': str(sequence)
+                }
+            }
+            
+            await ws.send_json(media_event)
+            sequence += 1
+            await asyncio.sleep(0.020)  # ~20ms per frame for 8kHz
+        
+        logger.warning(f"[MEDIA_SEND] OK: Sent {len(audio_bytes)} bytes ({sequence-1} frames) for {call_sid}")
+    except Exception as e:
+        logger.error(f"[MEDIA_SEND_ERROR] Failed to send audio for {call_sid}: {e}", exc_info=True)
+
+
 @app.get('/twilio/media')
 async def twilio_media_http(request: Request):
     """
@@ -552,42 +588,27 @@ async def twilio_media(ws: WebSocket):
                                         )
                                         logger.warning(f"[AI_RESPONSE] ✅ type={session.call_type}, emotion={session.emotion}: {ai_response[:80]}")
 
-                                        # Generate and play audio response back to the caller
-                                        filename = save_audio(
-                                            call_sid,
-                                            ai_response,
-                                            voice_id=session.voice_id,
-                                            session=session
-                                        )
-                                        if not filename:
-                                            logger.error(f"[AI_AUDIO_SAVED] FAILED: no filename for generated audio, falling back to Say")
-                                            try:
-                                                twilio_client.calls(call_sid).update(
-                                                    twiml=f"<Response><Say voice='alice'>I am sorry, I could not generate the audio response. Please try again later.</Say></Response>"
-                                                )
-                                                logger.warning(f"[AI_AUDIO_PLAYED] Fallback Say executed for {call_sid}")
-                                            except Exception as e:
-                                                logger.error(f"[AI_AUDIO_PLAYBACK_ERROR] {e}", exc_info=True)
-                                            continue
-
-                                        logger.warning(f"[AI_AUDIO_SAVED] OK: {filename}")
-                                        audio_host = build_public_base_url() or LIVE_LISTEN_URL or NGROK_URL or ""
-                                        audio_host = audio_host.strip().rstrip('/')
-                                        if audio_host.startswith('wss://'):
-                                            audio_host = 'https://' + audio_host[len('wss://'):]
-                                        elif audio_host.startswith('ws://'):
-                                            audio_host = 'http://' + audio_host[len('ws://'):]
-                                        if not audio_host:
-                                            logger.error("[AI_AUDIO_PLAYBACK] No audio host configured for callback URL")
-                                            continue
-                                        audio_url = f"{audio_host}/audio/{call_sid}/{filename}"
+                                        # Generate audio response and send over Media Stream
                                         try:
-                                            twilio_client.calls(call_sid).update(
-                                                twiml=f"<Response><Play>{audio_url}</Play></Response>"
+                                            audio_bytes = generate_telephony_audio(
+                                                ai_response,
+                                                voice_id=session.voice_id,
+                                                output_format="ulaw_8000",
+                                                call_sid=call_sid,
+                                                session=session
                                             )
-                                            logger.warning(f"[AI_AUDIO_PLAYED] OK: {audio_url}")
+                                            
+                                            if not audio_bytes:
+                                                logger.error(f"[AI_AUDIO_GEN] FAILED: no audio bytes generated for call_sid={call_sid}")
+                                                # Do not speak a hardcoded fallback greeting or canned apology.
+                                                # If TTS fails, stay silent rather than bypassing the AI flow with a fixed phrase.
+                                                continue
+                                            
+                                            logger.warning(f"[AI_AUDIO_GEN] OK: Generated {len(audio_bytes)} bytes for {call_sid}")
+                                            await send_media_audio(ws, audio_bytes, call_sid)
+                                            logger.warning(f"[AI_AUDIO_PLAYED] OK: Media frames sent for call_sid={call_sid}")
                                         except Exception as e:
-                                            logger.error(f"[AI_AUDIO_PLAYBACK_ERROR] {e}", exc_info=True)
+                                            logger.error(f"[AI_AUDIO_PLAYBACK_ERROR] CRITICAL: {e}", exc_info=True)
                                 except Exception as e:
                                     logger.error(f"[AI_PROCESS_ERROR] CRITICAL: {e}", exc_info=True)
 

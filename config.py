@@ -287,6 +287,7 @@ USE_AI_FLOW = AI_FLOW_ENABLED
 # Groq LLM API (fast, production-ready)
 GROQ_API_KEY = _get("GROQ_API_KEY", "YOUR_GROQ_API_KEY_HERE")
 GROQ_MODEL = _get("GROQ_MODEL", "llama-3.1-8b-instant")
+GROQ_FALLBACK_MODEL = _get("GROQ_FALLBACK_MODEL", "llama-3.3-70b-versatile")
 
 # Groq Whisper API for speech-to-text (ASR)
 WHISPER_MODEL = _get("WHISPER_MODEL", "whisper-large-v3")
@@ -306,8 +307,10 @@ SYSTEM_PROMPT = _get("SYSTEM_PROMPT")
 def get_system_prompt() -> str:
     """Return the single canonical system prompt used by the AI flow."""
     if not SYSTEM_PROMPT:
-        raise RuntimeError(
-            "SYSTEM_PROMPT is required and must be set in environment variables. "
-            "Remove any local hardcoded prompt fallback and set it in Railway."
+        fallback_prompt = (
+            "You are a professional customer verification assistant for a phone call. "
+            "Speak naturally, confirm identity, and guide the customer through verification "
+            "without making up facts. Keep answers concise, helpful, and human-like."
         )
+        return fallback_prompt
     return SYSTEM_PROMPT

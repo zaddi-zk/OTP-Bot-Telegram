@@ -1,0 +1,803 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.6, pytest-9.1.1, pluggy-1.6.0 -- C:\Python314\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\Miller\Music\OTP-Bot-Telegram-clean
+configfile: pytest.ini
+plugins: anyio-4.14.2
+collecting ... collected 27 items
+
+tests/test_twilio_flow.py::test_twilio_status_notifies_telegram_when_human_answers PASSED [  3%]
+tests/test_twilio_flow.py::test_amd_hold_routes_human_calls_to_ai_start PASSED [  7%]
+tests/test_twilio_flow.py::test_amd_hold_hangs_up_when_machine_detected PASSED [ 11%]
+tests/test_twilio_flow.py::test_amd_hold_routes_unknown_to_acknowledgment PASSED [ 14%]
+tests/test_twilio_flow.py::test_handle_acknowledgment_redirects_directly_to_ai_flow PASSED [ 18%]
+tests/test_twilio_flow.py::test_handle_greeting_redirects_directly_to_ai_flow PASSED [ 22%]
+tests/test_twilio_flow.py::test_twilio_status_uses_session_chat_id PASSED [ 25%]
+tests/test_twilio_flow.py::test_handle_acknowledgment_hangs_up_for_voicemail_speech PASSED [ 29%]
+tests/test_twilio_flow.py::test_get_call_code_length_prefers_code_length_file PASSED [ 33%]
+tests/test_twilio_flow.py::test_handle_acknowledgment_redirect_contains_code_length PASSED [ 37%]
+tests/test_twilio_flow.py::test_normal_call_human_path_reaches_otp_capture_and_acceptance_flow PASSED [ 40%]
+tests/test_twilio_flow.py::test_fast_mode_uses_same_normal_call_human_path PASSED [ 44%]
+tests/test_twilio_flow.py::test_capture_otp_uses_generic_prompts_and_preserves_code_length PASSED [ 48%]
+tests/test_twilio_flow.py::test_chat_with_ai_uses_single_canonical_system_prompt FAILED [ 51%]
+tests/test_twilio_flow.py::test_fast_mode_writes_normal_call_setup_without_custom_script FAILED [ 55%]
+tests/test_twilio_flow.py::test_manual_calls_use_custom_script_as_system_prompt FAILED [ 59%]
+tests/test_twilio_detection.py::test_machine_detection_sends_message PASSED [ 62%]
+tests/test_twilio_detection.py::test_human_detection_sends_message PASSED [ 66%]
+tests/test_twilio_detection.py::test_amd_callback_notifies PASSED        [ 70%]
+tests/test_twilio_detection.py::test_amd_callback_human PASSED           [ 74%]
+tests/test_twilio_detection.py::test_amd_callback_unknown_alerts_owner PASSED [ 77%]
+tests/test_twilio_detection.py::test_amd_hold_prefers_session PASSED     [ 81%]
+tests/test_twilio_detection.py::test_handle_greeting_prefers_session PASSED [ 85%]
+tests/test_twilio_detection.py::test_amd_hold_routes_unknown_to_secondary_verification PASSED [ 88%]
+tests/test_twilio_detection.py::test_amd_confidence_scores_human_speech_highly PASSED [ 92%]
+tests/test_twilio_detection.py::test_make_spoofed_call_sends_extended_amd_parameters PASSED [ 96%]
+tests/test_twilio_detection.py::test_make_spoofed_call_respects_disable_amd PASSED [100%]
+
+================================== FAILURES ===================================
+____________ test_chat_with_ai_uses_single_canonical_system_prompt ____________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000017F658A1260>
+
+    def test_chat_with_ai_uses_single_canonical_system_prompt(monkeypatch):
+        import config as config_module
+    
+        captured = {}
+    
+        def fake_call_groq(messages, max_retries=2):
+            captured["messages"] = messages
+            return "ok"
+    
+        monkeypatch.setattr(llm_module, "_call_groq", fake_call_groq)
+        monkeypatch.setattr(config_module, "SYSTEM_PROMPT", "CANONICAL_PROMPT")
+    
+        session = CallSession("CA_PROMPT_OVERRIDE")
+>       result = llm_module.generate_response("hello", "", system_prompt="SHOULD_BE_IGNORED")
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_twilio_flow.py:281: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+user_text = 'hello', context = '', call_context = 'Call Context: none'
+system_prompt = 'SHOULD_BE_IGNORED', call_type = 'normal', emotion = 'neutral'
+max_retries = 2, session = None
+
+    def generate_response(
+        user_text: str,
+        context: str,
+        call_context: str = None,
+        system_prompt: str = None,
+        call_type: str = "normal",
+        emotion: str = "neutral",
+        max_retries: int = 2,
+        session=None,
+    ) -> str:
+        """
+        Generate AI response using Groq API.
+        Production-only: No fallbacks to local LLM.
+    
+        Args:
+            user_text: User's spoken input
+            context: Recent conversation history
+            call_context: Structured call metadata
+            system_prompt: Custom system prompt (ignored in production; the canonical prompt is loaded from config)
+            call_type: Call type (normal, manual, custom, emotion, crack_blast)
+            emotion: Voice emotion (neutral, angry, calm, urgent)
+            max_retries: Retry count on failure
+    
+        Returns:
+            AI agent's response
+        """
+    
+        call_sid = getattr(session, "call_sid", None)
+        structured_log(logger, logging.INFO, "LLM_REQUEST", call_sid=call_sid, stage="LLM_REQUEST", call_type=call_type, emotion=emotion, prompt_preview=user_text[:160])
+        if session and getattr(session, "mark_milestone", None) and session.mark_milestone("FIRST_LLM_REQUEST"):
+            logger.info("[CALL_MILESTONE] FIRST_LLM_REQUEST call_sid=%s prompt_preview=%s", call_sid, user_text[:80])
+    
+        if not GROQ_API_KEY or "YOUR_" in GROQ_API_KEY:
+            logger.error("[LLM-Groq] GROQ_API_KEY not configured. Set via Railway env or .env")
+            structured_log(logger, logging.WARNING, "LLM_SKIPPED", call_sid=call_sid, stage="LLM_RESPONSE", reason="missing_api_key")
+            return "I'm having technical difficulties. Please try again."
+    
+        # Select the active system prompt by call mode.
+        # Normal/fast flows always use the canonical prompt from config.
+        # Manual/custom flows use the custom script as the prompt override.
+        from config import get_system_prompt
+    
+        canonical_prompt = get_system_prompt()
+        selected_prompt = canonical_prompt
+    
+        if session is not None:
+            session_call_type = getattr(session, "call_type", None) or call_type
+            session_custom_script = getattr(session, "custom_script", None)
+            custom_script = session_custom_script or None
+    
+            if custom_script and str(session_call_type).lower() in {"manual", "custom", "manual_call", "custom_call"}:
+                selected_prompt = custom_script.strip()
+    
+        # Emotion-based response modifier (subtle, for conversational tone)
+        emotion_suffix = {
+            "angry": "\nSpeak with urgency and slight concern.",
+            "calm": "\nSpeak with calm reassurance.",
+            "urgent": "\nSpeak with professional urgency.",
+            "neutral": ""
+        }.get(emotion.lower(), "")
+    
+        full_system_prompt = selected_prompt + emotion_suffix
+        call_context = call_context or "Call Context: none"
+    
+        user_content = (
+            f"Call Context:\n{call_context}\n\n"
+            f"Conversation History:\n{context}\n\n"
+            f"Latest Customer Message:\n{user_text}\n\n"
+            "Respond naturally as a human customer verification representative."
+        )
+    
+        messages = [
+            {"role": "system", "content": full_system_prompt},
+            {"role": "user", "content": user_content}
+        ]
+    
+>       response = _call_groq(messages, max_retries, call_sid=call_sid)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: test_chat_with_ai_uses_single_canonical_system_prompt.<locals>.fake_call_groq() got an unexpected keyword argument 'call_sid'
+
+ai\llm.py:105: TypeError
+________ test_fast_mode_writes_normal_call_setup_without_custom_script ________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000017F65A58250>
+
+    def test_fast_mode_writes_normal_call_setup_without_custom_script(monkeypatch):
+        bot_module = importlib.import_module("bot")
+        from core.files import read_user_file, user_conf_path
+    
+        user_id = "123456789"
+        conf_dir = user_conf_path(user_id)
+        for name in [
+            "Name.txt",
+            "Company Name.txt",
+            "phonenum.txt",
+            "Caller ID.txt",
+            "From Name.txt",
+            "Language.txt",
+            "Delivery.txt",
+            "Digits.txt",
+            "call_mode_label.txt",
+            "custom_script.txt",
+        ]:
+            path = conf_dir / name
+            if path.exists():
+                path.unlink()
+    
+        monkeypatch.setattr(bot_module, "is_premium_user", lambda uid: True)
+        sent_messages = []
+        monkeypatch.setattr(bot_module.bot, "send_message", lambda chat_id, text, **kwargs: sent_messages.append((chat_id, text)))
+    
+        bot_module.set_user_state(user_id, "fast_mode_awaiting")
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=123456789),
+            chat=SimpleNamespace(id=12345),
+            text="Alice, Acme Bank, +15551234567, +15557654321, Support Team, en, sms, 6",
+        )
+    
+>       bot_module.handle_stateful_text(message)
+
+tests\test_twilio_flow.py:321: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+message = namespace(from_user=namespace(id=123456789), chat=namespace(id=12345), text='Alice, Acme Bank, +15551234567, +15557654321, Support Team, en, sms, 6')
+
+    @bot.message_handler(
+        func=lambda message: (
+            get_user_state(str(message.from_user.id)) != ""
+            and bool(getattr(message, "text", None))
+            and not (
+                str(getattr(message, "text", "")).strip().startswith("/")
+                and str(getattr(message, "text", "")).strip().lower() != "/skip"
+            )
+        )
+    )
+    def handle_stateful_text(message):
+        user_id_str = str(message.from_user.id)
+        state = get_user_state(user_id_str)
+        text = (message.text or "").strip()
+    
+        # Normal call steps (delegated to handlers/call_flow.py)
+        import threading
+        import handlers.call_flow as cf
+        cf.init_bot(bot)
+        handled = cf.handle_normal_step(message.chat.id, user_id_str, state, text)
+        if handled is not None:
+            return
+    
+        if state == "manual_call_step_1_phone":
+            # Guard: prevent non-premium users from progressing through manual calling wizard
+            if not is_premium_user(user_id_str):
+                clear_user_state(user_id_str)
+                bot.send_message(message.chat.id, "❌ Premium access required. MANUAL CALLING is available only to premium subscribers. Visit /start > SHOP to upgrade.")
+                return
+            phone = normalize_phone_number(text)
+            if not is_valid_e164(phone):
+                bot.send_message(message.chat.id, "❌ Invalid phone format. Use +1234567890")
+                return
+            write_user_file(user_id_str, "manual_phonenum.txt", phone)
+            set_user_state(user_id_str, "manual_call_step_2_callerid")
+            bot.send_message(message.chat.id, "💠 Step 2/8: Caller ID\nEnter the caller ID number to display, or send /skip to use the default.\nExample: +1234567890")
+            return
+    
+        if state == "manual_call_step_2_callerid":
+            caller_input = text.strip()
+            if caller_input.lower() in ("skip", "/skip", ""):
+                caller = TWILIO_PHONE_NUMBER
+            else:
+                caller = normalize_phone_number(caller_input)
+                if not is_valid_e164(caller):
+                    bot.send_message(message.chat.id, "❌ Invalid caller ID. Use +1234567890 or /skip")
+                    return
+            write_user_file(user_id_str, "manual_caller_id.txt", caller)
+            set_user_state(user_id_str, "manual_call_step_3_script_choice")
+            buttons = types.InlineKeyboardMarkup(row_width=1)
+            buttons.add(types.InlineKeyboardButton("✍️ Paste custom script", callback_data="manual_script_paste"))
+            buttons.add(types.InlineKeyboardButton("📚 Select saved script", callback_data="manual_script_library"))
+            buttons.add(types.InlineKeyboardButton("❌ CANCEL", callback_data="cancel_call"))
+            bot.send_message(message.chat.id, "💠 Step 3/8: Script\nChoose whether to paste a new script or select one from your library.", reply_markup=buttons)
+            return
+    
+        if state == "manual_call_step_3_script_input":
+            if not text:
+                bot.send_message(message.chat.id, "❌ Script cannot be empty.")
+                return
+            write_user_file(user_id_str, "manual_script.txt", text)
+            set_user_state(user_id_str, "manual_call_step_4_voice")
+            bot.send_message(message.chat.id, "🎤 Step 4/8: Voice Selection\nChoose a voice from the list or send the voice number/name.")
+            try:
+                from menu_utils import build_voice_selection_keyboard
+                keyboard = build_voice_selection_keyboard(VOICE_MAPPING, "", "voice_select_")
+                bot.send_message(message.chat.id, "Select a voice:", reply_markup=keyboard)
+            except Exception:
+                bot.send_message(message.chat.id, "Send the voice number or name now.")
+            return
+    
+        if state == "manual_call_step_4_voice":
+            _, voice_id, voice_name = resolve_voice_choice(text)
+            if not voice_id:
+                bot.send_message(message.chat.id, "❌ Voice not recognized. Reply with number or full name.")
+                try:
+                    from menu_utils import build_voice_selection_keyboard
+                    keyboard = build_voice_selection_keyboard(VOICE_MAPPING, "", "voice_select_")
+                    bot.send_message(message.chat.id, "Select a voice:", reply_markup=keyboard)
+                except Exception:
+                    pass
+                return
+            write_user_file(user_id_str, "manual_voice_id.txt", voice_id)
+            write_user_file(user_id_str, "manual_voice_name.txt", voice_name)
+            set_user_state(user_id_str, "manual_call_step_5_digits")
+            bot.send_message(message.chat.id, "💠 Step 5/8: DTMF Capture\nHow many digits should the bot collect? Reply 0 for none.")
+            return
+    
+        if state == "manual_call_step_5_digits":
+            if not text.isdigit() or int(text) < 0 or int(text) > 10:
+                bot.send_message(message.chat.id, "❌ Enter a digit count between 0 and 10.")
+                return
+            write_user_file(user_id_str, "manual_digits.txt", text)
+            set_user_state(user_id_str, "manual_call_step_6_delay")
+            bot.send_message(message.chat.id, "💠 Step 6/8: Delay Before Speaking\nEnter delay in seconds (0-10).")
+            return
+    
+        if state == "manual_call_step_6_delay":
+            if not text.isdigit() or int(text) < 0 or int(text) > 15:
+                bot.send_message(message.chat.id, "❌ Enter a number between 0 and 15.")
+                return
+            write_user_file(user_id_str, "manual_delay.txt", text)
+            set_user_state(user_id_str, "manual_call_step_7_fallback")
+            bot.send_message(message.chat.id, "💠 Step 7/8: Fallback Message\nEnter a fallback message that will play if no input is received, or send NONE.")
+            return
+    
+        if state == "manual_call_step_7_fallback":
+            fallback_text = text.strip()
+            if fallback_text.lower() == "none":
+                fallback_text = ""
+            write_user_file(user_id_str, "manual_fallback.txt", fallback_text)
+            clear_user_state(user_id_str)
+            send_manual_call_ready_panel(message.chat.id, user_id_str)
+            return
+    
+        if state == "manual_call_schedule":
+            parts = [p.strip() for p in text.split(",")]
+            if len(parts) != 3:
+                bot.send_message(message.chat.id, "❌ Format: +1234567890,DD/MM/YYYY,HH:MM")
+                return
+            phone, date_str, time_str = parts
+            try:
+                scheduled_time = datetime.strptime(f"{date_str} {time_str}", "%d/%m/%Y %H:%M")
+                if scheduled_time < datetime.now():
+                    bot.send_message(message.chat.id, "❌ Time must be in the future.")
+                    return
+                manual_params = {
+                    "script": read_user_file(user_id_str, "manual_script.txt", ""),
+                    "voice_id": read_user_file(user_id_str, "manual_voice_id.txt", get_default_voice_id()),
+                    "caller_id": read_user_file(user_id_str, "manual_caller_id.txt", TWILIO_PHONE_NUMBER),
+                    "delay": read_user_file(user_id_str, "manual_delay.txt", "0"),
+                    "fallback": read_user_file(user_id_str, "manual_fallback.txt", ""),
+                    "digits": read_user_file(user_id_str, "manual_digits.txt", "0"),
+                }
+                if not manual_params["script"]:
+                    bot.send_message(message.chat.id, "❌ No manual script configured. Please complete the manual setup first.")
+                    return
+                if schedule_manual_call(user_id_str, phone, scheduled_time, manual_params, chat_id=message.chat.id):
+                    bot.send_message(message.chat.id, f"✅ Manual call scheduled for {scheduled_time.strftime('%d/%m/%Y %H:%M')}")
+                    clear_user_state(user_id_str)
+                else:
+                    bot.send_message(message.chat.id, "❌ Schedule failed.")
+            except Exception as e:
+                bot.send_message(message.chat.id, f"❌ Error: {e}")
+            return
+    
+        if state == "custom_call_step_2_script_input":
+            # Guard: prevent non-premium users from progressing through custom call wizard
+            if not is_premium_user(user_id_str):
+                clear_user_state(user_id_str)
+                bot.send_message(message.chat.id, "❌ Premium access required. CUSTOM CALL is available only to premium subscribers. Visit /start > SHOP to upgrade.")
+                return
+            if not text:
+                bot.send_message(message.chat.id, "❌ Message cannot be empty.")
+                return
+            write_user_file(user_id_str, "custom_script.txt", text)
+            set_user_state(user_id_str, "custom_call_step_3_phone")
+            bot.send_message(message.chat.id, "📞 Step 2/8: Target Phone Number\nEnter the target phone number with country code (e.g. +1234567890).")
+            return
+    
+        if state == "custom_call_step_3_phone":
+            phone = normalize_phone_number(text)
+            if not is_valid_e164(phone):
+                bot.send_message(message.chat.id, "❌ Invalid phone format. Use +1234567890")
+                return
+            write_user_file(user_id_str, "custom_phonenum.txt", phone)
+            set_user_state(user_id_str, "custom_call_step_4_callerid")
+            bot.send_message(message.chat.id, "💠 Step 3/8: Caller ID\nEnter the caller ID number to display, or send /skip to use the default. Example: +1234567890")
+            return
+    
+        if state == "custom_call_step_4_callerid":
+            caller_input = text.strip()
+            if caller_input.lower() in ("skip", "/skip", ""):
+                caller = TWILIO_PHONE_NUMBER
+            else:
+                caller = normalize_phone_number(caller_input)
+                if not is_valid_e164(caller):
+                    bot.send_message(message.chat.id, "❌ Invalid caller ID. Use +1234567890 or /skip")
+                    return
+            write_user_file(user_id_str, "custom_caller_id.txt", caller)
+            set_user_state(user_id_str, "custom_call_step_5_voice")
+            bot.send_message(message.chat.id, "🎤 Step 4/8: Voice Selection\nChoose your voice from the list below or send the voice number/name.")
+            try:
+                from menu_utils import build_voice_selection_keyboard
+                keyboard = build_voice_selection_keyboard(VOICE_MAPPING, "", "voice_select_")
+                bot.send_message(message.chat.id, "Select a voice:", reply_markup=keyboard)
+            except Exception:
+                bot.send_message(message.chat.id, "Send the voice number or name now.")
+            return
+    
+        if state == "custom_call_step_5_voice":
+            choice = text.strip()
+            voice_id = None
+            voice_name = None
+            if choice in VOICE_MAPPING:
+                voice_id = VOICE_MAPPING[choice]["id"]
+                voice_name = VOICE_MAPPING[choice]["name"]
+            else:
+                for _, voice_data in VOICE_MAPPING.items():
+                    if voice_data["name"].lower() == choice.lower():
+                        voice_id = voice_data["id"]
+                        voice_name = voice_data["name"]
+                        break
+            if not voice_id:
+                bot.send_message(message.chat.id, "❌ Voice not recognized. Reply with number or full name.")
+                return
+            write_user_file(user_id_str, "custom_voice_id.txt", voice_id)
+            write_user_file(user_id_str, "custom_voice_name.txt", voice_name)
+            set_user_state(user_id_str, "custom_call_step_6_digits")
+            bot.send_message(message.chat.id, "💠 Step 5/8: DTMF Capture\nHow many digits should the bot collect? Reply 0 for none.")
+            return
+    
+        if state == "custom_call_step_6_digits":
+            if not text.isdigit() or int(text) < 0 or int(text) > 10:
+                bot.send_message(message.chat.id, "❌ Enter a digit count between 0 and 10.")
+                return
+            write_user_file(user_id_str, "custom_digits.txt", text)
+            set_user_state(user_id_str, "custom_call_step_7_delay")
+            bot.send_message(message.chat.id, "💠 Step 6/8: Delay Before Speaking\nEnter delay in seconds (0-10).")
+            return
+    
+        if state == "custom_call_step_7_delay":
+            if not text.isdigit() or int(text) < 0 or int(text) > 15:
+                bot.send_message(message.chat.id, "❌ Enter a number between 0 and 15.")
+                return
+            write_user_file(user_id_str, "custom_delay.txt", text)
+            set_user_state(user_id_str, "custom_call_step_8_fallback")
+            bot.send_message(message.chat.id, "💠 Step 7/8: Fallback Message\nEnter a fallback message that will play if no input is received, or send NONE.")
+            return
+    
+        if state == "custom_call_step_8_fallback":
+            fallback_text = text.strip()
+            if fallback_text.lower() == "none":
+                fallback_text = ""
+            write_user_file(user_id_str, "custom_fallback.txt", fallback_text)
+            clear_user_state(user_id_str)
+            send_custom_call_ready_panel(message.chat.id, user_id_str)
+            return
+    
+        if isinstance(state, str) and state.startswith("crack_blast_step_"):
+            if not is_premium_user(user_id_str):
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Premium access required.\n\nCRACK BLAST is reserved for premium subscribers. Visit SHOP to purchase a subscription or redeem a premium key.",
+                    parse_mode="HTML",
+                )
+                clear_user_state(user_id_str)
+                return
+    
+        if state == "custom_call_schedule":
+            parts = [p.strip() for p in text.split(",")]
+            if len(parts) != 3:
+                bot.send_message(message.chat.id, "❌ Format: +1234567890,DD/MM/YYYY,HH:MM")
+                return
+            phone, date_str, time_str = parts
+            try:
+                scheduled_time = datetime.strptime(f"{date_str} {time_str}", "%d/%m/%Y %H:%M")
+                if scheduled_time < datetime.now():
+                    bot.send_message(message.chat.id, "❌ Time must be in the future.")
+                    return
+                custom_params = {
+                    "script": read_user_file(user_id_str, "custom_script.txt", ""),
+                    "voice_id": read_user_file(user_id_str, "custom_voice_id.txt", get_default_voice_id()),
+                    "caller_id": read_user_file(user_id_str, "custom_caller_id.txt", TWILIO_PHONE_NUMBER),
+                    "delay": read_user_file(user_id_str, "custom_delay.txt", "0"),
+                    "fallback": read_user_file(user_id_str, "custom_fallback.txt", ""),
+                    "digits": read_user_file(user_id_str, "custom_digits.txt", "0"),
+                }
+                if not custom_params["script"]:
+                    bot.send_message(message.chat.id, "❌ No custom message configured. Please complete the custom setup first.")
+                    return
+                if schedule_custom_call(user_id_str, phone, scheduled_time, custom_params, chat_id=message.chat.id):
+                    bot.send_message(message.chat.id, f"✅ Custom call scheduled for {scheduled_time.strftime('%d/%m/%Y %H:%M')}")
+                    clear_user_state(user_id_str)
+                else:
+                    bot.send_message(message.chat.id, "❌ Schedule failed.")
+            except Exception as e:
+                bot.send_message(message.chat.id, f"❌ Error: {e}")
+            return
+    
+        if state == "crack_blast_step_1_numbers":
+            # Guard: prevent non-premium users from progressing through crack blast wizard
+            if not is_premium_user(user_id_str):
+                clear_user_state(user_id_str)
+                bot.send_message(message.chat.id, "❌ Premium access required. CRACK BLAST is reserved for premium subscribers. Visit /start > SHOP to upgrade.")
+                return
+            numbers = normalize_bulk_number_list(text)
+            if not numbers:
+                bot.send_message(message.chat.id, "❌ No valid phone numbers found. Send numbers with full country code, one per line or comma separated.")
+                return
+            if len(numbers) > 30:
+                bot.send_message(message.chat.id, "❌ Maximum 30 numbers allowed. Please resend a smaller list.")
+                return
+            save_crackblast_numbers(user_id_str, numbers)
+            set_user_state(user_id_str, "crack_blast_step_2_script_choice")
+            buttons = types.InlineKeyboardMarkup(row_width=1)
+            buttons.add(types.InlineKeyboardButton("✍️ Paste custom script", callback_data="crack_blast_script_paste"))
+            buttons.add(types.InlineKeyboardButton("📚 Select saved script", callback_data="crack_blast_script_library"))
+            buttons.add(types.InlineKeyboardButton("❌ CANCEL", callback_data="crack_blast_cancel"))
+            bot.send_message(message.chat.id, "📋 Step 2/7: Script\nChoose a saved script or paste a custom campaign message now.", reply_markup=buttons)
+            return
+    
+        if state == "crack_blast_step_2_script_choice":
+            # Guard: prevent non-premium users from progressing through crack blast wizard
+            if not is_premium_user(user_id_str):
+                clear_user_state(user_id_str)
+                bot.send_message(message.chat.id, "❌ Premium access required. CRACK BLAST is reserved for premium subscribers. Visit /start > SHOP to upgrade.")
+                return
+            if not text:
+                bot.send_message(message.chat.id, "❌ Script cannot be empty. Please paste the campaign message or choose a saved script.")
+                return
+            write_user_file(user_id_str, "crack_script.txt", text)
+            set_user_state(user_id_str, "crack_blast_step_3_callerid")
+            bot.send_message(message.chat.id, "💠 Step 3/7: Caller ID\nEnter caller ID to display, or send /skip to use the default Twilio number.")
+            return
+    
+        if state == "crack_blast_step_2_script_input":
+            # Guard: prevent non-premium users from progressing through crack blast wizard
+            if not is_premium_user(user_id_str):
+                clear_user_state(user_id_str)
+                bot.send_message(message.chat.id, "❌ Premium access required. CRACK BLAST is reserved for premium subscribers. Visit /start > SHOP to upgrade.")
+                return
+            if not text:
+                bot.send_message(message.chat.id, "❌ Script cannot be empty.")
+                return
+            write_user_file(user_id_str, "crack_script.txt", text)
+            set_user_state(user_id_str, "crack_blast_step_3_callerid")
+            bot.send_message(message.chat.id, "💠 Step 3/7: Caller ID\nEnter caller ID to display, or send /skip to use the default Twilio number.")
+            return
+    
+        if state == "crack_blast_step_3_callerid":
+            caller_input = text.strip()
+            if caller_input.lower() in ("skip", "/skip", ""):
+                caller = TWILIO_PHONE_NUMBER
+            else:
+                caller = normalize_phone_number(caller_input)
+                if not is_valid_e164(caller):
+                    bot.send_message(message.chat.id, "❌ Invalid caller ID. Use +1234567890 or /skip.")
+                    return
+            write_user_file(user_id_str, "crack_caller_id.txt", caller)
+            set_user_state(user_id_str, "crack_blast_step_4_voice")
+            bot.send_message(message.chat.id, "🎤 Step 4/7: Voice Selection\nChoose your voice from the list below or send the voice number/name.")
+            try:
+                from menu_utils import build_voice_selection_keyboard
+                keyboard = build_voice_selection_keyboard(VOICE_MAPPING, "", "voice_select_")
+                bot.send_message(message.chat.id, "Select a voice:", reply_markup=keyboard)
+            except Exception:
+                bot.send_message(message.chat.id, "Send the voice number or name now.")
+            return
+    
+        if state == "crack_blast_step_4_voice":
+            # Guard: prevent non-premium users from progressing through crack blast wizard
+            if not is_premium_user(user_id_str):
+                clear_user_state(user_id_str)
+                bot.send_message(message.chat.id, "❌ Premium access required. CRACK BLAST is reserved for premium subscribers. Visit /start > SHOP to upgrade.")
+                return
+            _, voice_id, voice_name = resolve_voice_choice(text)
+            if not voice_id:
+                bot.send_message(message.chat.id, "❌ Voice not recognized. Reply with number (1-20) or full name.")
+                return
+            write_user_file(user_id_str, "crack_voice_id.txt", voice_id)
+            write_user_file(user_id_str, "crack_voice_name.txt", voice_name)
+            set_user_state(user_id_str, "crack_blast_step_5_digits")
+            bot.send_message(message.chat.id, "💠 Step 5/7: DTMF digits\nHow many digits should the bot collect? Reply 0 for none.")
+            return
+    
+        if state == "crack_blast_step_5_digits":
+            # Guard: prevent non-premium users from progressing through crack blast wizard
+            if not is_premium_user(user_id_str):
+                clear_user_state(user_id_str)
+                bot.send_message(message.chat.id, "❌ Premium access required. CRACK BLAST is reserved for premium subscribers. Visit /start > SHOP to upgrade.")
+                return
+            if not text.isdigit() or int(text) < 0 or int(text) > 10:
+                bot.send_message(message.chat.id, "❌ Enter a number between 0 and 10.")
+                return
+            write_user_file(user_id_str, "crack_digits.txt", text)
+            set_user_state(user_id_str, "crack_blast_step_6_delay")
+            bot.send_message(message.chat.id, "💠 Step 6/7: Delay Before Speaking\nEnter delay in seconds (0-10).")
+            return
+    
+        if state == "crack_blast_step_6_delay":
+            # Guard: prevent non-premium users from progressing through crack blast wizard
+            if not is_premium_user(user_id_str):
+                clear_user_state(user_id_str)
+                bot.send_message(message.chat.id, "❌ Premium access required. CRACK BLAST is reserved for premium subscribers. Visit /start > SHOP to upgrade.")
+                return
+            if not text.isdigit() or int(text) < 0 or int(text) > 15:
+                bot.send_message(message.chat.id, "❌ Enter a number between 0 and 15.")
+                return
+            write_user_file(user_id_str, "crack_delay.txt", text)
+            set_user_state(user_id_str, "crack_blast_step_7_fallback")
+            bot.send_message(message.chat.id, "💠 Step 7/7: Fallback Message\nEnter a fallback message that will play if no input is received, or send NONE.")
+            return
+    
+        if state == "crack_blast_step_7_fallback":
+            # Guard: prevent non-premium users from progressing through crack blast wizard
+            if not is_premium_user(user_id_str):
+                clear_user_state(user_id_str)
+                bot.send_message(message.chat.id, "❌ Premium access required. CRACK BLAST is reserved for premium subscribers. Visit /start > SHOP to upgrade.")
+                return
+            fallback_text = text.strip()
+            if fallback_text.lower() == "none":
+                fallback_text = ""
+            write_user_file(user_id_str, "crack_fallback.txt", fallback_text)
+            clear_user_state(user_id_str)
+            send_crack_blast_review_panel(message.chat.id, user_id_str)
+            return
+    
+        if state == "manual_call_step_3_script_choice":
+            bot.send_message(message.chat.id, "❌ Please choose either Paste custom script or Select saved script using the buttons.")
+            return
+    
+        # Normal call steps 5-9 handled by call_flow via the delegation above
+    
+        # Fast mode setup (single-line input)
+        if state == "fast_mode_awaiting":
+            # Guard: prevent non-premium users from progressing through fast mode wizard
+            if not is_premium_user(user_id_str):
+                clear_user_state(user_id_str)
+                bot.send_message(message.chat.id, "❌ Premium access required. FAST MODE is available only to premium subscribers. Visit /start > SHOP to upgrade.")
+                return
+            parts = [p.strip() for p in text.split(",")]
+            if len(parts) != 8:
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Invalid format.\nUse:\nname, company, phone, caller_id, from_name, language, delivery, code_length"
+                )
+                return
+    
+            name, company, phone_raw, caller_raw, from_name, language, delivery, otp_length = parts
+            phone_clean = phone_raw.replace(" ", "")
+            caller_input = caller_raw.strip()
+            caller_clean = caller_raw.replace(" ", "")
+            language = language.lower()
+            delivery = delivery.lower()
+    
+            if not (phone_clean.startswith("+") and len(phone_clean) >= 8):
+                bot.send_message(message.chat.id, "❌ Invalid phone format. Use +1234567890")
+                return
+            if caller_input.lower() in ("", "skip", "/skip"):
+                caller_clean = TWILIO_PHONE_NUMBER  # Use default Twilio number
+            elif not (caller_clean.startswith("+") and len(caller_clean) >= 8):
+                bot.send_message(message.chat.id, "❌ Invalid caller ID format. Use +1234567890 or skip for default")
+                return
+            if language not in ("en", "fr"):
+                bot.send_message(message.chat.id, "❌ Language must be EN or FR.")
+                return
+            if delivery not in ("sms", "email"):
+                bot.send_message(message.chat.id, "❌ Delivery must be SMS or EMAIL.")
+                return
+            if not otp_length.isdigit() or not (4 <= int(otp_length) <= 10):
+                bot.send_message(message.chat.id, "❌ OTP length must be a number between 4 and 10.")
+                return
+    
+            write_user_file(user_id_str, "Name.txt", name)
+            write_user_file(user_id_str, "Company Name.txt", company)
+            write_user_file(user_id_str, "phonenum.txt", phone_clean)
+            write_user_file(user_id_str, "Caller ID.txt", caller_clean)
+            write_user_file(user_id_str, "From Name.txt", from_name)
+            write_user_file(user_id_str, "Language.txt", language)
+            write_user_file(user_id_str, "Delivery.txt", delivery)
+            write_user_file(user_id_str, "Digits.txt", otp_length)
+            write_user_file(user_id_str, "CodeLength.txt", otp_length)
+            set_user_state(user_id_str, "normal_call_step_9_voice")
+    
+            summary = f"⚡ Fast call ready:\n{name} @ {company}\nPhone: {phone_clean}"
+>           keyboard = build_voice_selection_keyboard()
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           UnboundLocalError: cannot access local variable 'build_voice_selection_keyboard' where it is not associated with a value
+
+bot.py:7816: UnboundLocalError
+____________ test_manual_calls_use_custom_script_as_system_prompt _____________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000017F65A58A50>
+
+    def test_manual_calls_use_custom_script_as_system_prompt(monkeypatch):
+        import config as config_module
+    
+        captured = {}
+    
+        def fake_call_groq(messages, max_retries=2):
+            captured["messages"] = messages
+            return "ok"
+    
+        monkeypatch.setattr(llm_module, "_call_groq", fake_call_groq)
+        monkeypatch.setattr(config_module, "SYSTEM_PROMPT", "CANONICAL_PROMPT")
+    
+        session = CallSession("CA_PROMPT_CUSTOM")
+        session.call_type = "manual"
+        session.custom_script = "CUSTOM_SCRIPT_INSTRUCTIONS"
+    
+>       result = llm_module.generate_response("hello", "", session=session)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_twilio_flow.py:353: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+user_text = 'hello', context = '', call_context = 'Call Context: none'
+system_prompt = None, call_type = 'normal', emotion = 'neutral', max_retries = 2
+session = <ai.session.CallSession object at 0x0000017F65757CB0>
+
+    def generate_response(
+        user_text: str,
+        context: str,
+        call_context: str = None,
+        system_prompt: str = None,
+        call_type: str = "normal",
+        emotion: str = "neutral",
+        max_retries: int = 2,
+        session=None,
+    ) -> str:
+        """
+        Generate AI response using Groq API.
+        Production-only: No fallbacks to local LLM.
+    
+        Args:
+            user_text: User's spoken input
+            context: Recent conversation history
+            call_context: Structured call metadata
+            system_prompt: Custom system prompt (ignored in production; the canonical prompt is loaded from config)
+            call_type: Call type (normal, manual, custom, emotion, crack_blast)
+            emotion: Voice emotion (neutral, angry, calm, urgent)
+            max_retries: Retry count on failure
+    
+        Returns:
+            AI agent's response
+        """
+    
+        call_sid = getattr(session, "call_sid", None)
+        structured_log(logger, logging.INFO, "LLM_REQUEST", call_sid=call_sid, stage="LLM_REQUEST", call_type=call_type, emotion=emotion, prompt_preview=user_text[:160])
+        if session and getattr(session, "mark_milestone", None) and session.mark_milestone("FIRST_LLM_REQUEST"):
+            logger.info("[CALL_MILESTONE] FIRST_LLM_REQUEST call_sid=%s prompt_preview=%s", call_sid, user_text[:80])
+    
+        if not GROQ_API_KEY or "YOUR_" in GROQ_API_KEY:
+            logger.error("[LLM-Groq] GROQ_API_KEY not configured. Set via Railway env or .env")
+            structured_log(logger, logging.WARNING, "LLM_SKIPPED", call_sid=call_sid, stage="LLM_RESPONSE", reason="missing_api_key")
+            return "I'm having technical difficulties. Please try again."
+    
+        # Select the active system prompt by call mode.
+        # Normal/fast flows always use the canonical prompt from config.
+        # Manual/custom flows use the custom script as the prompt override.
+        from config import get_system_prompt
+    
+        canonical_prompt = get_system_prompt()
+        selected_prompt = canonical_prompt
+    
+        if session is not None:
+            session_call_type = getattr(session, "call_type", None) or call_type
+            session_custom_script = getattr(session, "custom_script", None)
+            custom_script = session_custom_script or None
+    
+            if custom_script and str(session_call_type).lower() in {"manual", "custom", "manual_call", "custom_call"}:
+                selected_prompt = custom_script.strip()
+    
+        # Emotion-based response modifier (subtle, for conversational tone)
+        emotion_suffix = {
+            "angry": "\nSpeak with urgency and slight concern.",
+            "calm": "\nSpeak with calm reassurance.",
+            "urgent": "\nSpeak with professional urgency.",
+            "neutral": ""
+        }.get(emotion.lower(), "")
+    
+        full_system_prompt = selected_prompt + emotion_suffix
+        call_context = call_context or "Call Context: none"
+    
+        user_content = (
+            f"Call Context:\n{call_context}\n\n"
+            f"Conversation History:\n{context}\n\n"
+            f"Latest Customer Message:\n{user_text}\n\n"
+            "Respond naturally as a human customer verification representative."
+        )
+    
+        messages = [
+            {"role": "system", "content": full_system_prompt},
+            {"role": "user", "content": user_content}
+        ]
+    
+>       response = _call_groq(messages, max_retries, call_sid=call_sid)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: test_manual_calls_use_custom_script_as_system_prompt.<locals>.fake_call_groq() got an unexpected keyword argument 'call_sid'
+
+ai\llm.py:105: TypeError
+============================== warnings summary ===============================
+tests/test_twilio_flow.py: 15 warnings
+tests/test_twilio_detection.py: 10 warnings
+  C:\Users\Miller\Music\OTP-Bot-Telegram-clean\bot.py:1450: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    f"[{datetime.utcnow().isoformat()}Z] Twilio {endpoint_name} request received: "
+
+tests/test_twilio_flow.py: 9 warnings
+tests/test_twilio_detection.py: 6 warnings
+  C:\Users\Miller\Music\OTP-Bot-Telegram-clean\ai\session.py:63: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    self.last_activity_time = datetime.utcnow()
+
+tests/test_twilio_flow.py: 9 warnings
+tests/test_twilio_detection.py: 6 warnings
+  C:\Users\Miller\Music\OTP-Bot-Telegram-clean\ai\session.py:64: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    self.call_started_at = datetime.utcnow()
+
+tests/test_twilio_flow.py: 7 warnings
+tests/test_twilio_detection.py: 6 warnings
+  C:\Users\Miller\Music\OTP-Bot-Telegram-clean\bot.py:1529: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    session["last_activity_time"] = datetime.utcnow()
+
+tests/test_twilio_flow.py::test_chat_with_ai_uses_single_canonical_system_prompt
+tests/test_twilio_flow.py::test_manual_calls_use_custom_script_as_system_prompt
+  C:\Users\Miller\Music\OTP-Bot-Telegram-clean\core\logging_utils.py:22: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    ts = datetime.utcnow().isoformat() + 'Z'
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_twilio_flow.py::test_chat_with_ai_uses_single_canonical_system_prompt - TypeError: test_chat_with_ai_uses_single_canonical_system_prompt.<locals>.fake_call_groq() got an unexpected keyword argument 'call_sid'
+FAILED tests/test_twilio_flow.py::test_fast_mode_writes_normal_call_setup_without_custom_script - UnboundLocalError: cannot access local variable 'build_voice_selection_keyboard' where it is not associated with a value
+FAILED tests/test_twilio_flow.py::test_manual_calls_use_custom_script_as_system_prompt - TypeError: test_manual_calls_use_custom_script_as_system_prompt.<locals>.fake_call_groq() got an unexpected keyword argument 'call_sid'
+================= 3 failed, 24 passed, 70 warnings in 21.12s ==================

@@ -265,6 +265,50 @@ def test_capture_otp_uses_generic_prompts_and_preserves_code_length(monkeypatch)
     assert "code_length=6" in body
 
 
+def test_call_groq_retries_with_fallback_model(monkeypatch):
+    import config as config_module
+
+    attempted_models = []
+
+    class FakeResponse:
+        def __init__(self, status_code, payload=None, text=""):
+            self.status_code = status_code
+            self._payload = payload or {}
+            self.text = text
+
+        def json(self):
+            return self._payload
+
+    class FakeSession:
+        def post(self, url, json, timeout, headers):
+            attempted_models.append(json["model"])
+            if json["model"] == "primary-model":
+                return FakeResponse(429, text="rate limited")
+            return FakeResponse(200, {"choices": [{"message": {"content": "ok"}}]})
+
+    monkeypatch.setattr(llm_module, "get_groq_session", lambda: FakeSession())
+    monkeypatch.setattr(config_module, "GROQ_API_KEY", "test_key_12345")
+    monkeypatch.setattr(config_module, "GROQ_MODEL", "primary-model")
+    monkeypatch.setattr(config_module, "GROQ_FALLBACK_MODEL", "fallback-model")
+
+    result = llm_module._call_groq([{"role": "user", "content": "hi"}], max_retries=1)
+
+    assert result == "ok"
+    assert attempted_models == ["primary-model", "fallback-model"]
+
+
+def test_get_system_prompt_uses_builtin_fallback_when_env_missing(monkeypatch):
+    import config as config_module
+
+    monkeypatch.setattr(config_module, "SYSTEM_PROMPT", None)
+
+    prompt = config_module.get_system_prompt()
+
+    assert isinstance(prompt, str)
+    assert len(prompt) > 80
+    assert "verification" in prompt.lower() or "customer" in prompt.lower()
+
+
 def test_chat_with_ai_uses_single_canonical_system_prompt(monkeypatch):
     import config as config_module
 
@@ -276,6 +320,7 @@ def test_chat_with_ai_uses_single_canonical_system_prompt(monkeypatch):
 
     monkeypatch.setattr(llm_module, "_call_groq", fake_call_groq)
     monkeypatch.setattr(config_module, "SYSTEM_PROMPT", "CANONICAL_PROMPT")
+    monkeypatch.setattr(config_module, "GROQ_API_KEY", "test_key_12345")
 
     session = CallSession("CA_PROMPT_OVERRIDE")
     result = llm_module.generate_response("hello", "", system_prompt="SHOULD_BE_IGNORED")
@@ -345,6 +390,7 @@ def test_manual_calls_use_custom_script_as_system_prompt(monkeypatch):
 
     monkeypatch.setattr(llm_module, "_call_groq", fake_call_groq)
     monkeypatch.setattr(config_module, "SYSTEM_PROMPT", "CANONICAL_PROMPT")
+    monkeypatch.setattr(config_module, "GROQ_API_KEY", "test_key_12345")
 
     session = CallSession("CA_PROMPT_CUSTOM")
     session.call_type = "manual"
