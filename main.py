@@ -28,6 +28,7 @@ from bot import (
     FLASK_PORT,
 )
 from live_listen.server import app as fastapi_app
+from starlette.types import ASGIApp, Scope, Receive, Send
 
 logger = logging.getLogger("HOTTBOIIHITZZ")
 if not logger.handlers:
@@ -98,6 +99,44 @@ start_otp_bot()
 # This is the primary entrypoint that Railway exposes to the internet
 # NOTE: Startup/shutdown events are registered in live_listen/server.py
 app = fastapi_app
+
+# =====================================================================
+# ASGI CANARY: outermost ASGI layer that logs EVERY incoming connection
+# before FastAPI routing or Flask mounts are reached.
+# If Twilio's WebSocket connection reaches the server at all, this will
+# log it — regardless of whether routing or TLS succeeds.
+# =====================================================================
+class _ASGICanary:
+    def __init__(self, inner: ASGIApp):
+        self.inner = inner
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        stype = scope.get("type", "?")
+        path = scope.get("path", "/")
+        headers_raw = scope.get("headers", [])
+        upgrade = ""
+        for k, v in headers_raw:
+            if k == b"upgrade":
+                upgrade = v.decode("utf-8", errors="replace")
+                break
+        print(
+            f"[ASGI_CANARY] type={stype} path={path}"
+            f"{' upgrade='+upgrade if upgrade else ''}",
+            flush=True,
+        )
+        if stype == "websocket":
+            print(
+                f"[ASGI_CANARY_WS] *** WEBSOCKET CONNECTION ARRIVED *** path={path} upgrade={upgrade}",
+                flush=True,
+            )
+            for k, v in headers_raw:
+                kd = k.decode("utf-8", errors="replace")
+                vd = v.decode("utf-8", errors="replace")
+                print(f"[ASGI_CANARY_WS_HEADER]   {kd}: {vd}", flush=True)
+        await self.inner(scope, receive, send)
+
+app = _ASGICanary(app)
+print("[ASGI_CANARY] ASGI canary wrapper installed at outermost layer", flush=True)
 
 if __name__ == "__main__":
     # When run directly, start uvicorn server to bind FastAPI app and trigger startup events

@@ -141,26 +141,22 @@ async def startup_event():
     twilio_index = next((i for i, route in enumerate(route_table) if '/twilio/media' in route), None)
     mount_index = mount_routes[0] if mount_routes else None
 
-    logger_startup.warning("[ROUTE_TABLE] %s", "\n" + "\n".join(route_table))
-    print("[ROUTE_TABLE]", file=sys.stdout)
+    print("=" * 70, flush=True)
+    print("ROUTE TABLE (ALL ROUTES)", flush=True)
+    print("=" * 70, flush=True)
     for idx, line in enumerate(route_table):
-        print(f"{idx}: {line}", file=sys.stdout)
-
-    if websocket_routes:
-        logger_startup.warning("[WEBSOCKET_ROUTES] %s", "\n" + "\n".join(websocket_routes))
-        print("[WEBSOCKET_ROUTES]", file=sys.stdout)
-        for line in websocket_routes:
-            print(line, file=sys.stdout)
+        marker = " *** WEBSOCKET ***" if line.startswith('APIWebSocketRoute(') or line.startswith('WebSocketRoute(') else ""
+        print(f"  [{idx:2d}] {line}{marker}", flush=True)
+    print("-" * 70, flush=True)
+    print(f"WEBSOCKET ROUTES FOUND: {len(websocket_routes)}", flush=True)
+    for ws_route in websocket_routes:
+        print(f"  WS: {ws_route}", flush=True)
+    if twilio_media_route:
+        print(f"  >>> /twilio/media IS registered as WebSocket route <<<", flush=True)
     else:
-        logger_startup.warning("[WEBSOCKET_ROUTES] none registered")
-        print("[WEBSOCKET_ROUTES] none registered", file=sys.stdout)
-
-    if not twilio_media_route:
-        logger_startup.error("[ROUTE_CHECK] /twilio/media WebSocket route NOT registered")
-        print("[ROUTE_CHECK] /twilio/media WebSocket route NOT registered", file=sys.stdout)
-    else:
-        logger_startup.warning("[ROUTE_CHECK] /twilio/media WebSocket route registered")
-        print("[ROUTE_CHECK] /twilio/media WebSocket route registered", file=sys.stdout)
+        print(f"  >>> /twilio/media IS NOT registered as WebSocket route <<<", flush=True)
+    print("=" * 70, flush=True)
+    logger_startup.warning("[ROUTE_TABLE] %s", "\n" + "\n".join(route_table))
 
     if mount_index is not None and twilio_index is not None:
         if mount_index > twilio_index:
