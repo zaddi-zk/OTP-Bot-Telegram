@@ -421,9 +421,11 @@ async def twilio_media(ws: WebSocket):
             logger.info("[WS_ACCEPT] Negotiating websocket subprotocol=%s", subprotocol)
             await ws.accept(subprotocol=subprotocol)
         else:
+            logger.warning("[WS_ACCEPT] No sec-websocket-protocol header received from Twilio. Accepting without subprotocol.")
             await ws.accept()
     except Exception as e:
-        logger.error(f"[WS_ACCEPT_ERROR] WebSocket accept failed: {e}", exc_info=True)
+        logger.error("[WS_ACCEPT_ERROR] WebSocket accept failed: %s", e, exc_info=True)
+        logger.error("[WS_ACCEPT_ERROR] scope=%s headers=%s", ws.scope, headers if 'headers' in locals() else None)
         return
     logger.warning(
         "[WS_HANDLER] twilio_media handler entered path=%s type=%s client=%s subprotocol=%s",
@@ -431,6 +433,13 @@ async def twilio_media(ws: WebSocket):
         ws.scope.get("type"),
         ws.client,
         subprotocol,
+    )
+    logger.warning(
+        "[WS_CONNECTED] Twilio Media WebSocket accepted path=%s subprotocol=%s client=%s headers=%s",
+        ws.scope.get("path"),
+        subprotocol,
+        ws.client,
+        headers,
     )
     # Log connect
     logger.info("[WS_CONNECT] Twilio Media WebSocket connecting client=%s path=%s", ws.client, ws.scope.get('path'))
@@ -653,6 +662,7 @@ async def twilio_media(ws: WebSocket):
             remove_session(call_sid)
     except Exception as e:
         logger.error(f"[WebSocket_ERROR] CRITICAL in {call_sid}: {e}", exc_info=True)
+        logger.error("[WebSocket_ERROR] connection scope=%s last_event=%s call_id=%s call_sid=%s", ws.scope if 'ws' in locals() else None, last_event, call_id, call_sid)
         if USE_AI_FLOW and AI_AVAILABLE and session:
             remove_session(call_sid)
 
