@@ -480,6 +480,68 @@ async def twilio_media(ws: WebSocket):
                         except Exception:
                             pass
                         logger.warning(f"[WebSocket_START] OK - AI call session started: {call_sid}")
+                        
+                        # ===== CRITICAL FIX: SEND INITIAL GREETING =====
+                        # The caller needs to hear a greeting immediately when the call connects.
+                        # Without this, Twilio sees no early media and times out after ~1 second.
+                        try:
+                            logger.info("[GREETING_START] Generating initial greeting for call_sid=%s", call_sid)
+                            
+                            # Generate greeting via AI using system prompt
+                            # Start with a generic prompt to trigger the agent's opening line
+                            greeting_prompt = (
+                                f"You are a professional customer verification assistant. "
+                                f"The call has just started. Generate a warm, professional greeting to initiate the conversation. "
+                                f"Keep it brief (1-2 sentences) and natural. Address the customer professionally."
+                            )
+                            
+                            # Call the LLM to generate greeting
+                            from ai.llm import generate_response
+                            from config import get_system_prompt
+                            
+                            system_prompt = get_system_prompt()
+                            greeting_text = generate_response(
+                                user_text=greeting_prompt,
+                                context="",
+                                system_prompt=system_prompt,
+                                call_type=session.call_type,
+                                emotion=session.emotion,
+                                session=session
+                            )
+                            
+                            if greeting_text and len(greeting_text.strip()) > 0:
+                                logger.warning(f"[GREETING_GENERATED] call_sid={call_sid} text={greeting_text[:80]}")
+                                
+                                # Add greeting to conversation history
+                                session.add_agent_message(greeting_text)
+                                
+                                # Generate audio from greeting text
+                                greeting_audio = generate_telephony_audio(
+                                    greeting_text,
+                                    voice_id=session.voice_id,
+                                    output_format="ulaw_8000",
+                                    call_sid=call_sid,
+                                    session=session
+                                )
+                                
+                                if greeting_audio and len(greeting_audio) > 0:
+                                    logger.warning(f"[GREETING_AUDIO_GENERATED] call_sid={call_sid} bytes={len(greeting_audio)}")
+                                    
+                                    # Send greeting audio immediately to caller
+                                    await send_media_audio(ws, greeting_audio, call_sid)
+                                    logger.warning(f"[GREETING_SENT] ✅ Sent greeting audio to caller: {call_sid}")
+                                    
+                                    if session and session.mark_milestone("GREETING_SENT"):
+                                        logger.info("[CALL_MILESTONE] GREETING_SENT call_sid=%s", call_sid)
+                                else:
+                                    logger.warning(f"[GREETING_AUDIO_FAILED] Could not generate audio for greeting: {call_sid}")
+                            else:
+                                logger.warning(f"[GREETING_EMPTY] AI returned empty greeting for call_sid={call_sid}")
+                        except Exception as e:
+                            logger.error(f"[GREETING_ERROR] Failed to send greeting: {e}", exc_info=True)
+                            # Don't fail the entire call if greeting generation fails
+                            # The call continues and waits for caller input
+                        
                     except Exception as e:
                         logger.error(f"[WebSocket_START] CRITICAL: Failed to get AI session: {e}", exc_info=True)
                     await manager.ensure_session(call_id, call_sid=call_sid)
