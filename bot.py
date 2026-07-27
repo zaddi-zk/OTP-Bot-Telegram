@@ -3912,17 +3912,10 @@ def ai_start():
         mode_label=mode_label
     )
     
-    # Build TwiML: first play a greeting so the caller hears something immediately,
-    # then connect the Media Stream for AI flow.
+    # Build TwiML: start the Media Stream for AI flow.
     resp = VoiceResponse()
     stream_url = build_media_stream_url()
     logger.info(f"[AI_START] Streaming Media URL={stream_url}")
-    
-    # Play a short greeting so the caller doesn't hear dead silence
-    from_name = request.values.get("from_name") or request.args.get("from_name") or "Support"
-    company = request.values.get("company") or request.args.get("company") or "your company"
-    resp.say(f"Hello, please hold while we connect you.", voice="Polly.Joanna", language="en-US")
-    
     connect = Connect()
     connect.stream(url=stream_url, track="both")
     resp.append(connect)

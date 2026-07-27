@@ -343,6 +343,26 @@ async def twilio_media_test():
     return {"ok": True, "message": "FastAPI routing works for /twilio/media path"}
 
 
+@app.get('/twilio/media')
+async def twilio_media_http(request: Request):
+    """
+    HTTP GET handler for /twilio/media.
+    If a WebSocket upgrade request is downgraded to HTTP by the proxy,
+    this catches it so we can see what's happening.
+    """
+    logger.warning(
+        "[WS_HTTP_FALLBACK] /twilio/media accessed via HTTP (not WebSocket) - "
+        "headers=%s query=%s client=%s",
+        dict(request.headers),
+        dict(request.query_params),
+        request.client,
+    )
+    return JSONResponse(
+        {"ok": False, "error": "This endpoint requires a WebSocket connection"},
+        status_code=426,
+    )
+
+
 @app.websocket('/twilio/media')
 async def twilio_media(ws: WebSocket):
     """Twilio Media Streams WebSocket endpoint.
