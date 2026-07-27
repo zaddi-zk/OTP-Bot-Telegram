@@ -3962,8 +3962,9 @@ def _build_voice_twiml(call_sid: str, user_id: str, chat_id: Optional[int], answ
     print(f"  MEDIA STREAM URL used in <Connect><Stream> = {stream_url}", flush=True)
     print("=" * 60, flush=True)
     connect = Connect()
-    connect.stream(url=stream_url, track="both")
+    connect.stream(url=stream_url, track="both_track")
     resp.append(connect)
+    resp.say("Please wait while we connect your call.", voice="Polly.Joanna")
 
     twiml_xml = str(resp)
     logger.warning("[TWIML_RESPONSE] call_sid=%s twiml=%s", call_sid or "unknown", twiml_xml.replace("\n", " "))
