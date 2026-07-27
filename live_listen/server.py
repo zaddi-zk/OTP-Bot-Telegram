@@ -902,7 +902,16 @@ async def get_audio_file(call_sid: str, filename: str):
     )
     if exists:
         from fastapi.responses import FileResponse
-        return FileResponse(resolved_path, media_type="audio/mpeg")
+        ext = os.path.splitext(resolved_path)[1].lower()
+        if ext == ".ulaw":
+            media_type = "audio/ulaw"
+        elif ext == ".wav":
+            media_type = "audio/wav"
+        elif ext == ".mp3":
+            media_type = "audio/mpeg"
+        else:
+            media_type = "application/octet-stream"
+        return FileResponse(resolved_path, media_type=media_type)
     else:
         directory = os.path.dirname(resolved_path)
         try:
