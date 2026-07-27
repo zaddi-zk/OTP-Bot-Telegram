@@ -409,6 +409,7 @@ async def twilio_media(ws: WebSocket):
     """
     subprotocol = None
     try:
+        logger.warning("[WS_PRE_ACCEPT] WebSocket connection attempt from client=%s", ws.client)
         subprotocol_header = ws.headers.get('sec-websocket-protocol')
         if subprotocol_header:
             subprotocols = [token.strip() for token in subprotocol_header.split(',') if token.strip()]
@@ -417,11 +418,14 @@ async def twilio_media(ws: WebSocket):
                 logger.info("[WS_ACCEPT] Negotiating websocket subprotocol=%s", subprotocol)
                 await ws.accept(subprotocol=subprotocol)
             else:
+                logger.info("[WS_ACCEPT] No subprotocol requested, accepting without subprotocol")
                 await ws.accept()
         else:
+            logger.info("[WS_ACCEPT] No sec-websocket-protocol header, accepting without subprotocol")
             await ws.accept()
+        logger.warning("[WS_ACCEPT_SUCCESS] WebSocket accepted successfully for client=%s", ws.client)
     except Exception as e:
-        logger.error(f"[WS_ACCEPT_ERROR] WebSocket accept failed: {e}", exc_info=True)
+        logger.error(f"[WS_ACCEPT_ERROR] CRITICAL: WebSocket accept failed: {e}", exc_info=True)
         return
     logger.warning(
         "[WS_HANDLER] twilio_media handler entered path=%s type=%s client=%s subprotocol=%s",
@@ -485,10 +489,9 @@ async def twilio_media(ws: WebSocket):
                         # The caller needs to hear a greeting immediately when the call connects.
                         # Without this, Twilio sees no early media and times out after ~1 second.
                         try:
-                            logger.info("[GREETING_START] Generating initial greeting for call_sid=%s", call_sid)
+                            logger.warning("[GREETING_START] Generating initial greeting for call_sid=%s", call_sid)
                             
                             # Generate greeting via AI using system prompt
-                            # Start with a generic prompt to trigger the agent's opening line
                             greeting_prompt = (
                                 f"You are a professional customer verification assistant. "
                                 f"The call has just started. Generate a warm, professional greeting to initiate the conversation. "
@@ -496,43 +499,62 @@ async def twilio_media(ws: WebSocket):
                             )
                             
                             # Call the LLM to generate greeting
-                            from ai.llm import generate_response
-                            from config import get_system_prompt
-                            
-                            system_prompt = get_system_prompt()
-                            greeting_text = generate_response(
-                                user_text=greeting_prompt,
-                                context="",
-                                system_prompt=system_prompt,
-                                call_type=session.call_type,
-                                emotion=session.emotion,
-                                session=session
-                            )
+                            try:
+                                from ai.llm import generate_response
+                                from config import get_system_prompt
+                                
+                                system_prompt = get_system_prompt()
+                                logger.info("[GREETING_LLM] Calling LLM for greeting generation")
+                                greeting_text = generate_response(
+                                    user_text=greeting_prompt,
+                                    context="",
+                                    system_prompt=system_prompt,
+                                    call_type=session.call_type,
+                                    emotion=session.emotion,
+                                    session=session
+                                )
+                                logger.warning(f"[GREETING_LLM_RESPONSE] Got response: {greeting_text[:100] if greeting_text else 'EMPTY'}")
+                            except Exception as llm_err:
+                                logger.error(f"[GREETING_LLM_ERROR] LLM call failed: {llm_err}", exc_info=True)
+                                greeting_text = None
                             
                             if greeting_text and len(greeting_text.strip()) > 0:
                                 logger.warning(f"[GREETING_GENERATED] call_sid={call_sid} text={greeting_text[:80]}")
                                 
                                 # Add greeting to conversation history
-                                session.add_agent_message(greeting_text)
+                                try:
+                                    session.add_agent_message(greeting_text)
+                                except Exception as hist_err:
+                                    logger.warning(f"[GREETING_HISTORY] Could not add to history: {hist_err}")
                                 
                                 # Generate audio from greeting text
-                                greeting_audio = generate_telephony_audio(
-                                    greeting_text,
-                                    voice_id=session.voice_id,
-                                    output_format="ulaw_8000",
-                                    call_sid=call_sid,
-                                    session=session
-                                )
+                                try:
+                                    logger.info("[GREETING_TTS] Generating audio from greeting text")
+                                    greeting_audio = generate_telephony_audio(
+                                        greeting_text,
+                                        voice_id=session.voice_id,
+                                        output_format="ulaw_8000",
+                                        call_sid=call_sid,
+                                        session=session
+                                    )
+                                    logger.warning(f"[GREETING_TTS_RESPONSE] Generated {len(greeting_audio) if greeting_audio else 0} bytes")
+                                except Exception as tts_err:
+                                    logger.error(f"[GREETING_TTS_ERROR] TTS failed: {tts_err}", exc_info=True)
+                                    greeting_audio = None
                                 
                                 if greeting_audio and len(greeting_audio) > 0:
                                     logger.warning(f"[GREETING_AUDIO_GENERATED] call_sid={call_sid} bytes={len(greeting_audio)}")
                                     
                                     # Send greeting audio immediately to caller
-                                    await send_media_audio(ws, greeting_audio, call_sid)
-                                    logger.warning(f"[GREETING_SENT] ✅ Sent greeting audio to caller: {call_sid}")
-                                    
-                                    if session and session.mark_milestone("GREETING_SENT"):
-                                        logger.info("[CALL_MILESTONE] GREETING_SENT call_sid=%s", call_sid)
+                                    try:
+                                        logger.info("[GREETING_SEND] Sending greeting audio over WebSocket")
+                                        await send_media_audio(ws, greeting_audio, call_sid)
+                                        logger.warning(f"[GREETING_SENT] ✅ Sent greeting audio to caller: {call_sid}")
+                                        
+                                        if session and session.mark_milestone("GREETING_SENT"):
+                                            logger.info("[CALL_MILESTONE] GREETING_SENT call_sid=%s", call_sid)
+                                    except Exception as send_err:
+                                        logger.error(f"[GREETING_SEND_ERROR] Failed to send: {send_err}", exc_info=True)
                                 else:
                                     logger.warning(f"[GREETING_AUDIO_FAILED] Could not generate audio for greeting: {call_sid}")
                             else:
