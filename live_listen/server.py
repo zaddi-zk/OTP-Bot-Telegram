@@ -441,6 +441,13 @@ async def twilio_media(ws: WebSocket):
         ws.client,
         headers,
     )
+    # Log raw query string (useful to verify Twilio attached call_sid as query param)
+    raw_qs = ws.scope.get("query_string")
+    try:
+        query_string = raw_qs.decode("utf-8") if isinstance(raw_qs, (bytes, bytearray)) else str(raw_qs)
+    except Exception:
+        query_string = repr(raw_qs)
+    logger.warning("[WS_QUERY] query_string=%s client_addr=%s forwarded_for=%s", query_string, ws.client, headers.get('x-forwarded-for'))
     # Log connect
     logger.info("[WS_CONNECT] Twilio Media WebSocket connecting client=%s path=%s", ws.client, ws.scope.get('path'))
     call_id = None
