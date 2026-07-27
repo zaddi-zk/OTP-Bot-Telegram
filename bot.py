@@ -514,9 +514,12 @@ def wait_for_public_webhook_dns(host: str, timeout: int = 60, interval: float = 
 
 
 def _is_running_in_railway_or_container() -> bool:
-    """Detect if running in Railway, Docker, or other container environment."""
+    """Detect if running in Railway, Render, Docker, or other container environment."""
     # Check for Railway environment variables
     if os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_STATIC_URL"):
+        return True
+    # Check for Render environment variables
+    if os.getenv("RENDER") or os.getenv("RENDER_INTERNAL_HOSTNAME") or os.getenv("RENDER_SERVICE_ID") or os.getenv("RENDER_DEPLOYMENT_ID"):
         return True
     # Check for Docker
     if os.path.exists("/.dockerenv"):
@@ -529,16 +532,17 @@ def _is_running_in_railway_or_container() -> bool:
 
 def wait_for_local_webhook_endpoint(path: str, timeout: int = 20, interval: float = 2.0) -> bool:
     """Wait for local webhook endpoint to be reachable.
-    
-    Skips the check when running in Railway/Docker with a public webhook URL,
-    since Flask is mounted to FastAPI and won't be on localhost:5000.
+
+    Skips the check when running in Railway/Docker/Render with a public webhook URL,
+    since Flask is mounted to FastAPI and the startup event may race with the server binding.
     """
     # Skip local check if running in container and we have a public webhook URL
     if _is_running_in_railway_or_container():
-        logger.info("Running in Railway/container; skipping local endpoint reachability check (Flask is mounted to FastAPI)")
+        logger.info("Running in Railway/Render/container; skipping local endpoint reachability check")
         return True
-    
-    local_url = f"http://127.0.0.1:{FLASK_PORT}{path}"
+
+    port = int(os.getenv("PORT", FLASK_PORT))
+    local_url = f"http://127.0.0.1:{port}{path}"
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
