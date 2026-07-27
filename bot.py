@@ -3955,7 +3955,9 @@ def _build_voice_twiml(call_sid: str, user_id: str, chat_id: Optional[int], answ
         stream_url = build_media_stream_url()
     except ValueError:
         stream_url = f"{build_public_base_url()}/twilio/media" if build_public_base_url() else "wss://example.invalid/twilio/media"
+        logger.warning("[MEDIA_STREAM_FALLBACK] Using fallback media stream URL: %s", stream_url)
 
+    logger.warning("[MEDIA_STREAM_URL] call_sid=%s stream_url=%s", call_sid or "unknown", stream_url)
     connect = Connect()
     connect.stream(url=stream_url, track="both")
     resp.append(connect)

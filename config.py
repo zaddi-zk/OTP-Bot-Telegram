@@ -188,7 +188,8 @@ def _normalize_public_base_url(value: Optional[str]) -> Optional[str]:
         return None
     if parsed.hostname in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}:
         return None
-    return value.rstrip("/")
+    normalized = f"{parsed.scheme}://{parsed.netloc}"
+    return normalized.rstrip("/")
 
 
 def build_public_base_url() -> str:
