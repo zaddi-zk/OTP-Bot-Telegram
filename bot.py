@@ -3912,24 +3912,31 @@ def ai_start():
         mode_label=mode_label
     )
     
-    # Build TwiML: start the Media Stream for AI flow.
-    resp = VoiceResponse()
-    stream_url = build_media_stream_url()
-    logger.info(f"[AI_START] Streaming Media URL={stream_url}")
-    connect = Connect()
-    connect.stream(url=stream_url, track="both")
-    resp.append(connect)
+    # Build TwiML: start AI call with Gather (HTTP-based, Railway compatible)
+    from handlers.http_ai_flow import handle_ai_call_gather
     
-    if chat_id:
-        try:
-            bot.send_message(int(chat_id), f"🤖 {mode_label} started with AI. Live listen active.")
-        except Exception:
-            pass
+    base_url = build_public_base_url()
+    twiml_response = handle_ai_call_gather(user_id, chat_id, call_sid, base_url, bot)
+    return twiml_response
+
+@app.route("/handle_gather", methods=["POST"])
+def handle_gather():
+    """
+    Handle caller input from Gather element in AI calls.
+    Processes DTMF digits or speech, generates AI response, and continues conversation.
+    """
+    from handlers.http_ai_flow import handle_gather_input
     
-    twiml_str = str(resp)
-    logger.warning(f"[AI_START] ✅ Starting Media Stream for {mode_label}: {call_sid}")
-    logger.warning(f"[AI_START] TwiML response: {twiml_str}")
-    return Response(twiml_str, content_type="application/xml")
+    call_sid = request.values.get("CallSid", "")
+    user_id = request.values.get("user_id") or request.args.get("user_id")
+    chat_id = request.values.get("chat_id") or request.args.get("chat_id")
+    
+    if not call_sid or not user_id:
+        return Response("Missing CallSid or user_id", status=400)
+    
+    base_url = build_public_base_url()
+    return handle_gather_input(user_id, chat_id, call_sid, base_url, bot)
+
 
 def _build_voice_twiml(call_sid: str, user_id: str, chat_id: Optional[int], answered_by: Optional[str], request_obj=None) -> Response:
     """Return TwiML for the Twilio voice webhook path, logging each milestone once."""
