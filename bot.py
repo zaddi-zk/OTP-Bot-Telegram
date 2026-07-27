@@ -3915,9 +3915,17 @@ def ai_start():
     # Build TwiML: start the Media Stream for AI flow.
     resp = VoiceResponse()
     stream_url = build_media_stream_url()
-    logger.info(f"[AI_START] Streaming Media URL={stream_url}")
+    # Append CallSid as a query parameter for deterministic diagnostics when Twilio connects
+    try:
+        from urllib.parse import quote_plus
+        sep = '&' if '?' in stream_url else '?'
+        diagnostic_stream_url = f"{stream_url}{sep}call_sid={quote_plus(call_sid)}"
+    except Exception:
+        diagnostic_stream_url = stream_url
+
+    logger.info(f"[AI_START] Streaming Media URL={diagnostic_stream_url}")
     connect = Connect()
-    connect.stream(url=stream_url, track="both")
+    connect.stream(url=diagnostic_stream_url, track="both")
     resp.append(connect)
     
     if chat_id:
