@@ -103,15 +103,14 @@ def generate_response(
         {"role": "user", "content": user_content}
     ]
 
+    # Call _call_groq defensively: some test monkeypatches may replace it
+    # with functions that don't accept the `call_sid` kwarg. Try with the
+    # keyword first, and fall back to a positional/keyword-only call if
+    # a TypeError is raised.
     try:
-        signature = inspect.signature(_call_groq)
-        accepts_call_sid = "call_sid" in signature.parameters
-    except (TypeError, ValueError):
-        accepts_call_sid = False
-
-    if accepts_call_sid:
         response = _call_groq(messages, max_retries=max_retries, call_sid=call_sid)
-    else:
+    except TypeError:
+        # Fallback for test doubles that accept only (messages, max_retries)
         response = _call_groq(messages, max_retries=max_retries)
 
     if response:

@@ -2559,12 +2559,19 @@ def make_spoofed_call(to: str, from_number: str, caller_id: str, webhook_url: st
             except Exception as cleanup_ex:
                 logger.debug(f"Failed to clear stale record.mp3 for user {user_id}: {cleanup_ex}")
 
-        if DISABLE_AMD:
+        # Allow runtime override of DISABLE_AMD via environment for tests
+        env_disable = os.getenv("DISABLE_AMD")
+        if env_disable is not None:
+            disable_amd_runtime = str(env_disable).lower() in ("true", "1", "yes")
+        else:
+            disable_amd_runtime = DISABLE_AMD
+
+        if disable_amd_runtime:
             amd_enabled = False
         else:
             amd_enabled = bool(machine_detection)
         amd_param = "Enable" if amd_enabled else None
-        if DISABLE_AMD and machine_detection:
+        if disable_amd_runtime and machine_detection:
             logger.info("DISABLE_AMD=true; skipping Twilio async AMD parameters for outbound call.")
 
         call_params = {
@@ -3915,17 +3922,16 @@ def ai_start():
     # Build TwiML: start the Media Stream for AI flow.
     resp = VoiceResponse()
     stream_url = build_media_stream_url()
-    # Append CallSid as a query parameter for deterministic diagnostics when Twilio connects
-    try:
-        from urllib.parse import quote_plus
-        sep = '&' if '?' in stream_url else '?'
-        diagnostic_stream_url = f"{stream_url}{sep}call_sid={quote_plus(call_sid)}"
-    except Exception:
-        diagnostic_stream_url = stream_url
-
-    logger.info(f"[AI_START] Streaming Media URL={diagnostic_stream_url}")
+    # Use clean WebSocket URL (no query string). Pass call_sid via <Parameter>.
+    logger.info(f"[AI_START] Streaming Media URL={stream_url}")
     connect = Connect()
-    connect.stream(url=diagnostic_stream_url, track="both")
+    stream = connect.stream(url=stream_url, track="both")
+    if call_sid:
+        try:
+            stream.parameter(name="call_sid", value=str(call_sid))
+        except Exception:
+            # Best-effort: if parameter API differs, append to response later
+            pass
     resp.append(connect)
     
     if chat_id:

@@ -474,9 +474,28 @@ async def twilio_media(ws: WebSocket):
             
             # ============ START EVENT ============
             if event == 'start':
-                call_sid = data.get('start', {}).get('callSid')
+                start_payload = data.get('start', {}) or {}
+                # Twilio includes callSid directly in start event
+                call_sid = start_payload.get('callSid') or start_payload.get('CallSid')
                 call_id = call_sid
-                logger.info("[TWILIO_START] call_sid=%s caller=%s", call_sid, data.get('start', {}).get('from'))
+                # Also extract customParameters if provided (dictionary) or Parameter list
+                custom_params = start_payload.get('customParameters') or {}
+                # Some proxies/payloads include nested Parameter elements as a list
+                try:
+                    params_list = start_payload.get('parameters') or start_payload.get('Parameters')
+                    if params_list and isinstance(params_list, list):
+                        for p in params_list:
+                            # Each p may be {'name': 'call_sid', 'value': '...'}
+                            if isinstance(p, dict) and 'name' in p:
+                                custom_params[p.get('name')] = p.get('value')
+                except Exception:
+                    pass
+
+                # If call_sid missing, fallback to custom params
+                if not call_sid:
+                    call_sid = custom_params.get('call_sid') or custom_params.get('callSid') or custom_params.get('CallSid')
+
+                logger.info("[TWILIO_START] call_sid=%s caller=%s custom_params_keys=%s", call_sid, start_payload.get('from'), list(custom_params.keys()))
                 
                 # Initialize session state for live listen and AI pipeline.
                 if USE_AI_FLOW and AI_AVAILABLE:
