@@ -379,55 +379,6 @@ async def send_media_audio(ws: WebSocket, audio_bytes: bytes, call_sid: str, chu
         logger.error(f"[MEDIA_SEND_ERROR] Failed to send audio for {call_sid}: {e}", exc_info=True)
 
 
-@app.get('/twilio/media')
-async def twilio_media_http(request: Request):
-    """
-    HTTP GET handler for /twilio/media.
-    If a WebSocket upgrade request is downgraded to HTTP by the proxy,
-    this catches it so we can see what's happening.
-    """
-    logger.warning(
-        "[WS_HTTP_FALLBACK] /twilio/media accessed via HTTP (not WebSocket) - "
-        "headers=%s query=%s client=%s",
-        dict(request.headers),
-        dict(request.query_params),
-        request.client,
-    )
-    return JSONResponse(
-        {"ok": False, "error": "This endpoint requires a WebSocket connection"},
-        status_code=426,
-    )
-
-
-@app.websocket('/twilio/media-test')
-async def twilio_media_test(ws: WebSocket):
-    """
-    DIAGNOSTIC TEST: Simple WebSocket endpoint to verify connections work.
-    This helps us verify if Railway is handling WebSocket upgrades correctly.
-    """
-    print("[WS_TEST_HIT] Test WebSocket handler reached!", flush=True)
-    logger.warning("[WS_TEST_HIT] Test WebSocket /twilio/media-test reached")
-    try:
-        await ws.accept()
-        logger.warning("[WS_TEST_ACCEPT] Test WebSocket accepted!")
-        
-        # Send a test message back
-        await ws.send_json({"test": "ok", "message": "WebSocket connection successful"})
-        logger.warning("[WS_TEST_SEND] Test message sent")
-        
-        # Keep connection open for 30 seconds
-        for i in range(30):
-            try:
-                msg = await asyncio.wait_for(ws.receive_text(), timeout=1.0)
-                logger.info(f"[WS_TEST_RECV] Received: {msg}")
-            except asyncio.TimeoutError:
-                pass
-    except Exception as e:
-        logger.error(f"[WS_TEST_ERROR] Test connection failed: {e}", exc_info=True)
-
-
-
-
 @app.websocket('/twilio/media')
 async def twilio_media(ws: WebSocket):
     """Twilio Media Streams WebSocket endpoint.
