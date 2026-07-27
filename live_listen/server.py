@@ -380,6 +380,7 @@ async def send_media_audio(ws: WebSocket, audio_bytes: bytes, call_sid: str, chu
 
 
 @app.get('/twilio/media')
+@app.get('/twilio/media/')
 async def twilio_media_http(request: Request):
     """
     HTTP GET handler for /twilio/media.
@@ -400,6 +401,7 @@ async def twilio_media_http(request: Request):
 
 
 @app.websocket('/twilio/media')
+@app.websocket('/twilio/media/')
 async def twilio_media(ws: WebSocket):
     """Twilio Media Streams WebSocket endpoint.
     
@@ -409,15 +411,15 @@ async def twilio_media(ws: WebSocket):
     """
     subprotocol = None
     try:
-        subprotocol_header = ws.headers.get('sec-websocket-protocol')
+        headers = dict(ws.headers)
+        logger.info("[WS_HEADERS] %s", headers)
+        subprotocol_header = headers.get('sec-websocket-protocol')
         if subprotocol_header:
-            subprotocols = [token.strip() for token in subprotocol_header.split(',') if token.strip()]
-            if subprotocols:
-                subprotocol = subprotocols[0]
-                logger.info("[WS_ACCEPT] Negotiating websocket subprotocol=%s", subprotocol)
-                await ws.accept(subprotocol=subprotocol)
-            else:
-                await ws.accept()
+            subprotocol_tokens = [token.strip() for token in subprotocol_header.split(',') if token.strip()]
+            preferred = next((token for token in subprotocol_tokens if token.lower() == 'twilio.media.v1'), None)
+            subprotocol = preferred or subprotocol_tokens[0]
+            logger.info("[WS_ACCEPT] Negotiating websocket subprotocol=%s", subprotocol)
+            await ws.accept(subprotocol=subprotocol)
         else:
             await ws.accept()
     except Exception as e:
