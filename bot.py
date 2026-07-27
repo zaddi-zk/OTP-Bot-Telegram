@@ -3958,12 +3958,19 @@ def _build_voice_twiml(call_sid: str, user_id: str, chat_id: Optional[int], answ
         logger.warning("[MEDIA_STREAM_FALLBACK] Using fallback media stream URL: %s", stream_url)
 
     logger.warning("[MEDIA_STREAM_URL] call_sid=%s stream_url=%s", call_sid or "unknown", stream_url)
+    print("=" * 60, flush=True)
+    print(f"  MEDIA STREAM URL used in <Connect><Stream> = {stream_url}", flush=True)
+    print("=" * 60, flush=True)
     connect = Connect()
     connect.stream(url=stream_url, track="both")
     resp.append(connect)
 
     twiml_xml = str(resp)
     logger.warning("[TWIML_RESPONSE] call_sid=%s twiml=%s", call_sid or "unknown", twiml_xml.replace("\n", " "))
+    print("=" * 60, flush=True)
+    print("TwiML RETURNED TO TWILIO", flush=True)
+    print(twiml_xml, flush=True)
+    print("=" * 60, flush=True)
 
     if session is not None and getattr(session, "mark_milestone", None):
         if session.mark_milestone("TWIML_GENERATED"):

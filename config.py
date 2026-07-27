@@ -195,21 +195,33 @@ def _normalize_public_base_url(value: Optional[str]) -> Optional[str]:
 def build_public_base_url() -> str:
     """Return one canonical public base URL for webhooks and media stream endpoints."""
     candidates = [
-        os.getenv("PUBLIC_URL"),
-        os.getenv("BASE_URL"),
-        os.getenv("WEBHOOK_URL"),
-        os.getenv("NGROK_URL"),
-        os.getenv("LIVE_LISTEN_URL"),
-        _get("PUBLIC_URL", ""),
-        _get("BASE_URL", ""),
-        _get("WEBHOOK_URL", ""),
-        _get("NGROK_URL", ""),
-        _get("LIVE_LISTEN_URL", ""),
+        ("PUBLIC_URL (os.environ)", os.getenv("PUBLIC_URL")),
+        ("BASE_URL (os.environ)", os.getenv("BASE_URL")),
+        ("WEBHOOK_URL (os.environ)", os.getenv("WEBHOOK_URL")),
+        ("NGROK_URL (os.environ)", os.getenv("NGROK_URL")),
+        ("LIVE_LISTEN_URL (os.environ)", os.getenv("LIVE_LISTEN_URL")),
+        ("_get PUBLIC_URL", _get("PUBLIC_URL", "")),
+        ("_get BASE_URL", _get("BASE_URL", "")),
+        ("_get WEBHOOK_URL", _get("WEBHOOK_URL", "")),
+        ("_get NGROK_URL", _get("NGROK_URL", "")),
+        ("_get LIVE_LISTEN_URL", _get("LIVE_LISTEN_URL", "")),
     ]
-    for candidate in candidates:
+    print("=" * 60, flush=True)
+    print("MEDIA STREAM URL PROVENANCE", flush=True)
+    print("=" * 60, flush=True)
+    for label, value in candidates:
+        if value:
+            print(f"  {label} = {value}", flush=True)
+        else:
+            print(f"  {label} = (empty/None)", flush=True)
+    for label, candidate in candidates:
         normalized = _normalize_public_base_url(candidate)
         if normalized:
+            print(f"  >>> WINNER: {label} = {normalized}", flush=True)
+            print("=" * 60, flush=True)
             return normalized
+    print("  >>> NO CANDIDATE FOUND - returning empty string", flush=True)
+    print("=" * 60, flush=True)
     return ""
 
 
@@ -224,7 +236,11 @@ def build_media_stream_url() -> str:
         base_url = base_url.replace("https://", "wss://", 1)
     elif not base_url.startswith(("ws://", "wss://")):
         base_url = f"wss://{base_url}"
-    return f"{base_url.rstrip('/')}/twilio/media"
+    stream_url = f"{base_url.rstrip('/')}/twilio/media"
+    print("-" * 60, flush=True)
+    print(f"FINAL MEDIA STREAM URL = {stream_url}", flush=True)
+    print("-" * 60, flush=True)
+    return stream_url
 
 
 def is_twilio_configured() -> bool:
