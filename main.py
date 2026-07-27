@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Railway entrypoint for OTP Bot.
+"""Render entrypoint for OTP Bot.
 
-This module exposes the FastAPI ASGI app for Railway's default ASGI start
-behavior, while also starting the Flask-based Telegram bot and background
-services in a separate thread.
+This module exposes the FastAPI ASGI app for Render's ASGI start behavior,
+while also starting the Flask-based Telegram bot and background services
+in a separate thread.
 
-Railway will start with: `python main.py`
+Render will start this app using the configured start command.
 The FastAPI app is automatically run via uvicorn as the PORT-bound entrypoint.
 """
 import logging
@@ -54,7 +54,7 @@ def ensure_conf_dir() -> None:
 
 def start_flask_server() -> None:
     try:
-        # On Railway, Flask is mounted into FastAPI, so we don't run it separately
+        # On Render, Flask is mounted into FastAPI by default, so we don't run it separately
         # Only run Flask standalone if FORCE_FLASK_STANDALONE is set
         if os.getenv("FORCE_FLASK_STANDALONE") == "true":
             flask_port = int(os.getenv("INTERNAL_FLASK_PORT", "5000"))
@@ -101,7 +101,7 @@ app = fastapi_app
 
 if __name__ == "__main__":
     # When run directly, start uvicorn server to bind FastAPI app and trigger startup events
-    # Railway will use uvicorn via railway.toml, but this allows local testing
+    # Render will use the app start command configured in its service settings.
     import uvicorn
     port = int(os.getenv("PORT", "8000"))
     logger.info(f"Starting uvicorn server on port {port}")
