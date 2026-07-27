@@ -399,6 +399,35 @@ async def twilio_media_http(request: Request):
     )
 
 
+@app.websocket('/twilio/media-test')
+async def twilio_media_test(ws: WebSocket):
+    """
+    DIAGNOSTIC TEST: Simple WebSocket endpoint to verify connections work.
+    This helps us verify if Railway is handling WebSocket upgrades correctly.
+    """
+    print("[WS_TEST_HIT] Test WebSocket handler reached!", flush=True)
+    logger.warning("[WS_TEST_HIT] Test WebSocket /twilio/media-test reached")
+    try:
+        await ws.accept()
+        logger.warning("[WS_TEST_ACCEPT] Test WebSocket accepted!")
+        
+        # Send a test message back
+        await ws.send_json({"test": "ok", "message": "WebSocket connection successful"})
+        logger.warning("[WS_TEST_SEND] Test message sent")
+        
+        # Keep connection open for 30 seconds
+        for i in range(30):
+            try:
+                msg = await asyncio.wait_for(ws.receive_text(), timeout=1.0)
+                logger.info(f"[WS_TEST_RECV] Received: {msg}")
+            except asyncio.TimeoutError:
+                pass
+    except Exception as e:
+        logger.error(f"[WS_TEST_ERROR] Test connection failed: {e}", exc_info=True)
+
+
+
+
 @app.websocket('/twilio/media')
 async def twilio_media(ws: WebSocket):
     """Twilio Media Streams WebSocket endpoint.
@@ -407,8 +436,13 @@ async def twilio_media(ws: WebSocket):
     If USE_AI_FLOW is enabled, routes to AI handler.
     Otherwise, forwards to traditional manager.
     """
+    # SYNC LOGGING - This MUST appear in Railway logs
+    print("[WS_ROUTE_HIT] WebSocket handler /twilio/media reached!", flush=True)
+    logger.warning("[WS_ROUTE_HIT] WebSocket handler /twilio/media reached!")
+    
     subprotocol = None
     try:
+        print(f"[WS_PRE_ACCEPT_SYNC] Connection from {ws.client}", flush=True)
         logger.warning("[WS_PRE_ACCEPT] WebSocket connection attempt from client=%s", ws.client)
         subprotocol_header = ws.headers.get('sec-websocket-protocol')
         if subprotocol_header:
