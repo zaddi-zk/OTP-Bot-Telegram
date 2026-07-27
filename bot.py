@@ -3962,13 +3962,16 @@ def _build_voice_twiml(call_sid: str, user_id: str, chat_id: Optional[int], answ
     connect.stream(url=stream_url, track="both")
     resp.append(connect)
 
+    twiml_xml = str(resp)
+    logger.warning("[TWIML_RESPONSE] call_sid=%s twiml=%s", call_sid or "unknown", twiml_xml.replace("\n", " "))
+
     if session is not None and getattr(session, "mark_milestone", None):
         if session.mark_milestone("TWIML_GENERATED"):
             logger.info("[CALL_MILESTONE] TWIML_GENERATED call_sid=%s endpoint=media_stream", call_sid or "unknown")
     if session is not None and getattr(session, "mark_milestone", None):
         if session.mark_milestone("TWIML_SENT"):
             logger.info("[CALL_MILESTONE] TWIML_SENT call_sid=%s", call_sid or "unknown")
-    return Response(str(resp), content_type="application/xml")
+    return Response(twiml_xml, content_type="application/xml")
 
 
 @app.route("/voice", methods=["POST"])
