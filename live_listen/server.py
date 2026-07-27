@@ -420,7 +420,6 @@ async def twilio_media(ws: WebSocket):
     )
     # Log connect
     logger.info("[WS_CONNECT] Twilio Media WebSocket connecting client=%s path=%s", ws.client, ws.scope.get('path'))
-    await ws.accept()
     call_id = None
     call_sid = None
     session = None
