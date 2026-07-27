@@ -407,16 +407,28 @@ async def twilio_media(ws: WebSocket):
     If USE_AI_FLOW is enabled, routes to AI handler.
     Otherwise, forwards to traditional manager.
     """
+    subprotocol = None
     try:
-        await ws.accept()
+        subprotocol_header = ws.headers.get('sec-websocket-protocol')
+        if subprotocol_header:
+            subprotocols = [token.strip() for token in subprotocol_header.split(',') if token.strip()]
+            if subprotocols:
+                subprotocol = subprotocols[0]
+                logger.info("[WS_ACCEPT] Negotiating websocket subprotocol=%s", subprotocol)
+                await ws.accept(subprotocol=subprotocol)
+            else:
+                await ws.accept()
+        else:
+            await ws.accept()
     except Exception as e:
         logger.error(f"[WS_ACCEPT_ERROR] WebSocket accept failed: {e}", exc_info=True)
         return
     logger.warning(
-        "[WS_HANDLER] twilio_media handler entered path=%s type=%s client=%s",
+        "[WS_HANDLER] twilio_media handler entered path=%s type=%s client=%s subprotocol=%s",
         ws.scope.get("path"),
         ws.scope.get("type"),
         ws.client,
+        subprotocol,
     )
     # Log connect
     logger.info("[WS_CONNECT] Twilio Media WebSocket connecting client=%s path=%s", ws.client, ws.scope.get('path'))
