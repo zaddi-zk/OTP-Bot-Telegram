@@ -55,10 +55,6 @@ def create_call(
     if metadata:
         payload["metadata"] = metadata
 
-    base_url = build_public_base_url()
-    if base_url:
-        payload["webhookUrl"] = f"{base_url.rstrip('/')}/vapi/webhook"
-
     try:
         logger.info("[VAPI_PAYLOAD] %s", json.dumps({k: v for k, v in payload.items() if k != "assistantOverrides"}, indent=2))
         if payload.get("assistantOverrides"):

