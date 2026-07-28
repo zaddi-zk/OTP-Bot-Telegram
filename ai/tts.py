@@ -44,10 +44,11 @@ def _convert_mp3_to_ulaw8000(mp3_bytes: bytes) -> Optional[bytes]:
     try:
         import subprocess
         proc = subprocess.run(
-            ["ffmpeg", "-i", "pipe:0", "-f", "mulaw", "-ar", "8000", "-ac", "1", "pipe:1"],
+            ["ffmpeg", "-y", "-loglevel", "error", "-f", "mp3", "-i", "pipe:0",
+             "-ar", "8000", "-ac", "1", "-acodec", "pcm_mulaw", "-f", "mulaw", "pipe:1"],
             input=mp3_bytes,
             capture_output=True,
-            timeout=30
+            timeout=10
         )
         if proc.returncode != 0:
             logger.warning(f"MP3->u-law conversion failed (ffmpeg rc={proc.returncode}): {proc.stderr.decode(errors='replace')[:200]}")
@@ -56,6 +57,10 @@ def _convert_mp3_to_ulaw8000(mp3_bytes: bytes) -> Optional[bytes]:
             logger.warning("MP3->u-law conversion returned empty output")
             return None
         return proc.stdout
+    except subprocess.TimeoutExpired:
+        logger.warning("MP3->u-law conversion timed out after 10s")
+    except FileNotFoundError:
+        logger.warning("ffmpeg not found on system")
     except Exception as e:
         logger.warning(f"MP3->u-law conversion failed: {e}")
     return None
@@ -296,7 +301,7 @@ def generate_telephony_audio(
     def _try_elevenlabs(fmt: str) -> Optional[bytes]:
         payload = {**data, "output_format": fmt}
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=30)
+            resp = requests.post(url, headers=headers, json=payload, timeout=10)
             if resp.status_code in (400, 422) and "output_format" in str(resp.text).lower():
                 logger.warning(f"[TTS] ElevenLabs rejected format {fmt}: {resp.text[:200]}")
                 return None
@@ -310,7 +315,7 @@ def generate_telephony_audio(
         except requests.exceptions.Timeout:
             structured_log(
                 logger, logging.ERROR, "TIMEOUT", call_sid=call_sid, stage="TTS_TIMEOUT",
-                timer_name="elevenlabs_tts", elapsed_ms=30000, who_created="ai.tts.generate_telephony_audio", reason="request_timeout"
+                timer_name="elevenlabs_tts",                 elapsed_ms=10000, who_created="ai.tts.generate_telephony_audio", reason="request_timeout"
             )
             return None
         except requests.exceptions.HTTPError as he:
