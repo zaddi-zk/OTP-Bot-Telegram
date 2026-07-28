@@ -484,7 +484,6 @@ async def twilio_media(ws: WebSocket):
                         session = get_session(call_sid)
                         if session and session.mark_milestone("MEDIA_WS_CONNECTED"):
                             logger.info("[CALL_MILESTONE] MEDIA_WS_CONNECTED call_sid=%s", call_sid)
-                        # Populate AI session with server-side call metadata if available.
                         try:
                             from bot import get_call_session
                             meta_session = get_call_session(call_sid)
@@ -500,9 +499,9 @@ async def twilio_media(ws: WebSocket):
                         logger.warning(f"[WebSocket_START] OK - AI call session started: {call_sid}")
                     except Exception as e:
                         logger.error("[WS_START_ERROR] Failed to initialize AI session for %s: %s", call_sid, e, exc_info=True)
-                        
-                        # Send an initial AI greeting using the canonical system prompt.
-                        # This avoids hardcoded scripted prompts and keeps the call on the AI flow.
+                        session = None
+
+                    if session:
                         try:
                             logger.warning("[GREETING_START] Generating initial AI greeting for call_sid=%s", call_sid)
                             from ai.llm import get_initial_greeting
@@ -511,7 +510,6 @@ async def twilio_media(ws: WebSocket):
                                 call_type=session.call_type,
                                 emotion=session.emotion,
                             )
-
                             if greeting_text and len(greeting_text.strip()) > 0:
                                 logger.warning(f"[GREETING_GENERATED] call_sid={call_sid} text={greeting_text[:80]}")
                                 try:
@@ -525,7 +523,6 @@ async def twilio_media(ws: WebSocket):
                                 except Exception as tts_err:
                                     logger.error(f"[GREETING_TTS_ERROR] TTS failed: {tts_err}", exc_info=True)
                                     greeting_audio = None
-
                                 if greeting_audio:
                                     try:
                                         logger.info("[GREETING_SEND] Sending greeting audio over WebSocket")
@@ -541,10 +538,7 @@ async def twilio_media(ws: WebSocket):
                                 logger.warning(f"[GREETING_EMPTY] AI returned empty greeting for call_sid=%s", call_sid)
                         except Exception as e:
                             logger.error(f"[GREETING_ERROR] Failed to send greeting: {e}", exc_info=True)
-                            # Continue the call even if greeting generation fails
-                        
-                    except Exception as e:
-                        logger.error(f"[WebSocket_START] CRITICAL: Failed to get AI session: {e}", exc_info=True)
+
                     await manager.ensure_session(call_id, call_sid=call_sid)
                     await manager.set_state(call_id, 'in-progress')
                 else:

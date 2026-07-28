@@ -3964,7 +3964,6 @@ def _build_voice_twiml(call_sid: str, user_id: str, chat_id: Optional[int], answ
     connect = Connect()
     connect.stream(url=stream_url)
     resp.append(connect)
-    resp.say("Please wait while we connect your call.", voice="Polly.Joanna")
 
     twiml_xml = str(resp)
     logger.warning("[TWIML_RESPONSE] call_sid=%s twiml=%s", call_sid or "unknown", twiml_xml.replace("\n", " "))
