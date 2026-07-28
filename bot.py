@@ -2319,6 +2319,7 @@ def make_spoofed_call(to: str, from_number: str, caller_id: str, user_id: str,
         return None
     caller_id = _safe_caller_id(caller_id)
     public_base = build_public_base_url() or NGROK_URL
+    webhook_url = f"{public_base.rstrip('/')}/twilio/voice"
     try:
         if user_id:
             try:
