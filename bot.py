@@ -159,6 +159,17 @@ fh.setLevel(logging.DEBUG)
 fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 logger.addHandler(fh)
 
+# Configure root logger so sibling modules (handlers/*, services/*) emit INFO+
+root = logging.getLogger()
+root.setLevel(logging.INFO)
+if not root.handlers:
+    _rh = logging.StreamHandler(sys.stdout)
+    _rh.setLevel(logging.INFO)
+    _rh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    root.addHandler(_rh)
+# Prevent "HOTTBOIIHITZZ" from propagating to root (avoids duplicate lines)
+logger.propagate = False
+
 # ======================================================================
 # IMPORT VERIFICATION SYSTEM
 # ======================================================================

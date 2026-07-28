@@ -49,7 +49,7 @@ def _send_telegram(chat_id: int, text: str, **kwargs):
                 tb = telebot.TeleBot(token)
                 tb.send_message(chat_id, text, **kwargs)
     except Exception as e:
-        logger.debug(f"Failed to send Telegram message to {chat_id}: {e}")
+        logger.warning("Failed to send Telegram message to %s: %s", chat_id, e)
 
 
 def _send_live_status(chat_id, text: str, **kwargs) -> None:
