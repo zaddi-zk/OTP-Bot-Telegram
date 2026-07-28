@@ -322,6 +322,12 @@ if bot is None:
     logger.warning("BOT_TOKEN missing or placeholder — using DummyBot. Handlers are no-ops until a real token is provided. To disallow this fallback set DISABLE_DUMMY_BOT=1 in your environment.")
     bot = DummyBot()
 
+@app.route('/vapi/webhook', methods=['POST'])
+@app.route('/conversation/start', methods=['POST'])
+def vapi_webhook():
+    from handlers.vapi_webhooks import handle_vapi_webhook
+    return handle_vapi_webhook(request)
+
 @app.route('/health', methods=['GET'])
 def health_check():
     return {"status": "ok"}, 200
