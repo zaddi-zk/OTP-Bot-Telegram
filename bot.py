@@ -1319,7 +1319,34 @@ def log_twilio_request_debug(endpoint_name: str):
         logger.warning(f"Failed to log Twilio {endpoint_name} request debug info: {e}")
 
 # ======================================================================
-# Session helpers now route through the shared SessionManager.
+# In-memory session manager for tracking active call sessions.
+# ======================================================================
+
+class _SessionManager:
+    def __init__(self):
+        self._sessions: dict[str, dict] = {}
+
+    def create(self, call_sid: str, **kwargs) -> dict:
+        session = {"call_sid": call_sid, **kwargs}
+        self._sessions[call_sid] = session
+        return session
+
+    def get(self, call_sid: str) -> dict | None:
+        return self._sessions.get(call_sid)
+
+
+_session_manager: _SessionManager | None = None
+
+
+def get_session_manager() -> _SessionManager:
+    global _session_manager
+    if _session_manager is None:
+        _session_manager = _SessionManager()
+    return _session_manager
+
+
+# ======================================================================
+# Session helpers
 # ======================================================================
 
 def register_call_session(
