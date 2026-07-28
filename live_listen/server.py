@@ -358,13 +358,14 @@ async def twilio_media_test():
     return {"ok": True, "message": "FastAPI routing works for /twilio/media path"}
 
 
-async def send_media_audio(ws: WebSocket, audio_bytes: bytes, call_sid: str, start_sequence: int = 1, chunk_size: int = 160) -> int:
+async def send_media_audio(ws: WebSocket, audio_bytes: bytes, call_sid: str, stream_sid: str = None, start_sequence: int = 1, chunk_size: int = 160) -> int:
     """Send audio bytes over Twilio Media Stream WebSocket.
     
     Args:
         ws: WebSocket connection to Twilio
         audio_bytes: Raw mu-law 8kHz audio bytes to send
         call_sid: Call ID for logging
+        stream_sid: Twilio stream SID (required for bidirectional streams)
         start_sequence: Initial outgoing sequence number for this send batch
         chunk_size: Bytes per chunk (160 bytes ≈ 20ms at 8kHz)
 
@@ -381,12 +382,12 @@ async def send_media_audio(ws: WebSocket, audio_bytes: bytes, call_sid: str, sta
             chunk = audio_bytes[i:i+chunk_size]
             payload_b64 = base64.b64encode(chunk).decode('utf-8')
             
-            media_event = {
-                'event': 'media',
-                'media': {
-                    'payload': payload_b64,
-                    'sequence': str(sequence)
-                }
+            media_event = {'event': 'media'}
+            if stream_sid:
+                media_event['streamSid'] = stream_sid
+            media_event['media'] = {
+                'payload': payload_b64,
+                'sequence': str(sequence)
             }
             
             await ws.send_json(media_event)
@@ -476,7 +477,8 @@ async def twilio_media(ws: WebSocket):
             if event == 'start':
                 call_sid = data.get('start', {}).get('callSid')
                 call_id = call_sid
-                logger.info("[TWILIO_START] call_sid=%s caller=%s", call_sid, data.get('start', {}).get('from'))
+                stream_sid = data.get('start', {}).get('streamSid', '')
+                logger.info("[TWILIO_START] call_sid=%s stream_sid=%s caller=%s", call_sid, stream_sid, data.get('start', {}).get('from'))
                 
                 # Initialize session state for live listen and AI pipeline.
                 if USE_AI_FLOW and AI_AVAILABLE:
@@ -500,6 +502,49 @@ async def twilio_media(ws: WebSocket):
                     except Exception as e:
                         logger.error("[WS_START_ERROR] Failed to initialize AI session for %s: %s", call_sid, e, exc_info=True)
                         session = None
+
+                    if session:
+                        try:
+                            logger.warning("[GREETING_START] Generating initial AI greeting for call_sid=%s", call_sid)
+                            from ai.llm import get_initial_greeting
+                            greeting_text = get_initial_greeting(
+                                session,
+                                call_type=session.call_type,
+                                emotion=session.emotion,
+                            )
+                            if greeting_text and len(greeting_text.strip()) > 0:
+                                logger.warning(f"[GREETING_GENERATED] call_sid={call_sid} text={greeting_text[:80]}")
+                                loop = asyncio.get_event_loop()
+                                try:
+                                    greeting_audio = await asyncio.wait_for(
+                                        loop.run_in_executor(None, lambda: generate_telephony_audio(
+                                            greeting_text,
+                                            voice_id=session.voice_id,
+                                            output_format="ulaw_8000",
+                                            call_sid=call_sid,
+                                            session=session,
+                                        )),
+                                        timeout=8.0,
+                                    )
+                                except (asyncio.TimeoutError, Exception) as tts_err:
+                                    logger.warning(f"[GREETING_TTS_FAIL] ElevenLabs slow, falling back to gTTS: {tts_err}")
+                                    from ai.tts import _fallback_gtts_audio
+                                    greeting_audio = await loop.run_in_executor(
+                                        None, lambda: _fallback_gtts_audio(greeting_text, output_format="ulaw_8000")
+                                    )
+                                if greeting_audio:
+                                    try:
+                                        logger.info("[GREETING_SEND] Sending greeting audio over WebSocket")
+                                        outbound_sequence = await send_media_audio(ws, greeting_audio, call_sid, stream_sid=stream_sid, start_sequence=outbound_sequence)
+                                        logger.warning(f"[GREETING_SENT] Sent greeting audio to caller: {call_sid}")
+                                    except Exception as send_err:
+                                        logger.error(f"[GREETING_SEND_ERROR] Failed to send: {send_err}", exc_info=True)
+                                else:
+                                    logger.warning(f"[GREETING_AUDIO_FAILED] Could not generate audio for greeting: {call_sid}")
+                            else:
+                                logger.warning(f"[GREETING_EMPTY] AI returned empty greeting for call_sid=%s", call_sid)
+                        except Exception as e:
+                            logger.error(f"[GREETING_ERROR] Failed to send greeting: {e}", exc_info=True)
 
                     await manager.ensure_session(call_id, call_sid=call_sid)
                     await manager.set_state(call_id, 'in-progress')
@@ -635,7 +680,7 @@ async def twilio_media(ws: WebSocket):
                                                 continue
                                             
                                             logger.warning(f"[AI_AUDIO_GEN] OK: Generated {len(audio_bytes)} bytes for {call_sid}")
-                                            outbound_sequence = await send_media_audio(ws, audio_bytes, call_sid, start_sequence=outbound_sequence)
+                                            outbound_sequence = await send_media_audio(ws, audio_bytes, call_sid, stream_sid=stream_sid, start_sequence=outbound_sequence)
                                             logger.warning(f"[AI_AUDIO_PLAYED] OK: Media frames sent for call_sid={call_sid}")
                                         except Exception as e:
                                             logger.error(f"[AI_AUDIO_PLAYBACK_ERROR] CRITICAL: {e}", exc_info=True)

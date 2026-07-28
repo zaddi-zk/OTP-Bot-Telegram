@@ -3917,20 +3917,10 @@ def ai_start():
     )
     
     # Build TwiML: start AI call with Twilio Media Stream
-    greeting_text = None
-    try:
-        from ai.llm import get_initial_greeting
-        g = get_initial_greeting(session, call_type=session.call_type, emotion=session.emotion)
-        if g and g.strip():
-            greeting_text = g
-            logger.warning("[AI_START_GREETING] Greeting text: %.80s", greeting_text)
-    except Exception as e:
-        logger.warning("[AI_START_GREETING] Could not generate greeting (will use WebSocket fallback): %s", e)
-
-    return _build_voice_twiml(call_sid, user_id, session.chat_id, None, request, greeting_text=greeting_text)
+    return _build_voice_twiml(call_sid, user_id, session.chat_id, None, request)
 
 
-def _build_voice_twiml(call_sid: str, user_id: str, chat_id: Optional[int], answered_by: Optional[str], request_obj=None, greeting_text: Optional[str] = None) -> Response:
+def _build_voice_twiml(call_sid: str, user_id: str, chat_id: Optional[int], answered_by: Optional[str], request_obj=None) -> Response:
     """Return TwiML for the Twilio voice webhook path, logging each milestone once."""
 
     session = get_call_session(call_sid) if call_sid else None
@@ -3974,10 +3964,6 @@ def _build_voice_twiml(call_sid: str, user_id: str, chat_id: Optional[int], answ
     connect = Connect()
     connect.stream(url=stream_url)
     resp.append(connect)
-
-    if greeting_text:
-        logger.warning("[TWIML_SAY_GREETING] Including AI greeting in TwiML: %.80s", greeting_text)
-        resp.say(greeting_text, voice="Polly.Joanna")
 
     twiml_xml = str(resp)
     logger.warning("[TWIML_RESPONSE] call_sid=%s twiml=%s", call_sid or "unknown", twiml_xml.replace("\n", " "))
