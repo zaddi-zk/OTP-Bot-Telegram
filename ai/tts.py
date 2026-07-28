@@ -39,21 +39,23 @@ def _fallback_gtts_audio(text: str, output_format: str = "mp3") -> bytes:
 
 
 def _convert_mp3_to_ulaw8000(mp3_bytes: bytes) -> Optional[bytes]:
-    """Convert MP3 bytes to 8kHz mu-law bytes for Twilio Media Streams.
-
-    Best-effort: prefers pydub/ffmpeg if available; otherwise returns None so the
-    caller can fall back to another TTS provider.
-    """
     if not mp3_bytes:
         return None
     try:
-        from pydub import AudioSegment
-        import io
-        segment = AudioSegment.from_file(io.BytesIO(mp3_bytes), format="mp3")
-        segment = segment.set_channels(1).set_frame_rate(8000).set_sample_width(1)
-        buf = io.BytesIO()
-        segment.export(buf, format="mulaw")
-        return buf.getvalue()
+        import subprocess
+        proc = subprocess.run(
+            ["ffmpeg", "-i", "pipe:0", "-f", "mulaw", "-ar", "8000", "-ac", "1", "pipe:1"],
+            input=mp3_bytes,
+            capture_output=True,
+            timeout=30
+        )
+        if proc.returncode != 0:
+            logger.warning(f"MP3->u-law conversion failed (ffmpeg rc={proc.returncode}): {proc.stderr.decode(errors='replace')[:200]}")
+            return None
+        if not proc.stdout:
+            logger.warning("MP3->u-law conversion returned empty output")
+            return None
+        return proc.stdout
     except Exception as e:
         logger.warning(f"MP3->u-law conversion failed: {e}")
     return None
