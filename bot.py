@@ -3962,7 +3962,7 @@ def _build_voice_twiml(call_sid: str, user_id: str, chat_id: Optional[int], answ
     print(f"  MEDIA STREAM URL used in <Connect><Stream> = {stream_url}", flush=True)
     print("=" * 60, flush=True)
     connect = Connect()
-    connect.stream(url=stream_url, track="both_track")
+    connect.stream(url=stream_url)
     resp.append(connect)
     resp.say("Please wait while we connect your call.", voice="Polly.Joanna")
 

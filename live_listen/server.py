@@ -102,6 +102,15 @@ elif not USE_AI_FLOW:
 
 app = FastAPI()
 logger.warning("[SERVER_STARTUP] FastAPI app created successfully")
+
+@app.get("/")
+async def root():
+    return {"status": "ok"}
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}
+
 twilio_client = Client(ACCOUNT_SID, AUTH_TOKEN)
 logger.warning("[SERVER_STARTUP] Twilio client initialized")
 
