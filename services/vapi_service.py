@@ -36,17 +36,6 @@ def create_call(
     assistant_overrides: Optional[dict] = None,
     metadata: Optional[dict] = None,
 ) -> Optional[str]:
-    """Create an outbound call via Vapi.
-
-    Args:
-        customer_number: Phone number in E.164 format.
-        customer_name: Display name for the customer.
-        assistant_overrides: Inline overrides for the assistant config.
-        metadata: Custom metadata forwarded to webhooks.
-
-    Returns:
-        Call ID (Vapi call id) on success, None on failure.
-    """
     payload = {
         "customer": {
             "number": customer_number,
@@ -66,8 +55,14 @@ def create_call(
     if metadata:
         payload["metadata"] = metadata
 
+    base_url = build_public_base_url()
+    if base_url:
+        payload["webhookUrl"] = f"{base_url.rstrip('/')}/vapi/webhook"
+
     try:
-        logger.info("VAPI OVERRIDES: %s", json.dumps(payload.get("assistantOverrides", {}), indent=2))
+        logger.info("[VAPI_PAYLOAD] %s", json.dumps({k: v for k, v in payload.items() if k != "assistantOverrides"}, indent=2))
+        if payload.get("assistantOverrides"):
+            logger.info("[VAPI_OVERRIDES] %s", json.dumps(payload["assistantOverrides"], indent=2))
         resp = requests.post(
             f"{VAPI_BASE_URL}/call",
             headers=_headers(),

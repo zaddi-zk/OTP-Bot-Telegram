@@ -112,12 +112,14 @@ REQ_TIMEOUT = (5, 10)  # connect_timeout, read_timeout
 
 
 def _notify_live_listen_start(call_sid: str, chat_id: Optional[int] = None, user_id: Optional[str] = None):
-    """Notify the Live Listen service that a call has been created.
-
-    This is only used for live panel session bootstrapping when a separate
-    live listen service is configured.
-    """
     if not LIVE_LISTEN_URL or not call_sid:
+        return
+
+    from urllib.parse import urlparse
+    public_base = build_public_base_url() or NGROK_URL
+    target_netloc = urlparse(LIVE_LISTEN_URL).netloc
+    self_netloc = urlparse(public_base).netloc
+    if target_netloc and self_netloc and target_netloc == self_netloc:
         return
 
     payload = {"call_sid": call_sid}
