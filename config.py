@@ -65,7 +65,7 @@ BACKUP_CHANNEL_URL = _get("BACKUP_CHANNEL_URL", "https://t.me/your_backup_channe
 VOUCH_CHANNEL_URL = _get("VOUCH_CHANNEL_URL", "https://t.me/your_vouch_channel")
 MAIN_CHANNEL_ID = _get("MAIN_CHANNEL_ID", "")
 BACKUP_CHANNEL_ID = _get("BACKUP_CHANNEL_ID", "")
-VOUCH_CHANNEL_ID = _get("VOUCH_CHANNEL_ID", "")
+VOUCH_CHANNEL_ID = _get("VOUCH_CHANNEL_ID", "-1004364877298")
 
 # Admins
 OWNER_ID = _get("OWNER_ID")
@@ -101,11 +101,7 @@ PAYMENT_ADDRESSES = {
     "USDT_ERC20": _get("PAYMENT_USDT", "YOUR_WALLET_ADDRESS_HERE"),
 }
 
-# ElevenLabs (voice synthesis for call responses)
-# Get API key from https://elevenlabs.io/
-# Set ELEVENLABS_API_KEY and DEFAULT_ELEVENLABS_VOICE_ID in Railway environment
-ELEVENLABS_API_KEY = _get("ELEVENLABS_API_KEY", "sk_d2b06b0c5856ef511e9991ee62bdbd3ab8d2f25b0a86077c")
-DEFAULT_ELEVENLABS_VOICE_ID = _get("DEFAULT_ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Rachel (professional female voice)
+
 
 # Live Listen URL (defaults to NGROK_URL)
 LIVE_LISTEN_URL = _get("LIVE_LISTEN_URL", NGROK_URL)
@@ -132,6 +128,18 @@ RATE_LIMIT_BAN_ESCALATION_FACTOR = float(_get("RATE_LIMIT_BAN_ESCALATION_FACTOR"
 FLASK_HOST = _get("FLASK_HOST", "0.0.0.0")
 FLASK_PORT = int(_get("FLASK_PORT", 5000))
 DEBUG = _get("DEBUG", "false").lower() in ("true", "1", "yes")
+
+# Twilio validation override (default: disabled for development)
+DISABLE_TWILIO_VALIDATION = _get("DISABLE_TWILIO_VALIDATION", "false").lower() in ("true", "1", "yes")
+
+# Disable DummyBot fallback
+DISABLE_DUMMY_BOT = _get("DISABLE_DUMMY_BOT", "false").lower() in ("true", "1", "yes")
+
+# Telegram webhook mode
+USE_WEBHOOK = _get("USE_WEBHOOK", "false").lower() in ("true", "1", "yes")
+WEBHOOK_URL = _get("WEBHOOK_URL", "").strip()
+WEBHOOK_PATH = _get("WEBHOOK_PATH", "/telegram_webhook").strip()
+TELEGRAM_API_BASE_URL = _get("TELEGRAM_API_BASE_URL", "https://tg-api-proxy.zaddocklangat8.workers.dev/bot").rstrip("/")
 
 # Database
 DATABASE_URL = _get("DATABASE_URL", "").strip()  # Railway PostgreSQL connection string
@@ -168,7 +176,7 @@ def _derive_channel_id(url: str, fallback: str) -> str:
 MAIN_CHANNEL_ID = _derive_channel_id(MAIN_CHANNEL_URL, MAIN_CHANNEL_ID)
 BACKUP_CHANNEL_ID = _derive_channel_id(BACKUP_CHANNEL_URL, BACKUP_CHANNEL_ID)
 
-REQUIRED_CHANNELS = [ch for ch in [MAIN_CHANNEL_ID, BACKUP_CHANNEL_ID] if ch]
+REQUIRED_CHANNELS = [ch for ch in [MAIN_CHANNEL_ID, BACKUP_CHANNEL_ID, VOUCH_CHANNEL_ID] if ch]
 
 # =============================================================================
 # Helper functions
@@ -225,24 +233,6 @@ def build_public_base_url() -> str:
     return ""
 
 
-def build_media_stream_url() -> str:
-    """Build the public Twilio Media Stream websocket URL."""
-    base_url = build_public_base_url()
-    if not base_url:
-        raise ValueError("No public base URL configured for Twilio media streams")
-    if base_url.startswith("http://"):
-        base_url = base_url.replace("http://", "ws://", 1)
-    elif base_url.startswith("https://"):
-        base_url = base_url.replace("https://", "wss://", 1)
-    elif not base_url.startswith(("ws://", "wss://")):
-        base_url = f"wss://{base_url}"
-    stream_url = f"{base_url.rstrip('/')}/twilio/media"
-    print("-" * 60, flush=True)
-    print(f"FINAL MEDIA STREAM URL = {stream_url}", flush=True)
-    print("-" * 60, flush=True)
-    return stream_url
-
-
 def is_twilio_configured() -> bool:
     """Check if Twilio credentials are properly set."""
     if not ACCOUNT_SID or "YOUR_" in ACCOUNT_SID:
@@ -270,28 +260,11 @@ SMS_API_URL = _get("SMS_API_URL", "")
 SMS_API_KEY = _get("SMS_API_KEY", "")
 
 # =============================================================================
-# Voice Configuration (Human-Optimized)
+# Voice Configuration
 # =============================================================================
 
-# Default voice for new users
+# Default voice for new users (fallback when no voice is selected)
 DEFAULT_VOICE_ID = _get("DEFAULT_VOICE_ID", "")
-DEFAULT_VOICE_KEY = _get("DEFAULT_VOICE_KEY", "1")
-
-# Voice settings for human-like speech
-VOICE_STABILITY = float(_get("VOICE_STABILITY", 0.45))
-VOICE_SIMILARITY_BOOST = float(_get("VOICE_SIMILARITY_BOOST", 0.75))
-VOICE_STYLE = float(_get("VOICE_STYLE", 0.3))
-VOICE_USE_SPEAKER_BOOST = _get("VOICE_USE_SPEAKER_BOOST", "true").lower() in ("true", "1", "yes")
-
-# Speed settings for different voice types
-VOICE_SPEED = {
-    "DEFAULT": float(_get("VOICE_SPEED_DEFAULT", 1.0)),
-    "FAST": float(_get("VOICE_SPEED_FAST", 1.1)),
-    "SLOW": float(_get("VOICE_SPEED_SLOW", 0.9)),
-}
-
-# ElevenLabs model to use
-ELEVENLABS_MODEL = _get("ELEVENLABS_MODEL", "eleven_turbo_v2")  # Fastest with best quality
 
 # =============================================================================
 # AI SETTINGS
@@ -313,21 +286,10 @@ WHISPER_MODEL = _get("WHISPER_MODEL", "whisper-large-v3")
 OLLAMA_URL = _get("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = _get("OLLAMA_MODEL", "llama3.1:8b")
 
-# Channel for OTP notifications
-VOUCH_CHANNEL_ID = _get("VOUCH_CHANNEL_ID", "-1004364877298")
-
-# System prompt for AI agent (professional verification representative)
-# Must be supplied explicitly through the SYSTEM_PROMPT environment variable.
-SYSTEM_PROMPT = _get("SYSTEM_PROMPT")
-
-
-def get_system_prompt() -> str:
-    """Return the single canonical system prompt used by the AI flow."""
-    if not SYSTEM_PROMPT:
-        fallback_prompt = (
-            "You are a professional customer verification assistant for a phone call. "
-            "Speak naturally, confirm identity, and guide the customer through verification "
-            "without making up facts. Keep answers concise, helpful, and human-like."
-        )
-        return fallback_prompt
-    return SYSTEM_PROMPT
+# =============================================================================
+# VAPI CONFIGURATION
+# =============================================================================
+VAPI_API_KEY = _get("VAPI_API_KEY", "YOUR_VAPI_API_KEY_HERE")
+VAPI_ASSISTANT_ID = _get("VAPI_ASSISTANT_ID", "")
+VAPI_PHONE_NUMBER_ID = _get("VAPI_PHONE_NUMBER_ID", "")
+VAPI_WEBHOOK_SECRET = _get("VAPI_WEBHOOK_SECRET", "")

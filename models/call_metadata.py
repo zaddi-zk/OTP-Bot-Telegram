@@ -1,0 +1,123 @@
+from dataclasses import dataclass, field
+from typing import Optional
+
+
+@dataclass
+class TargetInfo:
+    name: str
+    phone: str
+    identifier: Optional[str] = None
+    customer_type: str = "customer"
+    region: Optional[str] = None
+    relationship: str = "customer"
+    previous_context: Optional[str] = None
+
+
+@dataclass
+class CompanyInfo:
+    name: str
+    department: str = "Security"
+    representative_name: Optional[str] = None
+    brand: Optional[str] = None
+    support_contact: Optional[str] = None
+    website: Optional[str] = None
+
+
+@dataclass
+class OTPConfig:
+    length: int = 6
+    delivery_method: str = "sms"
+
+
+@dataclass
+class AIBehavior:
+    voice_provider: str = "elevenlabs"
+    voice_id: Optional[str] = None
+    language: str = "en"
+    emotion: str = "neutral"
+    speaking_style: Optional[str] = None
+    speech_speed: float = 1.0
+    temperature: float = 0.7
+    greeting_style: Optional[str] = None
+    conversation_personality: Optional[str] = None
+
+
+@dataclass
+class CallMetadata:
+    target: TargetInfo
+    company: CompanyInfo
+    reason: str
+    otp: OTPConfig = field(default_factory=OTPConfig)
+    ai: AIBehavior = field(default_factory=AIBehavior)
+    custom_instructions: Optional[str] = None
+
+    internal: dict = field(default_factory=dict)
+
+    def to_prompt_context(self) -> dict:
+        return {
+            "target_name": self.target.name,
+            "target_identifier": self.target.identifier,
+            "customer_type": self.target.customer_type,
+            "region": self.target.region,
+            "relationship": self.target.relationship,
+            "previous_context": self.target.previous_context,
+            "company_name": self.company.name,
+            "department": self.company.department,
+            "representative_name": self.company.representative_name,
+            "brand": self.company.brand,
+            "support_contact": self.company.support_contact,
+            "website": self.company.website,
+            "reason": self.reason,
+            "otp_length": self.otp.length,
+            "otp_delivery_method": self.otp.delivery_method,
+            "voice_provider": self.ai.voice_provider,
+            "language": self.ai.language,
+            "emotion": self.ai.emotion,
+            "speaking_style": self.ai.speaking_style,
+            "speech_speed": self.ai.speech_speed,
+            "greeting_style": self.ai.greeting_style,
+            "conversation_personality": self.ai.conversation_personality,
+            "custom_instructions": self.custom_instructions,
+        }
+
+    def validate(self) -> list[str]:
+        errors = []
+        if not self.target.name:
+            errors.append("target.name is required")
+        if not self.target.phone:
+            errors.append("target.phone is required")
+        if not self.company.name:
+            errors.append("company.name is required")
+        if not self.reason:
+            errors.append("reason is required")
+        if self.otp.length < 4 or self.otp.length > 10:
+            errors.append("otp.length must be between 4 and 10")
+        if self.otp.delivery_method not in ("sms", "email", "authenticator", "voice", "push_notification"):
+            errors.append(f"otp.delivery_method invalid: {self.otp.delivery_method}")
+        return errors
+
+    def to_vapi_assistant_overrides(self) -> dict:
+        VAPI_PROVIDER_MAP = {
+            "elevenlabs": "11labs",
+        }
+        vapi_provider = VAPI_PROVIDER_MAP.get(self.ai.voice_provider, self.ai.voice_provider)
+        overrides = {
+            "model": {
+                "messages": [],
+            },
+            "voice": {
+                "provider": vapi_provider,
+            },
+        }
+        if self.ai.voice_id:
+            overrides["voice"]["voiceId"] = self.ai.voice_id
+        overrides["voice"]["language"] = self.ai.language
+        overrides["voice"]["speed"] = self.ai.speech_speed
+        if self.ai.speaking_style:
+            try:
+                overrides["voice"]["style"] = float(self.ai.speaking_style)
+            except (ValueError, TypeError):
+                pass
+        if self.ai.temperature != 0.7:
+            overrides["model"]["temperature"] = self.ai.temperature
+        return overrides

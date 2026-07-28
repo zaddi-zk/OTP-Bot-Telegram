@@ -34,7 +34,7 @@ except Exception:
     ConversationHandler = None
     PTB_AVAILABLE = False
 
-from config import TWILIO_PHONE_NUMBER, NGROK_URL, USE_AI_FLOW, DISABLE_AMD, build_public_base_url
+from config import TWILIO_PHONE_NUMBER, NGROK_URL, USE_AI_FLOW, DISABLE_AMD, build_public_base_url, DEFAULT_VOICE_ID
 from urllib.parse import quote_plus
 from core.files import (
     read_user_file, write_user_file, set_user_state, get_user_state,
@@ -45,26 +45,17 @@ from core.auth import (
     get_free_calls
 )
 from services.twilio_service import make_call, make_call_and_store_async, store_call_metadata, get_twilio_client
-from services.tts_service import generate_ai, get_default_voice_id
 
 
 def get_voice_mapping() -> dict:
-    """Return the authoritative voice mapping.
-
-    Prefer the mapping defined in `bot.py` when available (populated at runtime).
-    Fall back to the local `services.tts_service.VOICE_MAPPING` otherwise.
-    """
+    """Return the authoritative voice mapping from bot.py (populated at runtime)."""
     try:
-        from bot import VOICE_MAPPING as BOT_VOICE_MAPPING  # type: ignore
+        from bot import VOICE_MAPPING as BOT_VOICE_MAPPING
         if BOT_VOICE_MAPPING and isinstance(BOT_VOICE_MAPPING, dict):
             return BOT_VOICE_MAPPING
     except Exception:
         pass
-    try:
-        from services.tts_service import VOICE_MAPPING as SVC_VOICE_MAPPING
-        return SVC_VOICE_MAPPING
-    except Exception:
-        return {}
+    return {}
 from menu import send_main_menu
 
 logger = logging.getLogger(__name__)
@@ -100,134 +91,14 @@ def step1_name(chat_id: int, user_id: str = None):
 def generate_voice_preview_compat(chat_id: int, user_id: str):
     if not _telebot_instance:
         return
-
     try:
-        from services.tts_service import generate_ai
-        voice_id = read_user_file(user_id, "Voice.txt", get_default_voice_id())
-        sample_text = "Hello, this is a preview of the selected voice."
-        sample_path = user_conf_path(user_id) / "voice_preview.mp3"
-
-        if generate_ai(user_id, sample_text, "voice_preview", voice_id):
-            if sample_path.exists():
-                with open(sample_path, 'rb') as f:
-                    _telebot_instance.send_audio(chat_id, f, caption="🎧 Voice Preview")
-                return
-
-        _telebot_instance.send_message(chat_id, "❌ Voice preview generation failed or audio file not found.")
+        _telebot_instance.send_message(
+            chat_id,
+            "❌ Voice preview is unavailable in the current configuration. "
+            "Voice previews are handled server-side by the new voice provider."
+        )
     except Exception:
-        try:
-            _telebot_instance.send_message(chat_id, "❌ Voice preview temporarily unavailable (compat mode).")
-        except Exception:
-            pass
-
-def initiate_call_compat(chat_id: int, user_id: str, call_from_user):
-    if _telebot_instance:
-        try:
-            _telebot_instance.send_message(chat_id, "❌ Initiating Normal Call is temporarily disabled (compat mode).")
-        except Exception:
-            pass
-def initiate_call_compat(chat_id: int, user_id: str, call_from_user):
-    """Telebot-compatible call initiator: generates audio, places the call via Twilio, and notifies the user."""
-    if not _telebot_instance:
-        return
-    try:
-        # Basic subscription/free-check
-        if not is_privileged_user(user_id) and check_subscription(user_id) != "ACTIVE":
-            remaining = decrement_free_call(user_id)
-            if remaining < 0:
-                _telebot_instance.send_message(chat_id, "❌ Free trial exhausted. Please purchase a subscription to make calls.")
-                return
-
-        digits = read_user_file(user_id, "Digits.txt", "6")
-        script = build_script(user_id, int(digits))
-        script = get_script_variant(script)
-        write_user_file(user_id, "custom_script.txt", script)
-
-        voice_id = read_user_file(user_id, "Voice.txt", get_default_voice_id())
-        emotion = read_user_file(user_id, "emotion.txt", "neutral")
-
-        name = read_user_file(user_id, "Name.txt", "Customer")
-        company = read_user_file(user_id, "Company Name.txt", "your bank")
-        check_text = f"Hello, this is a security call from {company}. Please press 1 to continue."
-        explain_text = f"Thank you. We have detected suspicious activity on your account and need to verify some details."
-        askdigits_text = f"Please enter the {digits} digit code sent to you."
-
-        # Generate audio synchronously
-        generate_ai(user_id, check_text, "checkifhuman", voice_id, emotion)
-        generate_ai(user_id, explain_text, "explain", voice_id, emotion)
-        generate_ai(user_id, askdigits_text, "askdigits", voice_id, emotion)
-
-        phone = read_user_file(user_id, "phonenum.txt", "")
-        caller_id = read_user_file(user_id, "Caller ID.txt", TWILIO_PHONE_NUMBER)
-        public_base = build_public_base_url() or NGROK_URL
-        webhook_url = (
-            f"{public_base.rstrip('/')}/ai_start"
-            f"?user_id={user_id}"
-            f"&chat_id={chat_id}"
-            f"&emotion={emotion}"
-            f"&call_type=normal"
-            f"&mode_label=Normal%20Call"
-        )
-
-        # Ensure the async AMD callback includes user_id and chat_id so
-        # the central Flask AMD handler can notify the correct Telegram chat.
-        amd_cb = f"{public_base.rstrip('/')}/amd_callback?user_id={quote_plus(str(user_id))}"
-        if chat_id:
-            amd_cb += f"&chat_id={quote_plus(str(chat_id))}"
-        # Enable recording on the initial call so both human and machine events
-        # are captured and the bot user can review what happened.
-        sid = make_call(
-            to=phone,
-            from_number=TWILIO_PHONE_NUMBER,
-            caller_id=caller_id,
-            webhook_url=webhook_url,
-            user_id=user_id,
-            record=True,
-            machine_detection="DetectMessageEnd",
-            async_amd=True,
-            async_amd_status_callback=f"{public_base.rstrip('/')}/amd_callback?user_id={quote_plus(str(user_id))}" + (f"&chat_id={quote_plus(str(chat_id))}" if chat_id else ""),
-        )
-        if sid:
-            store_call_metadata(user_id, sid, target=phone)
-            # write per-user history
-            hist_path = user_conf_path(user_id) / "call_history.json"
-            history = []
-            if hist_path.exists():
-                try:
-                    with open(hist_path, 'r', encoding='utf-8') as f:
-                        history = json.load(f)
-                except Exception:
-                    history = []
-            history.append({"sid": sid, "target": phone, "started": datetime.now().isoformat(), "status": "initiated"})
-            with open(hist_path, 'w', encoding='utf-8') as f:
-                json.dump(history, f, indent=2)
-
-            # Send live buttons
-            try:
-                from telebot import types as tb_types
-                live_buttons = tb_types.InlineKeyboardMarkup(row_width=1)
-                # Keep only Live Listen here — remove Call Status and Back buttons
-                live_buttons.add(tb_types.InlineKeyboardButton("🎧 LIVE LISTEN", callback_data="live_listen"))
-                _telebot_instance.send_message(
-                    chat_id,
-                    f"📞 Call Started\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🆔 Call SID: {sid}\n👤 Target: {name}\n📞 Phone: {phone}\n🎙️ Voice: {read_user_file(user_id, 'VoiceName.txt', 'Default')}\n\nRecording started. You will receive a notification shortly.",
-                    reply_markup=live_buttons,
-                    parse_mode="Markdown"
-                )
-            except Exception:
-                try:
-                    _telebot_instance.send_message(chat_id, "📞 Call Started — check logs for details.")
-                except Exception:
-                    pass
-        else:
-            _telebot_instance.send_message(chat_id, "❌ Call failed to initiate. Check Twilio configuration.")
-    except Exception as e:
-        logger.exception("Initiate call (compat) error")
-        try:
-            _telebot_instance.send_message(chat_id, f"❌ Error initiating call: {e}")
-        except Exception:
-            pass
-
+        pass
 
 def show_preview_and_confirm_compat(chat_id: int, user_id: str):
     """Telebot-compatible: show the script summary and action buttons.
@@ -382,8 +253,11 @@ def handle_normal_step(chat_id: int, user_id: str, state: str, text: str):
         if not found:
             _telebot_instance.send_message(chat_id, "❌ Voice not recognized. Reply with number or full name.")
             return False
+        provider_key = choice if choice in vm else next((k for k, v in vm.items() if v.get('name', '').lower() == choice.lower()), None)
+        voice_provider = vm[provider_key].get("provider", "elevenlabs") if provider_key else "elevenlabs"
         write_user_file(user_id, "Voice.txt", voice_id)
         write_user_file(user_id, "VoiceName.txt", voice_name)
+        write_user_file(user_id, "VoiceProvider.txt", voice_provider)
         clear_user_state(user_id)
         # show preview and confirm
         try:
@@ -399,9 +273,6 @@ def handle_normal_step(chat_id: int, user_id: str, state: str, text: str):
 def generate_voice_preview(chat_id: int, user_id: str):
     return generate_voice_preview_compat(chat_id, user_id)
 
-
-def initiate_call(chat_id: int, user_id: str, call_from_user):
-    return initiate_call_compat(chat_id, user_id, call_from_user)
 
 # Conversation states (maintain 9 steps plus extras)
 (
@@ -720,12 +591,15 @@ async def normal_voice_callback(update: Update, context: ContextTypes.DEFAULT_TY
     if data.startswith('voice_select_'):
         voice_id = data.replace('voice_select_', '')
         vm = get_voice_mapping()
-        voice_name = next((v['name'] for v in vm.values() if v['id'] == voice_id), None)
-        if not voice_name:
+        voice_entry = next((v for v in vm.values() if v['id'] == voice_id), None)
+        if not voice_entry:
             await query.edit_message_text("❌ Voice not found.")
             return
+        voice_name = voice_entry['name']
+        voice_provider = voice_entry.get('provider', 'elevenlabs')
         write_user_file(user_id, "Voice.txt", voice_id)
         write_user_file(user_id, "VoiceName.txt", voice_name)
+        write_user_file(user_id, "VoiceProvider.txt", voice_provider)
         clear_user_state(user_id)
         await show_preview_and_confirm(query, user_id)
         return
@@ -752,10 +626,10 @@ async def normal_voice_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return NORMAL_SCHEDULE
 
     elif data == 'normal_preview_voice':
-        voice_id = read_user_file(user_id, "Voice.txt", get_default_voice_id())
+        voice_id = read_user_file(user_id, "Voice.txt", DEFAULT_VOICE_ID)
         sample_text = "Hello, this is a preview of the selected voice."
         sample_path = user_conf_path(user_id) / "voice_preview.mp3"
-        success = await generate_ai(user_id, sample_text, "voice_preview", voice_id)
+        success = False
         if success and sample_path.exists():
             await query.message.reply_audio(open(sample_path, 'rb'), caption="🎧 Voice preview")
         else:
@@ -805,49 +679,22 @@ async def initiate_call_from_query(query, user_id: str):
             )
             return
 
-    voice_id = read_user_file(user_id, "Voice.txt", get_default_voice_id())
+    voice_id = read_user_file(user_id, "Voice.txt", DEFAULT_VOICE_ID)
     emotion = read_user_file(user_id, "emotion.txt", "neutral")
 
     name = read_user_file(user_id, "Name.txt", "Customer")
     company = read_user_file(user_id, "Company Name.txt", "your bank")
+    digits = read_user_file(user_id, "Digits.txt", "6")
     phone = read_user_file(user_id, "phonenum.txt", "")
     caller_id = read_user_file(user_id, "Caller ID.txt", TWILIO_PHONE_NUMBER)
 
-    public_base = build_public_base_url() or NGROK_URL
-    webhook_url = (
-        f"{public_base.rstrip('/')}/ai_start"
-        f"?user_id={quote_plus(str(user_id))}"
-        f"&chat_id={quote_plus(str(chat_id))}"
-        f"&name={quote_plus(name)}"
-        f"&company={quote_plus(company)}"
-        f"&voice_id={quote_plus(voice_id)}"
-        f"&emotion={quote_plus(emotion)}"
-        f"&code_length={quote_plus(str(digits))}"
-        f"&caller_id={quote_plus(caller_id)}"
-        f"&call_type=normal"
-        f"&mode_label=Normal%20Call"
-    )
-
     try:
-        # Ensure AMD callback contains user/chat so the handler can correlate
-        async_cb = f"{public_base.rstrip('/')}/amd_callback?user_id={quote_plus(str(user_id))}"
-        if chat_id:
-            async_cb += f"&chat_id={quote_plus(str(chat_id))}"
-
-        # Dispatch Twilio call creation to the background executor and persist metadata there.
-        # CRITICAL: record=False — wait for AMD verdict before recording.
-        # Use DetectMessageEnd so the async AMD verdict is delivered after speech/voicemail ends.
         import asyncio
         future = make_call_and_store_async(
             user_id=user_id,
             to=phone,
             from_number=TWILIO_PHONE_NUMBER,
             caller_id=caller_id,
-            webhook_url=webhook_url,
-            record=True,
-            machine_detection="DetectMessageEnd" if not DISABLE_AMD else None,
-            async_amd=not DISABLE_AMD,
-            async_amd_status_callback=async_cb if not DISABLE_AMD else None,
             chat_id=chat_id,
         )
         if not future:
@@ -901,19 +748,6 @@ async def initiate_call_from_query(query, user_id: str):
 # ======================================================================
 # AMD CALLBACK (for async machine detection)
 # ======================================================================
-
-def amd_callback_flask(request):
-    """AMD callback endpoint - intentionally disabled.
-
-    Twilio may POST to this endpoint in some configurations. The handler
-    has been removed to ensure no machine/human detection logic runs.
-    """
-    try:
-        logger.debug("Received AMD callback (ignored)")
-    except Exception:
-        pass
-    return "", 200
-
 
 # ======================================================================
 # SCHEDULING
