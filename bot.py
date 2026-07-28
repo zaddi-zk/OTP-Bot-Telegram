@@ -2657,13 +2657,12 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
                 system_prompt = prompt_builder.build(metadata)
 
                 # Create Vapi call with emotion-aware assistant
+                overrides = metadata.to_vapi_assistant_overrides()
+                overrides["model"]["messages"] = [{"role": "system", "content": system_prompt}]
                 vapi_call_id = create_call(
                     customer_number=phonenum,
                     customer_name=name,
-                    assistant_overrides={
-                        "model": {"messages": [{"role": "system", "content": system_prompt}]},
-                        "voice": {"voiceId": voice_id},
-                    },
+                    assistant_overrides=overrides,
                     metadata=metadata.internal,
                 )
                 if not vapi_call_id:
@@ -2826,13 +2825,12 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                 system_prompt = prompt_builder.build(metadata)
 
                 # Create Vapi call with assistant overrides
+                overrides = metadata.to_vapi_assistant_overrides()
+                overrides["model"]["messages"] = [{"role": "system", "content": system_prompt}]
                 vapi_call_id = create_call(
                     customer_number=phonenum,
                     customer_name=name,
-                    assistant_overrides={
-                        "model": {"messages": [{"role": "system", "content": system_prompt}]},
-                        "voice": {"voiceId": voice_id},
-                    },
+                    assistant_overrides=overrides,
                     metadata=metadata.internal,
                 )
                 if not vapi_call_id:
@@ -2947,13 +2945,12 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
             prompt_builder = PromptBuilder()
             system_prompt = prompt_builder.build(metadata)
             
+            overrides = metadata.to_vapi_assistant_overrides()
+            overrides["model"]["messages"] = [{"role": "system", "content": system_prompt}]
             vapi_call_id = create_call(
                 customer_number=phone,
                 customer_name=name,
-                assistant_overrides={
-                    "model": {"messages": [{"role": "system", "content": system_prompt}]},
-                    "voice": {"voiceId": voice_id},
-                },
+                assistant_overrides=overrides,
                 metadata=metadata.internal,
             )
         else:
@@ -2980,13 +2977,12 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
             prompt_builder = PromptBuilder()
             system_prompt = prompt_builder.build(metadata)
             
+            overrides = metadata.to_vapi_assistant_overrides()
+            overrides["model"]["messages"] = [{"role": "system", "content": system_prompt}]
             vapi_call_id = create_call(
                 customer_number=phone,
                 customer_name=name,
-                assistant_overrides={
-                    "model": {"messages": [{"role": "system", "content": system_prompt}]},
-                    "voice": {"voiceId": voice_id},
-                },
+                assistant_overrides=overrides,
                 metadata=metadata.internal,
             )
         
