@@ -31,7 +31,7 @@ class OTPConfig:
 
 @dataclass
 class AIBehavior:
-    voice_provider: str = "elevenlabs"
+    voice_provider: str = "vapi"
     voice_id: Optional[str] = None
     language: str = "en"
     emotion: str = "neutral"
@@ -97,11 +97,9 @@ class CallMetadata:
         return errors
 
     def to_vapi_assistant_overrides(self) -> dict:
-        from config import VAPI_MODEL
-        VAPI_PROVIDER_MAP = {
-            "elevenlabs": "11labs",
-        }
-        vapi_provider = VAPI_PROVIDER_MAP.get(self.ai.voice_provider, self.ai.voice_provider)
+        from config import VAPI_MODEL, LEGACY_VOICE_ID_MAP
+        # Always use Vapi as the voice provider for outbound TTS calls.
+        vapi_provider = "vapi"
         overrides = {
             "model": {
                 "provider": "openai",
@@ -113,7 +111,21 @@ class CallMetadata:
             },
         }
         if self.ai.voice_id:
-            overrides["voice"]["voiceId"] = self.ai.voice_id
+            # Allow mapping from legacy voice IDs to Vapi voice IDs.
+            mapped = None
+            try:
+                mapped = LEGACY_VOICE_ID_MAP.get(self.ai.voice_id)
+            except Exception:
+                mapped = None
+            if mapped:
+                overrides["voice"]["voiceId"] = mapped
+            else:
+                # If the voice_id looks like an old legacy ID, skip sending it directly
+                # so Vapi can fall back to the assistant/default voice instead.
+                if isinstance(self.ai.voice_id, str) and len(self.ai.voice_id) > 10 and " " not in self.ai.voice_id:
+                    pass
+                else:
+                    overrides["voice"]["voiceId"] = self.ai.voice_id
         overrides["voice"]["language"] = self.ai.language
         overrides["voice"]["speed"] = self.ai.speech_speed
         if self.ai.speaking_style:

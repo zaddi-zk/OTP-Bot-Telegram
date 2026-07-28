@@ -742,31 +742,25 @@ def run_callback_async(func, *args, **kwargs):
 logger.info("Callback executor initialized")
 
 # ======================================================================
-# VOICE MAPPING (20 voices)
+# VOICE MAPPING (Vapi 12 voices)
+# Keys are preserved as strings for backward compatibility with existing storage.
+# Replace or reorder as needed; 'id' uses the Vapi `voiceId` value (name or id string).
 # ======================================================================
 VOICE_MAPPING = {
-    "1": {"provider": "elevenlabs", "name": "Roger - Laid-Back, Casual, Resonant", "id": "CwhRBWXzGAHq8TQ4Fs17", "desc": "Laid-back, casual, resonant male"},
-    "2": {"provider": "elevenlabs", "name": "Sarah - Mature, Reassuring, Confident", "id": "EXAVITQu4vr4xnSDxMaL", "desc": "Warm mature female with steady confidence"},
-    "3": {"provider": "elevenlabs", "name": "Laura - Enthusiast, Quirky Attitude", "id": "FGY2WhTYpPnrIDTdsKH5", "desc": "Quirky, energetic female with charm"},
-    "4": {"provider": "elevenlabs", "name": "Charlie - Deep, Confident, Energetic", "id": "IKne3meq5aSn9XLyUdCD", "desc": "Deep, confident male with energy"},
-    "5": {"provider": "elevenlabs", "name": "George - Warm, Captivating Storyteller", "id": "JBFqnCBsd6RMkjVDRZzb", "desc": "Warm storytelling male voice"},
-    "6": {"provider": "elevenlabs", "name": "Callum - Husky Trickster", "id": "N2lVS1w4EtoT3dr4eOWO", "desc": "Husky male voice with playful edge"},
-    "7": {"provider": "elevenlabs", "name": "River - Relaxed, Neutral, Informative", "id": "SAz9YHcvj6GT2YYXdXww", "desc": "Relaxed informative voice"},
-    "8": {"provider": "elevenlabs", "name": "Harry - Fierce Warrior", "id": "SOYHLrjzK2X1ezoPC6cr", "desc": "Bold energetic male voice"},
-    "9": {"provider": "elevenlabs", "name": "Liam - Energetic, Social Media Creator", "id": "TX3LPaxmHKxFdv7VOQHJ", "desc": "Energetic modern male voice"},
-    "10": {"provider": "elevenlabs", "name": "Alice - Clear, Engaging Educator", "id": "Xb7hH8MSUJpSbSDYk0k2", "desc": "Clear, engaging female educator"},
-    "11": {"provider": "elevenlabs", "name": "Matilda - Knowledgable, Professional", "id": "XrExE9yKIg1WjnnlVkGX", "desc": "Professional female with authority"},
-    "12": {"provider": "elevenlabs", "name": "Will - Relaxed Optimist", "id": "bIHbv24MWmeRgasZH58o", "desc": "Relaxed, optimistic male"},
-    "13": {"provider": "elevenlabs", "name": "Jessica - Playful, Bright, Warm", "id": "cgSgspJ2msm6clMCkdW9", "desc": "Playful bright female voice"},
-    "14": {"provider": "elevenlabs", "name": "Eric - Smooth, Trustworthy", "id": "cjVigY5qzO86Huf0OWal", "desc": "Smooth trustworthy male"},
-    "15": {"provider": "elevenlabs", "name": "Bella - Professional, Bright, Warm", "id": "hpp4J3VqNfWAUOO0d1Us", "desc": "Bright professional female"},
-    "16": {"provider": "elevenlabs", "name": "Chris - Charming, Down-to-Earth", "id": "iP95p4xoKVk53GoZ742B", "desc": "Charming down-to-earth male"},
-    "17": {"provider": "elevenlabs", "name": "Brian - Deep, Resonant and Comforting", "id": "nPczCjzI2devNBz1zQrb", "desc": "Deep resonant comforting male"},
-    "18": {"provider": "elevenlabs", "name": "Daniel - Steady Broadcaster", "id": "onwK4e9ZLuTAKqWW03F9", "desc": "Steady broadcaster male"},
-    "19": {"provider": "elevenlabs", "name": "Lily - Velvety Actress", "id": "pFZP5JQG7iQjIQuC4Bku", "desc": "Velvety actress voice"},
-    "20": {"provider": "elevenlabs", "name": "Adam - Dominant, Firm", "id": "pNInz6obpgDQGcFmaJgB", "desc": "Dominant firm male"},
+    "1": {"provider": "vapi", "name": "Clara", "id": "Clara", "desc": "Natural female, professional"},
+    "2": {"provider": "vapi", "name": "Godfrey", "id": "Godfrey", "desc": "Natural male, young, professional"},
+    "3": {"provider": "vapi", "name": "Elliot", "id": "Elliot", "desc": "Natural male, calm"},
+    "4": {"provider": "vapi", "name": "Savannah", "id": "Savannah", "desc": "Friendly female voice"},
+    "5": {"provider": "vapi", "name": "Nico", "id": "Nico", "desc": "Friendly male voice"},
+    "6": {"provider": "vapi", "name": "Kai", "id": "Kai", "desc": "Helpful male voice"},
+    "7": {"provider": "vapi", "name": "Emma", "id": "Emma", "desc": "Friendly young female"},
+    "8": {"provider": "vapi", "name": "Sagar", "id": "Sagar", "desc": "Friendly Indian English male"},
+    "9": {"provider": "vapi", "name": "Neil", "id": "Neil", "desc": "Friendly male voice"},
+    "10": {"provider": "vapi", "name": "Layla", "id": "Layla", "desc": "Young friendly female"},
+    "11": {"provider": "vapi", "name": "Sid", "id": "Sid", "desc": "Calm male voice"},
+    "12": {"provider": "vapi", "name": "Naina", "id": "Naina", "desc": "Friendly Indian English female"},
 }
-logger.info(f"[VOICES] {len(VOICE_MAPPING)} voices loaded — default: {VOICE_MAPPING['1']['name']} ({VOICE_MAPPING['1']['id']})")
+logger.info(f"[VOICES] {len(VOICE_MAPPING)} voices loaded — default: {VOICE_MAPPING.get('1', {}).get('name')} ({VOICE_MAPPING.get('1', {}).get('id')})")
 
 
 def resolve_voice_id(user_id: str, file_name: str = "Voice.txt") -> str:
@@ -798,26 +792,18 @@ def handle_voice_options_text(message):
     show_voice_options(message.chat.id)
 
 VOICE_STYLE_MAPPING = {
-    "1": "Warm, friendly American female",
-    "2": "Clear, calm American female",
-    "3": "Confident American male",
-    "4": "Professional American female",
-    "5": "Deep, steady American male",
-    "6": "Mature, reassuring American female",
-    "7": "Natural Indian English female",
-    "8": "Bright Indian English female",
-    "9": "Relaxed Australian male",
-    "10": "Professional Australian female",
-    "11": "Classic British male",
-    "12": "Soft British female",
-    "13": "Modern American female",
-    "14": "Neutral American male",
-    "15": "Smooth American female",
-    "16": "Crisp American male",
-    "17": "Conversational American female",
-    "18": "Balanced British male",
-    "19": "Friendly Australian female",
-    "20": "Grounded Indian English male",
+    "1": "Professional female voice",
+    "2": "Friendly young male voice",
+    "3": "Calm male voice",
+    "4": "Friendly female voice",
+    "5": "Warm friendly male voice",
+    "6": "Helpful male voice",
+    "7": "Young friendly female voice",
+    "8": "Indian English male voice",
+    "9": "Friendly male voice",
+    "10": "Young friendly female voice",
+    "11": "Calm male voice",
+    "12": "Indian English female voice",
 }
 
 def _safe_html(value: str) -> str:
@@ -883,8 +869,7 @@ def is_valid_e164(phone: str) -> bool:
 def build_voice_selection_keyboard(selected_voice_id: str = "") -> types.InlineKeyboardMarkup:
     keyboard = types.InlineKeyboardMarkup(row_width=2)
     buttons = []
-    for idx in range(1, 21):
-        key = str(idx)
+    for key in sorted(VOICE_MAPPING.keys(), key=lambda x: int(x)):
         voice = VOICE_MAPPING.get(key)
         if not voice:
             continue
@@ -907,8 +892,7 @@ def build_voice_selection_text(selected_voice_id: str = "") -> str:
         "Choose a voice by tapping a button or replying with number/name.",
         "",
     ]
-    for idx in range(1, 21):
-        key = str(idx)
+    for key in sorted(VOICE_MAPPING.keys(), key=lambda x: int(x)):
         voice = VOICE_MAPPING.get(key)
         if not voice:
             continue
@@ -5071,7 +5055,7 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
         voice_id = call.data.replace("voice_select_", "")
         entry = next((v for v in VOICE_MAPPING.values() if v["id"] == voice_id), None)
         name = entry["name"] if entry else None
-        provider = entry["provider"] if entry else "elevenlabs"
+        provider = entry["provider"] if entry else "vapi"
         if name:
             state = get_user_state(user_id_str)
             if state == "crack_blast_step_4_voice":
@@ -5166,8 +5150,8 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
         parts = call.data.split("_")
         call_sid = parts[2]
         digits = parts[3]
-        bot.answer_callback_query(call.id, "✅ Code accepted. Caller will hear success message.")
-        bot.send_message(chat_id, f"✅ Code Verification ACCEPTED\nCall Finished → Call completed successfully.")
+        bot.answer_callback_query(call.id, "✅ Code accepted.")
+        bot.send_message(chat_id, f"✅ Code ACCEPTED — Call completed.")
         log_otp(call_sid, digits, status="accepted")
         cancel_otp_timer(call_sid)
         session = get_call_session(call_sid)
@@ -5179,28 +5163,20 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
             post_vouch_to_channel(call_sid, target_user_id, digits)
         threading.Thread(target=_post_vouch, daemon=True).start()
 
-        voice_id_accept, _ = get_call_voice_info(call_sid, target_user_id)
-        try:
-            client = twilio_client or get_twilio_client()
-            if client:
-                resp = VoiceResponse()
-                say_done = "We have successfully verified your account. No further action is needed at this time. We apologize for any inconvenience and thank you for being a loyal customer. Goodbye."
-                audio_done = None
-                if audio_done:
-                    resp.play(audio_done)
-                else:
-                    resp.say(say_done)
-                resp.hangup()
-                client.calls(call_sid).update(twiml=str(resp))
-        except Exception as e:
-            logger.warning(f"Failed to update Twilio on OTP accept: {e}")
+        vapi_id = session.get("vapi_call_id") if session else None
+        if vapi_id:
+            from services.vapi_service import end_call as vapi_end_call
+            try:
+                vapi_end_call(vapi_id)
+            except Exception as e:
+                logger.debug(f"Vapi end_call on accept: {e}")
         return
 
     if call.data.startswith("otp_decline_"):
         parts = call.data.split("_")
         call_sid = parts[2]
         digits = parts[3]
-        bot.answer_callback_query(call.id, "❌ Code declined. Caller will hear failure message.")
+        bot.answer_callback_query(call.id, "❌ Code declined.")
         cancel_otp_timer(call_sid)
         session = get_call_session(call_sid)
         if session is not None:
@@ -5209,34 +5185,16 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
         attempts = session.get("otp_attempts", 0) if session else 0
         log_otp(call_sid, digits, status="declined")
         target_user_id = session.get("user_id") if session else user_id_str
-        voice_id_decline, _ = get_call_voice_info(call_sid, target_user_id)
-        try:
-            client = twilio_client or get_twilio_client()
-            if client:
-                resp = VoiceResponse()
-                if attempts >= 3:
-                    say_fail = "Too many failed attempts. Your account is locked. Please contact support."
-                    audio_fail = None
-                    if audio_fail:
-                        resp.play(audio_fail)
-                    else:
-                        resp.say(say_fail)
-                    resp.hangup()
-                else:
-                    say_try = "The code was incorrect. Please try again."
-                    audio_try = None
-                    if audio_try:
-                        resp.play(audio_try)
-                    else:
-                        resp.say(say_try)
-                    resp.redirect(
-                        f"/capture_otp?user_id={quote_plus(str(target_user_id))}"
-                        f"&chat_id={quote_plus(str(chat_id or 'unknown'))}&stage=otp"
-                    )
-                client.calls(call_sid).update(twiml=str(resp))
-        except Exception as e:
-            logger.warning(f"Failed to update Twilio on OTP decline: {e}")
-        bot.send_message(chat_id, f"❌ Code Verification DECLINED{' — final attempt reached' if attempts >= 3 else ''}")
+
+        vapi_id = session.get("vapi_call_id") if session else None
+        if vapi_id:
+            from services.vapi_service import end_call as vapi_end_call
+            try:
+                vapi_end_call(vapi_id)
+            except Exception as e:
+                logger.debug(f"Vapi end_call on decline: {e}")
+
+        bot.send_message(chat_id, f"❌ Code DECLINED{' — final attempt reached' if attempts >= 3 else ''}")
         return
 
     # --- Fallback ---
@@ -5834,7 +5792,7 @@ def handle_stateful_text(message):
             return
         _, voice_id, voice_name = resolve_voice_choice(text)
         if not voice_id:
-            bot.send_message(message.chat.id, "❌ Voice not recognized. Reply with number (1-20) or full name.")
+            bot.send_message(message.chat.id, "❌ Voice not recognized. Reply with a valid number or full name.")
             return
         write_user_file(user_id_str, "crack_voice_id.txt", voice_id)
         write_user_file(user_id_str, "crack_voice_name.txt", voice_name)

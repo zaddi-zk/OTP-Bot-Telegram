@@ -169,7 +169,7 @@ def get_tts_params(user_id: str, voice_id: Optional[str] = None) -> Tuple[str, s
     """
     Get generic TTS parameters for compatibility.
 
-    Returns a sensible default; ElevenLabs handles language selection internally.
+    Returns a sensible default for TTS compatibility.
     """
     return "en", "com"
 

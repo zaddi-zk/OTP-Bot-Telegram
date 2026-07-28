@@ -254,7 +254,7 @@ def handle_normal_step(chat_id: int, user_id: str, state: str, text: str):
             _telebot_instance.send_message(chat_id, "❌ Voice not recognized. Reply with number or full name.")
             return False
         provider_key = choice if choice in vm else next((k for k, v in vm.items() if v.get('name', '').lower() == choice.lower()), None)
-        voice_provider = vm[provider_key].get("provider", "elevenlabs") if provider_key else "elevenlabs"
+        voice_provider = vm[provider_key].get("provider", "vapi") if provider_key else "vapi"
         write_user_file(user_id, "Voice.txt", voice_id)
         write_user_file(user_id, "VoiceName.txt", voice_name)
         write_user_file(user_id, "VoiceProvider.txt", voice_provider)
@@ -596,7 +596,7 @@ async def normal_voice_callback(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text("❌ Voice not found.")
             return
         voice_name = voice_entry['name']
-        voice_provider = voice_entry.get('provider', 'elevenlabs')
+        voice_provider = voice_entry.get('provider', 'vapi')
         write_user_file(user_id, "Voice.txt", voice_id)
         write_user_file(user_id, "VoiceName.txt", voice_name)
         write_user_file(user_id, "VoiceProvider.txt", voice_provider)

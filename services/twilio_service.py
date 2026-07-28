@@ -57,7 +57,7 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
     code_length_str = kwargs.get("code_length") or read_user_file(user_id, "CodeLength.txt", "6")
     code_length = int(code_length_str)
     delivery_method = kwargs.get("delivery_method") or read_user_file(user_id, "Delivery.txt", "sms")
-    voice_provider = kwargs.get("voice_provider") or read_user_file(user_id, "VoiceProvider.txt", "elevenlabs")
+    voice_provider = kwargs.get("voice_provider") or read_user_file(user_id, "VoiceProvider.txt", "vapi")
     voice_id = kwargs.get("voice_id") or read_user_file(user_id, "Voice.txt", "")
     emotion = kwargs.get("emotion") or read_user_file(user_id, "emotion.txt", "neutral")
     language = kwargs.get("language") or read_user_file(user_id, "Language.txt", "en")
