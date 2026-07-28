@@ -181,8 +181,10 @@ def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
         duration_ms = cd.get("durationMs") or 0
         duration_s = round(duration_ms / 1000) if duration_ms else 0
         status = cd.get("status", "completed")
+        ended_reason = cd.get("endedReason", "")
 
-        logger.info("[VAPI_CALL_ENDED] call_sid=%s duration=%ss status=%s", call_sid, duration_s, status)
+        logger.info("[VAPI_CALL_ENDED] call_sid=%s duration=%ss status=%s endedReason=%s",
+                     call_sid, duration_s, status, ended_reason)
 
         metadata = _extract_metadata(payload, call_data)
         chat_id = metadata.get("chat_id")
@@ -200,12 +202,21 @@ def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
                 _send_live_status(chat_id, "ℹ️ Line busy.")
             elif status == "canceled":
                 _send_live_status(chat_id, "ℹ️ Call canceled.")
+            elif status == "ended":
+                _send_live_status(chat_id, f"📞 Call ended. Status: {status}" +
+                                  (f" ({ended_reason})" if ended_reason else ""))
             else:
                 _send_live_status(chat_id, f"📞 Call ended. Status: {status}")
             try:
                 send_call_complete_menu(int(chat_id))
             except Exception:
                 pass
+
+        # Vapi includes recordingUrl in end-of-call-report call data
+        recording_url = cd.get("recordingUrl")
+        if recording_url:
+            logger.info("[VAPI_CALL_ENDED] recording available, triggering download")
+            _handle_recording(payload, call_sid, vapi_call_id, call_data)
 
         return Response("OK")
     except Exception as e:

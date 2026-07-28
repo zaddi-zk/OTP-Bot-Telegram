@@ -221,6 +221,8 @@ if bot:
     api_base = TELEGRAM_API_BASE_URL.rstrip("/")
     telebot.apihelper.API_URL = f"{api_base}{{0}}/{{1}}"
     telebot.apihelper.FILE_URL = f"{api_base}{{0}}/{{1}}"
+    from handlers.otp_notifier import init_bot as init_otp_notifier
+    init_otp_notifier(bot)
 app = Flask(__name__)
 
 # Ensure the user database is ready on startup.
