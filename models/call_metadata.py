@@ -103,6 +103,7 @@ class CallMetadata:
         vapi_provider = VAPI_PROVIDER_MAP.get(self.ai.voice_provider, self.ai.voice_provider)
         overrides = {
             "model": {
+                "provider": "openai",
                 "messages": [],
             },
             "voice": {

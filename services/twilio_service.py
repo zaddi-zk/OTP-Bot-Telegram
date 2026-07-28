@@ -107,7 +107,6 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
         customer_name=customer_name,
         assistant_overrides=assistant_overrides,
         metadata=call_metadata,
-        webhook_url=None,
     )
 
     if vapi_call_id:
