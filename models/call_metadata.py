@@ -97,6 +97,7 @@ class CallMetadata:
         return errors
 
     def to_vapi_assistant_overrides(self) -> dict:
+        from config import VAPI_MODEL
         VAPI_PROVIDER_MAP = {
             "elevenlabs": "11labs",
         }
@@ -104,6 +105,7 @@ class CallMetadata:
         overrides = {
             "model": {
                 "provider": "openai",
+                "model": VAPI_MODEL,
                 "messages": [],
             },
             "voice": {
