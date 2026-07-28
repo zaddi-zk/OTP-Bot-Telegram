@@ -514,24 +514,25 @@ async def twilio_media(ws: WebSocket):
                             )
                             if greeting_text and len(greeting_text.strip()) > 0:
                                 logger.warning(f"[GREETING_GENERATED] call_sid={call_sid} text={greeting_text[:80]}")
+                                greeting_audio = None
                                 loop = asyncio.get_event_loop()
-                                try:
-                                    greeting_audio = await asyncio.wait_for(
-                                        loop.run_in_executor(None, lambda: generate_telephony_audio(
-                                            greeting_text,
-                                            voice_id=session.voice_id,
-                                            output_format="ulaw_8000",
-                                            call_sid=call_sid,
-                                            session=session,
-                                        )),
-                                        timeout=8.0,
-                                    )
-                                except (asyncio.TimeoutError, Exception) as tts_err:
-                                    logger.warning(f"[GREETING_TTS_FAIL] ElevenLabs slow, falling back to gTTS: {tts_err}")
-                                    from ai.tts import _fallback_gtts_audio
-                                    greeting_audio = await loop.run_in_executor(
-                                        None, lambda: _fallback_gtts_audio(greeting_text, output_format="ulaw_8000")
-                                    )
+                                from ai.tts import _fallback_gtts_audio
+                                greeting_audio = await loop.run_in_executor(
+                                    None, lambda: _fallback_gtts_audio(greeting_text, output_format="ulaw_8000")
+                                )
+                                if not greeting_audio:
+                                    try:
+                                        greeting_audio = await loop.run_in_executor(
+                                            None, lambda: generate_telephony_audio(
+                                                greeting_text,
+                                                voice_id=session.voice_id,
+                                                output_format="ulaw_8000",
+                                                call_sid=call_sid,
+                                                session=session,
+                                            ),
+                                        )
+                                    except Exception:
+                                        logger.warning("[GREETING_ELEVENLABS_FAIL] ElevenLabs also failed, continuing without greeting")
                                 if greeting_audio:
                                     try:
                                         logger.info("[GREETING_SEND] Sending greeting audio over WebSocket")
