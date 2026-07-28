@@ -228,7 +228,7 @@ def handle_normal_step(chat_id: int, user_id: str, state: str, text: str):
         set_user_state(user_id, "normal_call_step_9_voice")
         # send a simple voice list (lazy-load the authoritative mapping)
         vm = get_voice_mapping()
-        lines = [f"{k}. {v.get('name')}" for k, v in sorted(vm.items(), key=lambda x: int(x[0]))]
+        lines = [f"{k}. {v.get('name')} — {v.get('desc', '')}" for k, v in sorted(vm.items(), key=lambda x: int(x[0]))]
 
         _telebot_instance.send_message(chat_id, "🎤 Step 9/9: Voice Selection\n\nReply with the number or name to select a voice.\n\n" + "\n".join(lines))
         return True
@@ -569,9 +569,11 @@ async def normal_digits(update: Update, context: ContextTypes.DEFAULT_TYPE):
             row = []
     if row:
         keyboard.append(row)
+    voice_lines = [f"{k}. {v.get('name')} — {v.get('desc', '')}" for k, v in sorted(vm.items(), key=lambda x: int(x[0]))]
     await update.message.reply_text(
         "🎤 Step 9/9: Voice Selection\n\n"
-        "Choose a voice for the call:",
+        "Choose a voice by tapping a button or replying with number/name.\n\n"
+        + "\n".join(voice_lines),
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )

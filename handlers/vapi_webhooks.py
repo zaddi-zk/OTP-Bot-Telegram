@@ -238,7 +238,8 @@ def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
 def _handle_recording(payload: dict, call_sid: Optional[str], vapi_call_id: Optional[str], call_data: Optional[dict] = None) -> Response:
     try:
         recording_url = (
-            payload.get("recordingUrl")
+            (call_data or {}).get("recordingUrl")
+            or payload.get("recordingUrl")
             or payload.get("message", {}).get("recordingUrl")
             or payload.get("call", {}).get("recordingUrl")
         )
