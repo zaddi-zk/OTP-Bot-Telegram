@@ -501,44 +501,6 @@ async def twilio_media(ws: WebSocket):
                         logger.error("[WS_START_ERROR] Failed to initialize AI session for %s: %s", call_sid, e, exc_info=True)
                         session = None
 
-                    if session:
-                        try:
-                            logger.warning("[GREETING_START] Generating initial AI greeting for call_sid=%s", call_sid)
-                            from ai.llm import get_initial_greeting
-                            greeting_text = get_initial_greeting(
-                                session,
-                                call_type=session.call_type,
-                                emotion=session.emotion,
-                            )
-                            if greeting_text and len(greeting_text.strip()) > 0:
-                                logger.warning(f"[GREETING_GENERATED] call_sid={call_sid} text={greeting_text[:80]}")
-                                try:
-                                    greeting_audio = generate_telephony_audio(
-                                        greeting_text,
-                                        voice_id=session.voice_id,
-                                        output_format="ulaw_8000",
-                                        call_sid=call_sid,
-                                        session=session,
-                                    )
-                                except Exception as tts_err:
-                                    logger.error(f"[GREETING_TTS_ERROR] TTS failed: {tts_err}", exc_info=True)
-                                    greeting_audio = None
-                                if greeting_audio:
-                                    try:
-                                        logger.info("[GREETING_SEND] Sending greeting audio over WebSocket")
-                                        outbound_sequence = await send_media_audio(ws, greeting_audio, call_sid, start_sequence=outbound_sequence)
-                                        logger.warning(f"[GREETING_SENT] ✅ Sent greeting audio to caller: {call_sid}")
-                                        if session and session.mark_milestone("GREETING_SENT"):
-                                            logger.info("[CALL_MILESTONE] GREETING_SENT call_sid=%s", call_sid)
-                                    except Exception as send_err:
-                                        logger.error(f"[GREETING_SEND_ERROR] Failed to send: {send_err}", exc_info=True)
-                                else:
-                                    logger.warning(f"[GREETING_AUDIO_FAILED] Could not generate audio for greeting: {call_sid}")
-                            else:
-                                logger.warning(f"[GREETING_EMPTY] AI returned empty greeting for call_sid=%s", call_sid)
-                        except Exception as e:
-                            logger.error(f"[GREETING_ERROR] Failed to send greeting: {e}", exc_info=True)
-
                     await manager.ensure_session(call_id, call_sid=call_sid)
                     await manager.set_state(call_id, 'in-progress')
                 else:
