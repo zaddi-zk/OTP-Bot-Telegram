@@ -110,10 +110,19 @@ def handle_vapi_webhook(request) -> Response:
         if event_type in ("recording.ready", "recording"):
             return _handle_recording(payload, call_sid, vapi_call_id, call_data)
 
+        if event_type in ("assistant.started",):
+            _send_live_status(chat_id, "📞 AI assistant started. Placing call...")
+            return Response("OK")
+
+        if event_type in ("speech-update", "conversation-update"):
+            return _handle_transcript(payload, call_sid, vapi_call_id, call_data)
+
         if event_type == "status-update":
             call_status = call_data.get("status", "")
             logger.info("[VAPI_STATUS_UPDATE] status=%s call_sid=%s", call_status, call_sid)
-            if call_status == "ringing":
+            if call_status == "queued":
+                _send_live_status(chat_id, "⏳ Call queued. Waiting to connect...")
+            elif call_status == "ringing":
                 _send_live_status(chat_id, "📞 Call started. Waiting for the line to connect...")
             elif call_status in ("in-progress", "answered"):
                 _send_live_status(chat_id, "☎️ Target answered. AI assistant is now speaking...")
@@ -205,6 +214,8 @@ def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
             elif status == "ended":
                 _send_live_status(chat_id, f"📞 Call ended. Status: {status}" +
                                   (f" ({ended_reason})" if ended_reason else ""))
+            elif status == "queued":
+                _send_live_status(chat_id, "❌ Call failed to connect (queued but never placed).")
             else:
                 _send_live_status(chat_id, f"📞 Call ended. Status: {status}")
             try:
