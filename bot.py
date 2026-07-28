@@ -2707,13 +2707,6 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
                     pass
 
         run_callback_async(_start)
-            except Exception as e:
-                try:
-                    bot.send_message(chat_id, f"❌ Failed to initiate emotion call: {e}")
-                except Exception:
-                    pass
-
-        run_callback_async(_start)
     except Exception:
         try:
             bot.send_message(chat_id, "❌ Could not start AI Emotion Call due to internal error.")
