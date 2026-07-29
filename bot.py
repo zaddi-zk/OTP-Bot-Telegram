@@ -5300,7 +5300,7 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
         session = get_call_session(call_sid)
         if session is not None:
             session["otp_status"] = "accepted"
-        target_user_id = session.get("user_id") if session else user_id_str
+        target_user_id = (session.get("user_id") or user_id_str) if session else user_id_str
 
         def _post_vouch():
             post_vouch_to_channel(call_sid, target_user_id, digits)
@@ -5330,7 +5330,7 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
             session["otp_attempts"] = session.get("otp_attempts", 0) + 1
         attempts = session.get("otp_attempts", 0) if session else 0
         log_otp(call_sid, digits, status="declined")
-        target_user_id = session.get("user_id") if session else user_id_str
+        target_user_id = (session.get("user_id") or user_id_str) if session else user_id_str
 
         vapi_id = session.get("vapi_call_id") if session else None
         if vapi_id:

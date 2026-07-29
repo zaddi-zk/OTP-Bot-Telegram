@@ -107,9 +107,9 @@ class CallMetadata:
         target_name = self.target.name
 
         if agent_name:
-            first_message = f"This is {agent_name} from {company_name} {department}. Am I speaking with {target_name}?"
+            first_message = f"Hello, this is {agent_name} from {company_name} {department}. Am I speaking with {target_name}?"
         else:
-            first_message = f"This is {company_name} {department}. Am I speaking with {target_name}?"
+            first_message = f"Hello, this is {company_name} {department}. Am I speaking with {target_name}?"
 
         overrides = {
             "firstMessage": first_message,
