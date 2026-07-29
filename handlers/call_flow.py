@@ -225,12 +225,19 @@ def handle_normal_step(chat_id: int, user_id: str, state: str, text: str):
             _telebot_instance.send_message(chat_id, "❌ Enter a number between 4 and 10.")
             return False
         write_user_file(user_id, "Digits.txt", text.strip())
+        write_user_file(user_id, "CodeLength.txt", text.strip())
         set_user_state(user_id, "normal_call_step_9_voice")
-        # send a simple voice list (lazy-load the authoritative mapping)
         vm = get_voice_mapping()
-        lines = [f"{k}. {v.get('name')} — {v.get('desc', '')}" for k, v in sorted(vm.items(), key=lambda x: int(x[0]))]
-
-        _telebot_instance.send_message(chat_id, "🎤 Step 9/9: Voice Selection\n\nReply with the number or name to select a voice.\n\n" + "\n".join(lines))
+        lines = [
+            "🎤 Step 9/9: Voice Selection",
+            "",
+            "Reply with the number or name to select a voice.",
+            "",
+        ]
+        for key, voice in sorted(vm.items(), key=lambda item: int(item[0])):
+            desc = voice.get("desc") or "No description available"
+            lines.append(f"{key}. {voice.get('name')} — {desc}")
+        _telebot_instance.send_message(chat_id, "\n".join(lines))
         return True
 
     if state == "normal_call_step_9_voice":
@@ -556,6 +563,7 @@ async def normal_digits(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Enter a number between 4 and 10.")
         return NORMAL_DIGITS
     write_user_file(user_id, "Digits.txt", text)
+    write_user_file(user_id, "CodeLength.txt", text)
     set_user_state(user_id, "normal_call_step_9_voice")
     selected_voice_id = read_user_file(user_id, "Voice.txt", "")
     # Build a simple keyboard from VOICE_MAPPING
