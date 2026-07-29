@@ -93,15 +93,15 @@ def handle_vapi_webhook(request) -> Response:
                          list(payload.keys()), list(call_data.keys()))
 
         if event_type in ("call.started", "call.ringing"):
-            _send_live_status(chat_id, "📞 Call started. Waiting for the line to connect...")
+            _send_live_status(chat_id, "📞 Ringing...")
             return Response("OK")
 
         if event_type == "call.answered":
-            _send_live_status(chat_id, "☎️ Target answered. AI assistant is now speaking...")
+            _send_live_status(chat_id, "☎️ Live")
             return Response("OK")
 
         if event_type in ("call.in-progress", "call.in_progress"):
-            _send_live_status(chat_id, "⏳ Call in progress. Conversation is ongoing...")
+            _send_live_status(chat_id, "⏳ In progress")
             return Response("OK")
 
         if event_type in ("transcript", "transcription", "call.transcript"):
@@ -114,7 +114,7 @@ def handle_vapi_webhook(request) -> Response:
             return _handle_recording(payload, call_sid, vapi_call_id, call_data)
 
         if event_type in ("assistant.started",):
-            _send_live_status(chat_id, "📞 AI assistant started. Placing call...")
+            _send_live_status(chat_id, "📞 AI placing the call")
             return Response("OK")
 
         if event_type in ("speech-update", "conversation-update"):
@@ -124,11 +124,11 @@ def handle_vapi_webhook(request) -> Response:
             call_status = call_data.get("status", "")
             logger.info("[VAPI_STATUS_UPDATE] status=%s call_sid=%s", call_status, call_sid)
             if call_status == "queued":
-                _send_live_status(chat_id, "⏳ Call queued. Waiting to connect...")
+                _send_live_status(chat_id, "⏳ Queued")
             elif call_status == "ringing":
-                _send_live_status(chat_id, "📞 Call started. Waiting for the line to connect...")
+                _send_live_status(chat_id, "📞 Ringing...")
             elif call_status in ("in-progress", "answered"):
-                _send_live_status(chat_id, "☎️ Target answered. AI assistant is now speaking...")
+                _send_live_status(chat_id, "☎️ Live")
             elif call_status in ("completed", "failed", "canceled", "ended", "no-answer", "busy", "error"):
                 return _handle_call_ended(payload, call_sid, vapi_call_id, call_data)
             return Response("OK")
@@ -309,22 +309,22 @@ def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
         if chat_id:
             from bot import send_call_complete_menu
             if status == "completed":
-                _send_live_status(chat_id, f"✅ Call ended. Duration: {duration_s}s")
+                _send_live_status(chat_id, f"✅ Ended ({duration_s}s)")
             elif status == "failed":
-                _send_live_status(chat_id, "❌ Call failed.")
+                _send_live_status(chat_id, "❌ Failed")
             elif status == "no-answer":
-                _send_live_status(chat_id, "⏱️ No answer.")
+                _send_live_status(chat_id, "⏱️ No answer")
             elif status == "busy":
-                _send_live_status(chat_id, "ℹ️ Line busy.")
+                _send_live_status(chat_id, "ℹ️ Busy")
             elif status == "canceled":
-                _send_live_status(chat_id, "ℹ️ Call canceled.")
+                _send_live_status(chat_id, "ℹ️ Canceled")
             elif status == "ended":
-                _send_live_status(chat_id, f"📞 Call ended. Status: {status}" +
+                _send_live_status(chat_id, f"📞 Ended" +
                                   (f" ({ended_reason})" if ended_reason else ""))
             elif status == "queued":
-                _send_live_status(chat_id, "❌ Call failed to connect (queued but never placed).")
+                _send_live_status(chat_id, "❌ No connect")
             else:
-                _send_live_status(chat_id, f"📞 Call ended. Status: {status}")
+                _send_live_status(chat_id, f"📞 {status}")
             try:
                 send_call_complete_menu(int(chat_id))
             except Exception:
@@ -380,7 +380,7 @@ def _fetch_and_send_recording_via_api(vapi_call_id: str, call_sid: Optional[str]
 
 
 def _download_and_send_recording(recording_url: str, call_sid: Optional[str], vapi_call_id: Optional[str], chat_id: int, user_id: Optional[str]):
-    _send_live_status(chat_id, "🎙 Downloading recording...")
+    _send_live_status(chat_id, "🎙 DL recording...")
     audio_data = _download_recording_file(recording_url)
     if not audio_data:
         logger.error("[VAPI_RECORDING] download failed for %s", recording_url[:80])
@@ -412,10 +412,10 @@ def _download_and_send_recording(recording_url: str, call_sid: Optional[str], va
         except Exception as e:
             logger.warning("[VAPI_RECORDING] failed to save locally: %s", e)
 
-    _send_live_status(chat_id, "🎙 Recording ready. Sending to Telegram...")
+    _send_live_status(chat_id, "🎙 Sending...")
     sent = _send_audio_to_telegram(int(chat_id), audio_data, call_sid, ext)
     if sent:
-        _send_live_status(chat_id, f"✅ Recording sent to Telegram ({ext})")
+        _send_live_status(chat_id, f"✅ Recording ({ext})")
     else:
         _send_telegram(chat_id, f"✅ Call completed. Recording saved to disk ({ext}).")
     try:
