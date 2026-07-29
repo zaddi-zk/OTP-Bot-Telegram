@@ -77,7 +77,18 @@ def notify_otp_captured(
                 def _post_vouch():
                     post_vouch_to_channel(call_sid, session_local.get("user_id") or user_id, digits, override_mode="Auto Accept")
                 threading.Thread(target=_post_vouch, daemon=True).start()
-            _end_vapi_call()
+            vapi_id = session_local.get("vapi_call_id") if session_local else None
+            if vapi_id:
+                from services.vapi_service import say_to_assistant, end_call as vapi_end_call
+                import time
+                try:
+                    say_to_assistant(vapi_id, "Your identity is verified. The account is secure. Goodbye.")
+                    time.sleep(2)
+                    vapi_end_call(vapi_id)
+                except Exception as e:
+                    logger.debug(f"Vapi say/end on auto-accept: {e}")
+            else:
+                _end_vapi_call()
             if chat_id:
                 _bot_instance.send_message(chat_id, "⏳ Auto-accepted after timeout. Call ended successfully.")
         except Exception as e:

