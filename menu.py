@@ -539,7 +539,7 @@ def send_support_menu(chat_id: int, message_id: Optional[int] = None) -> None:
     
     buttons = types.InlineKeyboardMarkup(row_width=1)
     buttons.add(
-        types.InlineKeyboardButton("💬 Contact Admin", url=SUPPORT_ADMIN_URL)
+        types.InlineKeyboardButton("💬 Contact Admin", url="https://t.me/N_onie")
     )
     buttons.add(
         types.InlineKeyboardButton(f"{ICONS['back']} Back", callback_data="back_to_menu")
