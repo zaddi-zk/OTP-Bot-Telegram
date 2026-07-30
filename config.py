@@ -67,6 +67,9 @@ MAIN_CHANNEL_ID = _get("MAIN_CHANNEL_ID", "")
 BACKUP_CHANNEL_ID = _get("BACKUP_CHANNEL_ID", "")
 VOUCH_CHANNEL_ID = _get("VOUCH_CHANNEL_ID", "-1004364877298")
 
+# Support
+SUPPORT_ADMIN_URL = _get("SUPPORT_ADMIN_URL", "https://t.me/N_onie")
+
 # Admins
 OWNER_ID = _get("OWNER_ID")
 if OWNER_ID is not None:
