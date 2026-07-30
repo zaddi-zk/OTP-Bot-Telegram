@@ -3835,7 +3835,7 @@ def send_support_menu(chat_id: int, message_id: Optional[int] = None) -> None:
         "Need help or admin assistance? Contact the admin directly now.\n"
     )
     buttons = types.InlineKeyboardMarkup(row_width=1)
-    buttons.add(types.InlineKeyboardButton("💬 Contact Admin", url="SUPPORT_ADMIN_URL"))
+    buttons.add(types.InlineKeyboardButton("💬 Contact Admin", url="https://t.me/hottboiihitzz"))
     buttons.add(types.InlineKeyboardButton("↩ Back", callback_data="back_to_menu"))
     if message_id:
         try:
