@@ -183,9 +183,7 @@ def send_shop_menu(chat_id: int, message_id: Optional[int] = None) -> None:
         "💯 <b>Unlimited Fast Calls</b>\n"
         "— No daily limits, instant routing\n"
         "— Global reach with high delivery priority\n\n"
-        "🛡️ <b>Full Spoofing Suite</b>\n"
-        "— Custom caller IDs and identity masking\n"
-        "— Pro-grade header control for safer delivery\n\n"
+        # Full Spoofing Suite removed per admin request
         "🤖 <b>AI MODE V2</b>\n"
         "— Advanced AI voice interaction\n"
         "— Natural conversation flow\n"
@@ -194,6 +192,7 @@ def send_shop_menu(chat_id: int, message_id: Optional[int] = None) -> None:
         "— One-click execution for instant launch\n"
         "— Optimized for speed and reliability\n\n"
         "💎 Each plan purchase also counts toward a free loyalty premium key. Reach 5 purchases to claim your token.\n\n"
+        "Payments are processed securely through the bot — please use the in-bot payment flow and submit proof; there is no need to contact admins directly.\n\n"
         "Choose your plan:\n👇"
     )
     
@@ -291,11 +290,7 @@ def send_wallet_menu(
         "   • Transaction hash\n"
         "   • Screenshot\n"
         "   • Payment link\n\n"
-        "Then click VERIFY PAYMENT below 👇\n"
-    )
-    
-    buttons.add(
-        types.InlineKeyboardButton("✅ VERIFY PAYMENT", callback_data=f"verify_payment_{plan_key}")
+        "Send your proof below and it will be forwarded to the admin for approval (max 10 minutes).\n"
     )
     buttons.add(
         types.InlineKeyboardButton(f"{ICONS['back']} Back", callback_data="open_shop")
@@ -544,7 +539,7 @@ def send_support_menu(chat_id: int, message_id: Optional[int] = None) -> None:
     
     buttons = types.InlineKeyboardMarkup(row_width=1)
     buttons.add(
-        types.InlineKeyboardButton("💬 Contact Admin", url="https://t.me/hottboiihitzz")
+        types.InlineKeyboardButton("💬 Contact Admin", url="https://t.me/N_onie")
     )
     buttons.add(
         types.InlineKeyboardButton(f"{ICONS['back']} Back", callback_data="back_to_menu")
