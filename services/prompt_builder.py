@@ -232,6 +232,14 @@ FINAL INSTRUCTIONS:
         if master:
             prompt += master
 
+        custom = (metadata.custom_instructions or "").strip()
+        if custom:
+            prompt += (
+                "\n\nCUSTOM OPERATOR INSTRUCTIONS (highest priority, "
+                "set by the account owner):\n"
+                + custom
+            )
+
         return prompt
 
     def build_messages(self, metadata: CallMetadata) -> list[dict]:
