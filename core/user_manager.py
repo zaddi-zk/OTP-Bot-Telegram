@@ -6,8 +6,10 @@ No SQLite or JSON-based user store is used.
 
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import text
@@ -60,31 +62,32 @@ class UserRecord(Base):
 
 _engine = None
 _SessionLocal = None
+_use_postgres: Optional[bool] = None
+_last_pg_attempt: float = 0.0
+PG_RETRY_INTERVAL: float = 60.0
+_ENGINE_LOCK = Lock()
 
 
-def _build_engine():
-    """Create the SQLAlchemy engine once and reuse it.
-
-    Prefer PostgreSQL when a usable DATABASE_URL is available, but fall back to
-    a local SQLite database when the remote connection is unavailable or the
-    environment is running tests/offline.
-    """
-    global _engine, _SessionLocal
-    if _engine is not None:
-        return _engine
-
+def _make_sqlite_fallback() -> Any:
+    """Create (or recreate) the local SQLite engine used as an offline fallback."""
+    global _engine, _SessionLocal, _use_postgres
     sqlite_path = (CONF_DIR / "users.sqlite3").resolve()
     sqlite_url = f"sqlite:///{sqlite_path}"
+    engine = create_engine(sqlite_url, future=True)
+    Base.metadata.create_all(engine)
+    _engine = engine
+    _SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    _use_postgres = False
+    return engine
 
+
+def _try_postgres() -> bool:
+    """Attempt to connect to PostgreSQL. On success, swap the app to Postgres."""
+    global _engine, _SessionLocal, _use_postgres, _last_pg_attempt
     if not DATABASE_URL:
-        logger.warning("DATABASE_URL not configured; using local SQLite user store")
-        _engine = create_engine(sqlite_url, future=True)
-        _SessionLocal = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
-        Base.metadata.create_all(_engine)
-        return _engine
-
+        return False
     try:
-        _engine = create_engine(
+        engine = create_engine(
             DATABASE_URL,
             pool_pre_ping=True,
             pool_recycle=1800,
@@ -92,17 +95,48 @@ def _build_engine():
             max_overflow=10,
             future=True,
         )
-        with _engine.connect() as conn:
+        with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        _SessionLocal = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
-        Base.metadata.create_all(_engine)
+        Base.metadata.create_all(engine)
+        _engine = engine
+        _SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+        _use_postgres = True
         logger.info("✅ PostgreSQL user database initialized")
-        return _engine
+        return True
     except Exception as exc:
-        logger.warning("PostgreSQL connection unavailable (%s); falling back to local SQLite user store", exc)
-        _engine = create_engine(sqlite_url, future=True)
-        _SessionLocal = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
-        Base.metadata.create_all(_engine)
+        _last_pg_attempt = time.monotonic()
+        logger.warning("PostgreSQL connection unavailable (%s); using SQLite fallback", exc)
+        try:
+            engine.dispose()
+        except Exception:
+            pass
+        return False
+
+
+def _build_engine():
+    """Create the SQLAlchemy engine once and reuse it.
+
+    Prefer PostgreSQL when a usable DATABASE_URL is available. If it is
+    temporarily unreachable, fall back to a local SQLite store but keep
+    retrying Postgres on a timer so the DB is adopted the moment it comes
+    back (avoids permanently caching a dead fallback).
+    """
+    global _use_postgres, _last_pg_attempt
+    with _ENGINE_LOCK:
+        if _use_postgres is True:
+            return _engine
+
+        if _use_postgres is None:
+            if DATABASE_URL and _try_postgres():
+                return _engine
+            _make_sqlite_fallback()
+            logger.warning("DATABASE_URL not configured or unreachable; using local SQLite user store")
+            return _engine
+
+        # _use_postgres is False: periodically retry PostgreSQL.
+        if DATABASE_URL and (time.monotonic() - _last_pg_attempt) >= PG_RETRY_INTERVAL:
+            if _try_postgres():
+                return _engine
         return _engine
 
 
@@ -157,7 +191,10 @@ def init_user_db() -> None:
     try:
         Base.metadata.create_all(engine)
         migrate_legacy_json_users()
-        logger.info("✅ PostgreSQL user database initialized")
+        if _use_postgres:
+            logger.info("✅ PostgreSQL user database initialized")
+        else:
+            logger.warning("⚠️ Using local SQLite fallback (PostgreSQL unavailable) — data will NOT survive redeploys")
     except Exception as exc:
         logger.error(f"❌ Failed to initialize user database: {exc}")
 
@@ -400,6 +437,34 @@ def get_all_users_with_status() -> List[Dict[str, Any]]:
         return users
     except Exception as exc:
         logger.error(f"❌ Failed to get all users: {exc}")
+        return []
+    finally:
+        session.close()
+
+
+def get_active_premium_users() -> List[Dict[str, Any]]:
+    """Return all premium-flagged users with parsed subscription end datetimes.
+
+    Used by the subscription maintenance worker to detect subscriptions that are
+    about to expire or have just expired.
+    """
+    session = get_session()
+    if session is None:
+        return []
+    try:
+        results = []
+        for user in session.query(UserRecord).filter(UserRecord.is_premium == 1).all():
+            end_dt = _parse_datetime(user.subscription_end_date)
+            results.append(
+                {
+                    "user_id": user.user_id,
+                    "subscription_end": end_dt,
+                    "is_active": end_dt is None or end_dt >= datetime.now(),
+                }
+            )
+        return results
+    except Exception as exc:
+        logger.error(f"❌ Failed to get premium users for notifications: {exc}")
         return []
     finally:
         session.close()

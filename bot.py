@@ -195,6 +195,7 @@ from core.user_manager import (
     is_premium,
     get_subscription_end_date,
     get_all_users_with_status,
+    get_active_premium_users,
     get_user_info,
     get_free_vs_premium_count,
     reset_expired_subscriptions,
@@ -245,7 +246,7 @@ def _startup_diagnostics():
         logger.error("   → Premium status updates will NOT work")
         logger.error("   → VIEW USERS button will show: 'No users found'")
         logger.error("")
-        logger.error("   FIX: Set DATABASE_URL in Railway environment variables")
+        logger.error("   FIX: Set DATABASE_URL in your host's environment variables (Railway, Render, etc.)")
         logger.error("   Then restart the bot")
     
     logger.info("="*70 + "\n")
@@ -7096,9 +7097,137 @@ def get_runtime_mode(bot_client=None) -> str:
     return "full"
 
 
+# ======================================================================
+# SUBSCRIPTION MAINTENANCE (expiry cleanup + notifications)
+# ======================================================================
+NOTIFY_LEDGER_PATH = Path("conf") / "subscription_notifications.json"
+
+
+def _load_notify_ledger() -> Dict[str, Any]:
+    """Load the per-user notification ledger (prevents repeated expiry spam)."""
+    try:
+        if NOTIFY_LEDGER_PATH.exists():
+            with open(NOTIFY_LEDGER_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        logger.warning(f"Failed to load subscription notification ledger: {exc}")
+    return {}
+
+
+def _save_notify_ledger(ledger: Dict[str, Any]) -> None:
+    """Persist the notification ledger atomically."""
+    try:
+        NOTIFY_LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = NOTIFY_LEDGER_PATH.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(ledger, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, NOTIFY_LEDGER_PATH)
+    except Exception as exc:
+        logger.warning(f"Failed to save subscription notification ledger: {exc}")
+
+
+def _send_premium_expiring_notice(user_id: str, end_dt: datetime) -> None:
+    """Warn a user that their premium expires within 24 hours."""
+    try:
+        chat_id = int(user_id)
+        msg = (
+            "⏰ <b>PREMIUM EXPIRING SOON</b>\n\n"
+            f"Your premium access ends on <b>{end_dt.strftime('%d/%m/%Y %H:%M')}</b>.\n\n"
+            "Renew in the <b>SHOP</b> to keep unlimited calls, AI MODE, and more!"
+        )
+        if bot:
+            bot.send_message(chat_id, msg, parse_mode="HTML")
+    except Exception as exc:
+        logger.warning(f"Failed to send expiry warning to {user_id}: {exc}")
+
+
+def _send_premium_expired_notice(user_id: str) -> None:
+    """Tell a user their premium has just expired."""
+    try:
+        chat_id = int(user_id)
+        msg = (
+            "⛔ <b>PREMIUM EXPIRED</b>\n\n"
+            "Your premium subscription has ended. You are now on the free plan.\n\n"
+            "Renew in the <b>SHOP</b> to reactivate instantly."
+        )
+        if bot:
+            bot.send_message(chat_id, msg, parse_mode="HTML")
+    except Exception as exc:
+        logger.warning(f"Failed to send expiry notice to {user_id}: {exc}")
+
+
+def _subscription_expiry_scan() -> None:
+    """Warn users expiring within 24h and notify users who just expired.
+
+    Ledger-backed (once per user per day for warnings, once ever for expiry),
+    so users are never spammed on every hourly pass.
+    """
+    today = datetime.now().date().isoformat()
+    ledger = _load_notify_ledger()
+    changed = False
+
+    for info in get_active_premium_users():
+        user_id = info["user_id"]
+        if is_privileged_user(user_id):
+            continue
+        entry = dict(ledger.get(user_id, {}))
+
+        if not info["is_active"]:
+            # Just expired (still flagged premium until the reset demotes them).
+            if not entry.get("expired_notified"):
+                _send_premium_expired_notice(user_id)
+                entry["expired_notified"] = today
+                changed = True
+        else:
+            end_dt = info["subscription_end"]
+            if end_dt is None:
+                continue  # Unlimited premium — nothing to warn about.
+            days_left = (end_dt - datetime.now()).days
+            if 0 <= days_left <= 1 and entry.get("last_warned") != today:
+                _send_premium_expiring_notice(user_id, end_dt)
+                entry["last_warned"] = today
+                changed = True
+
+        if entry:
+            ledger[user_id] = entry
+
+    if changed:
+        _save_notify_ledger(ledger)
+
+
+def start_subscription_maintenance(interval: int = 3600) -> None:
+    """Background thread: hourly expiry cleanup + premium expiry notifications.
+
+    Runs the scan before the reset so expired users still receive their notice,
+    then demotes expired rows back to free status in the database.
+    """
+    def _loop():
+        logger.info("⏰ Subscription maintenance thread started.")
+        while True:
+            try:
+                _subscription_expiry_scan()
+                n = reset_expired_subscriptions()
+                if n:
+                    logger.info(f"♻️ Reset {n} expired subscription(s) to free.")
+            except Exception as exc:
+                logger.error(f"Subscription maintenance error: {exc}")
+            time.sleep(interval)
+
+    thread = threading.Thread(target=_loop, daemon=True, name="SubscriptionMaintenance")
+    thread.start()
+
+
 def start_background_threads():
     start_rate_limiter_cleanup()
     start_scheduler()
+    # Start subscription expiry maintenance (demote expired users + notify)
+    try:
+        start_subscription_maintenance()
+    except Exception:
+        logger.exception("Failed to start subscription maintenance thread")
     # Start async file write worker for non-blocking file writes
     try:
         start_write_worker()
