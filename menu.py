@@ -166,84 +166,6 @@ def send_main_menu(
             disable_web_page_preview=True,
         )
 
-def send_shop_menu(chat_id: int, message_id: Optional[int] = None) -> None:
-    """
-    Send the premium shop menu with plan options.
-    
-    Args:
-        chat_id: Telegram chat ID
-        message_id: If provided, edit existing message
-    """
-    bot = _get_bot()
-    text = (
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{ICONS['shop']} <b>PREMIUM SHOP</b> {ICONS['shop']}\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "<b>Elite access for pro operators:</b>\n\n"
-        "💯 <b>Unlimited Fast Calls</b>\n"
-        "— No daily limits, instant routing\n"
-        "— Global reach with high delivery priority\n\n"
-        # Full Spoofing Suite removed per admin request
-        "🤖 <b>AI MODE V2</b>\n"
-        "— Advanced AI voice interaction\n"
-        "— Natural conversation flow\n"
-        "— Real-time response handling\n\n"
-        "⚡ <b>Fast Response Engine</b>\n"
-        "— One-click execution for instant launch\n"
-        "— Optimized for speed and reliability\n\n"
-        "💎 Each plan purchase also counts toward a free loyalty premium key. Reach 5 purchases to claim your token.\n\n"
-        "Payments are processed securely through the bot — please use the in-bot payment flow and submit proof; there is no need to contact admins directly.\n\n"
-        "Choose your plan:\n👇"
-    )
-    
-    buttons = types.InlineKeyboardMarkup(row_width=1)
-    buttons.add(
-        types.InlineKeyboardButton("🎟️ 3 Hour Trial — $10", callback_data="plan_3hourtrial")
-    )
-    buttons.add(
-        types.InlineKeyboardButton("💎 1 Day — $22", callback_data="plan_1day")
-    )
-    buttons.add(
-        types.InlineKeyboardButton("💎 3 Days — $45", callback_data="plan_3days")
-    )
-    buttons.add(
-        types.InlineKeyboardButton("💎 1 Week — $80", callback_data="plan_1week")
-    )
-    buttons.add(
-        types.InlineKeyboardButton("♾️ Lifetime — $195", callback_data="plan_lifetime")
-    )
-    buttons.add(
-        types.InlineKeyboardButton(f"{ICONS['back']} Back", callback_data="back_to_menu")
-    )
-    
-    if message_id:
-        try:
-            bot.edit_message_text(
-                text,
-                chat_id=chat_id,
-                message_id=message_id,
-                reply_markup=buttons,
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-            )
-        except Exception as e:
-            logger.debug(f"Edit failed, sending new message: {e}")
-            bot.send_message(
-                chat_id,
-                text,
-                reply_markup=buttons,
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-            )
-    else:
-        bot.send_message(
-            chat_id,
-            text,
-            reply_markup=buttons,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
-
 def send_wallet_menu(
     chat_id: int,
     plan_key: str,
@@ -766,7 +688,6 @@ def send_analytics_menu(chat_id: int, message_id: Optional[int] = None, user_id_
 # ======================================================================
 __all__ = [
     'send_main_menu',
-    'send_shop_menu',
     'send_wallet_menu',
     'send_account_menu',
     'send_loyalty_menu',
