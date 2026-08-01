@@ -522,57 +522,6 @@ def send_scripts_menu(chat_id: int, message_id: Optional[int] = None) -> None:
             disable_web_page_preview=True,
         )
 
-def send_support_menu(chat_id: int, message_id: Optional[int] = None) -> None:
-    """
-    Send the support menu with contact information.
-    
-    Args:
-        chat_id: Telegram chat ID
-        message_id: If provided, edit existing message
-    """
-    text = (
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{ICONS['support']} <b>SUPPORT CENTER</b> {ICONS['support']}\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Need help or admin assistance? Contact the admin directly now.\n"
-    )
-    
-    buttons = types.InlineKeyboardMarkup(row_width=1)
-    buttons.add(
-        types.InlineKeyboardButton("💬 Contact Admin", url="https://t.me/N_onie")
-    )
-    buttons.add(
-        types.InlineKeyboardButton(f"{ICONS['back']} Back", callback_data="back_to_menu")
-    )
-    
-    if message_id:
-        try:
-            bot.edit_message_text(
-                text,
-                chat_id=chat_id,
-                message_id=message_id,
-                reply_markup=buttons,
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-            )
-        except Exception as e:
-            logger.debug(f"Edit failed, sending new message: {e}")
-            bot.send_message(
-                chat_id,
-                text,
-                reply_markup=buttons,
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-            )
-    else:
-        bot.send_message(
-            chat_id,
-            text,
-            reply_markup=buttons,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
-
 def send_channel_menu(chat_id: int, message_id: Optional[int] = None) -> None:
     """
     Send the channel menu with main and backup channel links.
@@ -822,7 +771,6 @@ __all__ = [
     'send_account_menu',
     'send_loyalty_menu',
     'send_scripts_menu',
-    'send_support_menu',
     'send_channel_menu',
     'send_vouches_menu',
     'send_live_listen_panel',
