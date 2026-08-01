@@ -411,8 +411,25 @@ def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
         chat_id = metadata.get("chat_id") or _resolve_chat_id(payload, call_sid, vapi_call_id, call_data)
         user_id = metadata.get("user_id")
 
+        recording_url = _extract_recording_url(payload, call_data)
+
+        try:
+            from services.analytics import finalize_call_history
+            finalize_call_history(
+                user_id,
+                call_sid,
+                vapi_call_id=vapi_call_id,
+                status=status,
+                duration_s=duration_s,
+                ended_reason=ended_reason,
+                otp=(session or {}).get("otp") or "",
+                recording=bool(recording_url),
+                session=session,
+            )
+        except Exception:
+            logger.exception("[VAPI_ANALYTICS] failed to finalize call history")
+
         if chat_id:
-            from bot import send_call_complete_menu
             if status == "completed":
                 _send_live_status(chat_id, f"✅ Ended ({duration_s}s)")
             elif status == "failed":
@@ -436,7 +453,6 @@ def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
                 pass
 
         if chat_id:
-            recording_url = _extract_recording_url(payload, call_data)
             if recording_url:
                 logger.info("[VAPI_CALL_ENDED] recording url found in webhook, triggering download")
                 threading.Thread(
@@ -531,6 +547,11 @@ def _download_and_send_recording(recording_url: str, call_sid: Optional[str], va
         _send_live_status(chat_id, f"✅ Recording ({ext})")
     else:
         _send_telegram(chat_id, f"✅ Call completed. Recording saved to disk ({ext}).")
+    try:
+        from services.analytics import mark_call_recording
+        mark_call_recording(user_id, call_sid, vapi_call_id)
+    except Exception:
+        pass
     try:
         from bot import send_call_complete_menu
         send_call_complete_menu(int(chat_id))

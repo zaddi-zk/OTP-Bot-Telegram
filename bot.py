@@ -3327,34 +3327,21 @@ def serve_audio():
 # CALL HISTORY
 # ======================================================================
 def store_call_metadata(user_id: str, sid: str, target: str = "", campaign: str = "", status: str = "initiated") -> None:
+    from services.analytics import record_call
+    session = get_call_session(sid)
     ensure_user_path(user_id)
-    history_path = user_conf_path(user_id) / "call_history.json"
-    history = []
-    if history_path.exists():
-        try:
-            with open(history_path, "r") as f:
-                history = json.load(f)
-        except:
-            pass
-    history.append({
-        "sid": sid,
-        "target": target,
-        "campaign": campaign,
-        "started": datetime.now().isoformat(),
-        "status": status,
-    })
-    with open(history_path, "w") as f:
-        json.dump(history, f, indent=2)
+    record_call(
+        user_id,
+        sid,
+        target=target,
+        campaign=campaign,
+        status=status,
+        session=session or {},
+    )
 
 def get_call_history(user_id: str) -> list:
-    path = user_conf_path(user_id) / "call_history.json"
-    if not path.exists():
-        return []
-    try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except:
-        return []
+    from services.analytics import load_history
+    return load_history(user_id)
 
 
 def normalize_bulk_number_list(raw: str) -> list:
@@ -3784,6 +3771,69 @@ def send_ai_master_menu(chat_id: int, message_id: Optional[int] = None, user_id_
         except Exception:
             safe_bot_send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
     else:
+        safe_bot_send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
+
+
+def send_analytics_menu(chat_id: int, message_id: Optional[int] = None, user_id_str: Optional[str] = None) -> None:
+    user_id_str = user_id_str or str(chat_id)
+    from services.analytics import format_overview, sorted_modes
+    text = format_overview(user_id_str)
+    modes = sorted_modes(user_id_str)
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    keyboard.row(
+        types.InlineKeyboardButton("🗂 BY MODE", callback_data="analytics_modes"),
+        types.InlineKeyboardButton("🕐 RECENT", callback_data="analytics_recent"),
+    )
+    keyboard.row(
+        types.InlineKeyboardButton("🔄 REFRESH", callback_data="analytics"),
+        types.InlineKeyboardButton("🧹 CLEAR", callback_data="analytics_clear"),
+    )
+    for idx, mode in enumerate(modes):
+        keyboard.add(types.InlineKeyboardButton(f"▫️ {mode}", callback_data=f"analytics_mode_{idx}"))
+    keyboard.add(types.InlineKeyboardButton("↩ Back to Account", callback_data="account"))
+    if message_id:
+        try:
+            bot.edit_message_text(text, chat_id, message_id, reply_markup=keyboard, parse_mode="HTML")
+        except Exception:
+            safe_bot_send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
+    else:
+        safe_bot_send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
+
+
+def send_analytics_modes(chat_id: int, message_id: Optional[int], user_id_str: str) -> None:
+    from services.analytics import format_modes, sorted_modes
+    text = format_modes(user_id_str)
+    modes = sorted_modes(user_id_str)
+    keyboard = types.InlineKeyboardMarkup(row_width=1)
+    for idx, mode in enumerate(modes):
+        keyboard.add(types.InlineKeyboardButton(f"▫️ {mode}", callback_data=f"analytics_mode_{idx}"))
+    keyboard.add(types.InlineKeyboardButton("↩ Back", callback_data="analytics"))
+    try:
+        bot.edit_message_text(text, chat_id, message_id, reply_markup=keyboard, parse_mode="HTML")
+    except Exception:
+        safe_bot_send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
+
+
+def send_analytics_recent(chat_id: int, message_id: Optional[int], user_id_str: str) -> None:
+    from services.analytics import format_recent
+    text = format_recent(user_id_str, limit=10)
+    keyboard = types.InlineKeyboardMarkup(row_width=1)
+    keyboard.add(types.InlineKeyboardButton("↩ Back", callback_data="analytics"))
+    try:
+        bot.edit_message_text(text, chat_id, message_id, reply_markup=keyboard, parse_mode="HTML")
+    except Exception:
+        safe_bot_send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
+
+
+def send_analytics_mode_detail(chat_id: int, message_id: Optional[int], user_id_str: str, mode: str) -> None:
+    from services.analytics import format_mode_detail
+    text = format_mode_detail(user_id_str, mode)
+    keyboard = types.InlineKeyboardMarkup(row_width=1)
+    keyboard.add(types.InlineKeyboardButton("↩ Back to Modes", callback_data="analytics_modes"))
+    keyboard.add(types.InlineKeyboardButton("↩ Back to Analytics", callback_data="analytics"))
+    try:
+        bot.edit_message_text(text, chat_id, message_id, reply_markup=keyboard, parse_mode="HTML")
+    except Exception:
         safe_bot_send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
 
 
@@ -4905,19 +4955,50 @@ def _handle_query_processing(call, _):
         send_ai_master_menu(chat_id, message_id, user_id_str)
         return
 
-    # --- Crack Blast ---
     # --- Analytics ---
-    if call.data == "analytics":
-        history = get_call_history(user_id_str)
-        total = len(history)
-        completed = sum(1 for h in history if h.get("status") == "completed")
-        failed = total - completed
-        rate = round(completed/total*100, 2) if total else 0
-        text = f"📊 ANALYTICS\nTotal: {total}\nSuccessful: {completed}\nFailed: {failed}\nSuccess Rate: {rate}%"
-        buttons = types.InlineKeyboardMarkup()
-        buttons.add(types.InlineKeyboardButton("🔄 Refresh", callback_data="analytics"))
-        buttons.add(types.InlineKeyboardButton("↩ Back", callback_data="back_to_menu"))
-        bot.send_message(chat_id, text, reply_markup=buttons)
+    if call.data in ("analytics", "analytics_overview"):
+        send_analytics_menu(chat_id, message_id, user_id_str)
+        return
+
+    if call.data == "analytics_modes":
+        send_analytics_modes(chat_id, message_id, user_id_str)
+        return
+
+    if call.data == "analytics_recent":
+        send_analytics_recent(chat_id, message_id, user_id_str)
+        return
+
+    if call.data == "analytics_clear":
+        keyboard = types.InlineKeyboardMarkup(row_width=2)
+        keyboard.row(
+            types.InlineKeyboardButton("✅ YES, CLEAR", callback_data="analytics_clear_yes"),
+            types.InlineKeyboardButton("↩ Cancel", callback_data="analytics"),
+        )
+        text = ("🧹 <b>Clear Analytics?</b>\n\n"
+                "This will permanently delete all of your call history and analytics data.")
+        try:
+            bot.edit_message_text(text, chat_id, message_id, reply_markup=keyboard, parse_mode="HTML")
+        except Exception:
+            safe_bot_send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
+        return
+
+    if call.data == "analytics_clear_yes":
+        from services.analytics import clear_history
+        clear_history(user_id_str)
+        bot.answer_callback_query(call.id, "🧹 Analytics history cleared.")
+        send_analytics_menu(chat_id, message_id, user_id_str)
+        return
+
+    if call.data.startswith("analytics_mode_"):
+        raw_idx = call.data.replace("analytics_mode_", "")
+        if raw_idx.isdigit():
+            from services.analytics import sorted_modes
+            modes = sorted_modes(user_id_str)
+            idx = int(raw_idx)
+            if 0 <= idx < len(modes):
+                send_analytics_mode_detail(chat_id, message_id, user_id_str, modes[idx])
+                return
+        bot.answer_callback_query(call.id, "Mode not found. Refresh analytics.", show_alert=True)
         return
 
     # --- Plan selection ---
