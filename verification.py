@@ -220,6 +220,14 @@ PLAN_MAPPING = {
 # ======================================================================
 # Verification Storage
 # ======================================================================
+def _coerce_days(value: Any) -> float:
+    """Coerce the days field to a float regardless of storage type (String/JSON)."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def load_verifications() -> List[Dict[str, Any]]:
     """Load all verification requests from PostgreSQL, falling back to the legacy JSON file if needed."""
     session = get_session()
@@ -243,7 +251,7 @@ def load_verifications() -> List[Dict[str, Any]]:
                 "plan": row.plan,
                 "plan_name": row.plan_name,
                 "price": row.price,
-                "days": row.days,
+                "days": _coerce_days(row.days),
                 "status": row.status,
                 "created_at": row.created_at,
                 "proof_file_id": row.proof_file_id,
@@ -258,7 +266,14 @@ def load_verifications() -> List[Dict[str, Any]]:
             for row in rows
         ]
     except Exception as e:
-        logger.error(f"Failed to load verifications: {e}")
+        logger.error(f"Failed to load verifications from DB: {e}")
+        session.rollback()
+        if VERIFICATIONS_PATH.exists():
+            try:
+                with open(VERIFICATIONS_PATH, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e2:
+                logger.error(f"Failed to load verifications JSON fallback: {e2}")
         return []
     finally:
         session.close()
@@ -331,7 +346,7 @@ def load_approved_purchases() -> List[Dict[str, Any]]:
                 "plan": row.plan,
                 "plan_name": row.plan_name,
                 "price": row.price,
-                "days": row.days,
+                "days": _coerce_days(row.days),
                 "approved_at": row.approved_at,
                 "approved_by": row.approved_by,
                 "expiry": row.expiry,
@@ -340,7 +355,14 @@ def load_approved_purchases() -> List[Dict[str, Any]]:
             for row in rows
         ]
     except Exception as e:
-        logger.error(f"Failed to load approved purchases: {e}")
+        logger.error(f"Failed to load approved purchases from DB: {e}")
+        session.rollback()
+        if APPROVED_PATH.exists():
+            try:
+                with open(APPROVED_PATH, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e2:
+                logger.error(f"Failed to load approved purchases JSON fallback: {e2}")
         return []
     finally:
         session.close()

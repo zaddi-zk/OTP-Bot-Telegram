@@ -6200,13 +6200,10 @@ def handle_stateful_text(message):
         return
 
     # Payment proof - text submission
-    if state.startswith("awaiting_proof_"):
-        verification_id = state.replace("awaiting_proof_", "")
-        verification = get_verification_by_id(verification_id)
-        
-        if not verification:
-            bot.send_message(message.chat.id, "❌ Verification session expired. Please try again.")
-            clear_user_state(user_id_str)
+    verification, verification_id = _resolve_proof_verification(user_id_str)
+    if verification and verification_id:
+        if not verification.get("status") == "pending":
+            bot.send_message(message.chat.id, "❌ This verification is no longer pending. Please start again from the SHOP.")
             return
         
         # Add proof to verification (text type)
@@ -6535,26 +6532,52 @@ Confirm sending?"""
 # ======================================================================
 # PAYMENT PROOF - PHOTO HANDLER
 # ======================================================================
+def _resolve_proof_verification(user_id_str: str):
+    """
+    Resolve the active verification for proof submission.
+
+    Supports both flows:
+      1. User tapped "I HAVE PAID"  -> awaiting_proof_<id>
+      2. User pays and sends proof directly -> payment_pending_<id> or any pending verification
+
+    Returns:
+        (verification_dict, verification_id) or (None, None)
+    """
+    state = get_user_state(user_id_str)
+    for prefix in ("awaiting_proof_", "payment_pending_"):
+        if state.startswith(prefix):
+            vid = state[len(prefix):]
+            if vid:
+                verification = get_verification_by_id(vid)
+                if verification:
+                    return verification, vid
+    verification = find_user_pending_verification(user_id_str)
+    if verification:
+        return verification, verification.get("verification_id")
+    return None, None
+
+
 @bot.message_handler(content_types=['photo'])
 def handle_payment_proof_photo(message):
     user_id_str = str(message.from_user.id)
     state = get_user_state(user_id_str)
-    
-    if not state.startswith("awaiting_proof_"):
-        return
-    
-    verification_id = state.replace("awaiting_proof_", "")
-    verification = get_verification_by_id(verification_id)
-    
+
+    verification, verification_id = _resolve_proof_verification(user_id_str)
+
     if not verification:
-        bot.send_message(message.chat.id, "❌ Verification session expired. Please try again.")
-        clear_user_state(user_id_str)
+        if state.startswith(("awaiting_proof_", "payment_pending_")):
+            bot.send_message(
+                message.chat.id,
+                "❌ <b>No pending payment found.</b>\n\n"
+                "Please open the <b>SHOP</b> and select your plan again, then tap <b>I HAVE PAID — SUBMIT PROOF</b> before sending your screenshot.",
+                parse_mode="HTML"
+            )
         return
-    
+
     # Get the largest photo size
     photo = message.photo[-1]
     file_id = photo.file_id
-    
+
     # Add proof to verification
     add_proof_to_verification(verification_id, file_id, "photo")
     
@@ -6587,23 +6610,24 @@ def handle_payment_proof_photo(message):
 def handle_payment_proof_document(message):
     user_id_str = str(message.from_user.id)
     state = get_user_state(user_id_str)
-    
-    if not state.startswith("awaiting_proof_"):
-        return
-    
-    verification_id = state.replace("awaiting_proof_", "")
-    verification = get_verification_by_id(verification_id)
-    
+
+    verification, verification_id = _resolve_proof_verification(user_id_str)
+
     if not verification:
-        bot.send_message(message.chat.id, "❌ Verification session expired. Please try again.")
-        clear_user_state(user_id_str)
+        if state.startswith(("awaiting_proof_", "payment_pending_")):
+            bot.send_message(
+                message.chat.id,
+                "❌ <b>No pending payment found.</b>\n\n"
+                "Please open the <b>SHOP</b> and select your plan again, then tap <b>I HAVE PAID — SUBMIT PROOF</b> before sending your document.",
+                parse_mode="HTML"
+            )
         return
-    
+
     # Get document
     document = message.document
     file_id = document.file_id
     file_name = document.file_name or "proof_document"
-    
+
     # Add proof to verification
     add_proof_to_verification(verification_id, file_id, "document")
     
