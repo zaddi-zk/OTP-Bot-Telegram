@@ -3690,11 +3690,11 @@ def send_shop_menu(chat_id: int, message_id: Optional[int] = None) -> None:
         "Choose your plan:\n👇"
     )
     buttons = types.InlineKeyboardMarkup(row_width=1)
-    buttons.add(types.InlineKeyboardButton("🎟️ 3 Hour Trial — $10", callback_data="plan_3hourtrial"))
-    buttons.add(types.InlineKeyboardButton("💎 1 Day — $22", callback_data="plan_1day"))
-    buttons.add(types.InlineKeyboardButton("💎 3 Days — $45", callback_data="plan_3days"))
-    buttons.add(types.InlineKeyboardButton("💎 1 Week — $80", callback_data="plan_1week"))
-    buttons.add(types.InlineKeyboardButton("♾️ Lifetime — $195", callback_data="plan_lifetime"))
+    buttons.add(types.InlineKeyboardButton("🎟️ 3 Hour Trial — $5", callback_data="plan_3hourtrial"))
+    buttons.add(types.InlineKeyboardButton("💎 1 Day — $16", callback_data="plan_1day"))
+    buttons.add(types.InlineKeyboardButton("💎 3 Days — $35", callback_data="plan_3days"))
+    buttons.add(types.InlineKeyboardButton("💎 1 Week — $70", callback_data="plan_1week"))
+    buttons.add(types.InlineKeyboardButton("📅 Monthly — $120", callback_data="plan_lifetime"))
     buttons.add(types.InlineKeyboardButton("↩ Back", callback_data="back_to_menu"))
     if message_id:
         try:
@@ -4771,7 +4771,7 @@ def _handle_query_processing(call, _):
             "plan_1day": ("1 Day", "$16"),
             "plan_3days": ("3 Days", "$35"),
             "plan_1week": ("1 Week", "$70"),
-            "plan_lifetime": ("Lifetime", "$195"),
+            "plan_lifetime": ("Monthly", "$120"),
         }
         plan_name, amount = plans.get(call.data, ("Unknown", "$0"))
         
@@ -6228,6 +6228,8 @@ def handle_stateful_text(message):
         
         if OWNER_ID:
             bot.send_message(OWNER_ID, admin_message, parse_mode="HTML")
+        if ADMIN_ID and ADMIN_ID != OWNER_ID:
+            bot.send_message(ADMIN_ID, admin_message, parse_mode="HTML")
         for dev_id in DEVELOPER_IDS:
             bot.send_message(dev_id, admin_message, parse_mode="HTML")
         
@@ -6571,6 +6573,8 @@ def handle_payment_proof_photo(message):
     
     if OWNER_ID:
         bot.send_photo(OWNER_ID, file_id, caption=admin_message, parse_mode="HTML")
+    if ADMIN_ID and ADMIN_ID != OWNER_ID:
+        bot.send_photo(ADMIN_ID, file_id, caption=admin_message, parse_mode="HTML")
     for dev_id in DEVELOPER_IDS:
         bot.send_photo(dev_id, file_id, caption=admin_message, parse_mode="HTML")
     
@@ -6619,6 +6623,8 @@ def handle_payment_proof_document(message):
     
     if OWNER_ID:
         bot.send_document(OWNER_ID, file_id, caption=admin_message, parse_mode="HTML")
+    if ADMIN_ID and ADMIN_ID != OWNER_ID:
+        bot.send_document(ADMIN_ID, file_id, caption=admin_message, parse_mode="HTML")
     for dev_id in DEVELOPER_IDS:
         bot.send_document(dev_id, file_id, caption=admin_message, parse_mode="HTML")
     
@@ -6870,6 +6876,7 @@ def approve_command(message):
             "• 1d → 1 day\n"
             "• 3d → 3 days\n"
             "• 7d → 7 days\n"
+            "• 30d → 30 days\n"
             "• lifetime → Lifetime access\n\n"
             "<b>Example:</b> /approve 123456789 7d",
             parse_mode="HTML"
@@ -6885,6 +6892,7 @@ def approve_command(message):
         "1d": 1,
         "3d": 3,
         "7d": 7,
+        "30d": 30,
         "lifetime": 9999,
     }
     
@@ -6892,7 +6900,7 @@ def approve_command(message):
         bot.send_message(
             message.chat.id,
             f"❌ Invalid duration: {duration_str}\n\n"
-            "Valid options: 3h, 1d, 3d, 7d, lifetime",
+            "Valid options: 3h, 1d, 3d, 7d, 30d, lifetime",
             parse_mode="HTML"
         )
         return

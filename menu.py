@@ -208,11 +208,14 @@ def send_wallet_menu(
     
     text += (
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "✅ After payment, send your transaction proof:\n"
+        "✅ After payment, tap <b>I HAVE PAID — SUBMIT PROOF</b> and send your transaction proof:\n"
         "   • Transaction hash\n"
         "   • Screenshot\n"
         "   • Payment link\n\n"
-        "Send your proof below and it will be forwarded to the admin for approval (max 10 minutes).\n"
+        "Your proof will be forwarded to the admin for approval, and you'll receive a confirmation with your premium access details.\n"
+    )
+    buttons.add(
+        types.InlineKeyboardButton("✅ I HAVE PAID — SUBMIT PROOF", callback_data=f"verify_payment_{plan_key}")
     )
     buttons.add(
         types.InlineKeyboardButton(f"{ICONS['back']} Back", callback_data="open_shop")
