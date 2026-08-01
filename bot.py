@@ -3635,7 +3635,7 @@ def send_main_menu(chat_id: int, user, message_id: Optional[int] = None) -> None
     buttons = types.InlineKeyboardMarkup(row_width=2)
     buttons.row(
         types.InlineKeyboardButton("📞 START CALL", callback_data="start_call"),
-        types.InlineKeyboardButton("🧠 AI MODE", callback_data="ai_mode"),
+        types.InlineKeyboardButton("🧠 AI MASTER", callback_data="ai_master"),
     )
     buttons.row(
         types.InlineKeyboardButton("💥 CRACK BLAST", callback_data="crack_blast"),
@@ -3733,6 +3733,58 @@ def send_account_menu(chat_id: int, message_id: Optional[int] = None, user_id_st
             bot.send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
     else:
         bot.send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
+
+
+def send_ai_master_menu(chat_id: int, message_id: Optional[int] = None, user_id_str: Optional[str] = None) -> None:
+    user_id_str = user_id_str or str(chat_id)
+    voice_id = read_user_file(user_id_str, "Voice.txt", DEFAULT_VOICE_ID).strip() or DEFAULT_VOICE_ID
+    voice_name = read_user_file(user_id_str, "VoiceName.txt", "").strip()
+    if not voice_name:
+        voice_key = get_voice_key_by_id(voice_id)
+        if voice_key:
+            voice_name = VOICE_MAPPING.get(voice_key, {}).get("name", "")
+    voice_label = voice_name or voice_id
+
+    script_style = read_user_file(user_id_str, "script_style.txt", "professional").strip() or "professional"
+    script_labels = {"professional": "Professional", "urgent": "Urgent", "calm": "Calm"}
+    script_label = script_labels.get(script_style, script_style)
+
+    urgency = read_user_file(user_id_str, "urgency.txt", "medium").strip() or "medium"
+    urgency_labels = {"high": "High", "medium": "Medium", "low": "Low"}
+    urgency_label = urgency_labels.get(urgency, urgency)
+
+    language_code = read_user_file(user_id_str, "language.txt", "en").strip() or "en"
+    lang_labels = {"en": "English", "es": "Spanish", "fr": "French", "de": "German"}
+    language_label = lang_labels.get(language_code, language_code)
+
+    text = (
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🧠 <b>AI MASTER — VOICE COMMAND CENTER</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Configure your AI's global behavior. "
+        "These settings apply to <b>ALL</b> calls.\n\n"
+        f"🎙 <b>Voice Engine:</b> {_safe_html(voice_label)}\n"
+        f"📝 <b>Script Style:</b> {_safe_html(script_label)}\n"
+        f"⚡ <b>Default Urgency:</b> {_safe_html(urgency_label)}\n"
+        f"🌐 <b>Language Preference:</b> {_safe_html(language_label)}\n\n"
+        "──────────────────────────\n"
+        "Tap a setting below to change it:"
+    )
+    keyboard = types.InlineKeyboardMarkup(row_width=1)
+    keyboard.add(
+        types.InlineKeyboardButton("🎙 Change Voice", callback_data="ai_master_voice"),
+        types.InlineKeyboardButton("📝 Script Style", callback_data="ai_master_script"),
+        types.InlineKeyboardButton("⚡ Default Urgency", callback_data="ai_master_urgency"),
+        types.InlineKeyboardButton("🌐 Language Preference", callback_data="ai_master_language"),
+        types.InlineKeyboardButton("↩ Back to Main Menu", callback_data="show_main_menu"),
+    )
+    if message_id:
+        try:
+            bot.edit_message_text(text, chat_id, message_id, reply_markup=keyboard, parse_mode="HTML")
+        except Exception:
+            safe_bot_send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
+    else:
+        safe_bot_send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
 
 
 def get_all_user_ids() -> list[str]:
@@ -4726,26 +4778,131 @@ def _handle_query_processing(call, _):
         send_vouches_menu(chat_id, message_id)
         return
 
-    # --- AI Mode ---
-    if call.data == "ai_mode":
+    # --- AI Master (Voice Command Center) ---
+    if call.data in ("ai_master", "ai_mode"):
         if not is_full_premium_user(user_id_str):
-            alert_msg = "🧠 AI MODE requires Premium Access\n\nAdvanced AI voice processing and intelligent conversation handling are exclusive to premium members.\n\nUpgrade in SHOP to unlock unlimited AI-powered calls."
+            alert_msg = "🧠 AI MASTER requires Premium Access\n\nAdvanced AI voice processing and intelligent conversation handling are exclusive to premium members.\n\nUpgrade in SHOP to unlock unlimited AI-powered calls."
             bot.answer_callback_query(call.id, alert_msg, show_alert=True)
             bot.send_message(chat_id, f"❌ {alert_msg}", parse_mode="HTML")
             return
-        
-        # AI MODE is a variant of Normal Call with enhanced AI responsiveness
-        ensure_user_path(user_id_str)
-        
-        # Check if phone number is set
-        phone = normalize_phone_number(read_user_file(user_id_str, "phonenum.txt", ""))
-        if not phone or not is_valid_e164(phone):
-            set_user_state(user_id_str, "ai_mode_awaiting_phone")
-            bot.send_message(chat_id, "🧠 <b>AI MODE</b>\n\nEnter target phone number:\n(Format: +1234567890)", parse_mode="HTML")
+        send_ai_master_menu(chat_id, message_id, user_id_str)
+        return
+
+    if call.data == "ai_master_voice":
+        if not is_full_premium_user(user_id_str):
+            bot.answer_callback_query(call.id, "🧠 AI MASTER requires Premium Access", show_alert=True)
             return
-        
-        # Phone is set, start AI call
-        initiate_normal_call(chat_id, user_id_str, call.from_user, mode_label="AI Mode")
+        clear_user_state(user_id_str)
+        voice_id = read_user_file(user_id_str, "Voice.txt", DEFAULT_VOICE_ID).strip() or DEFAULT_VOICE_ID
+        from menu_utils import build_voice_selection_keyboard
+        keyboard = build_voice_selection_keyboard(VOICE_MAPPING, voice_id, "ai_master_voice_")
+        text = ("🎙 <b>Select Voice Engine</b>\n\n"
+                "This becomes the default voice for all AI MASTER calls.")
+        try:
+            bot.edit_message_text(text, chat_id, message_id, reply_markup=keyboard, parse_mode="HTML")
+        except Exception:
+            safe_bot_send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
+        return
+
+    if call.data.startswith("ai_master_voice_"):
+        if not is_full_premium_user(user_id_str):
+            bot.answer_callback_query(call.id, "🧠 AI MASTER requires Premium Access", show_alert=True)
+            return
+        voice_id = call.data.replace("ai_master_voice_", "")
+        entry = next((v for v in VOICE_MAPPING.values() if v["id"] == voice_id), None)
+        name = entry["name"] if entry else None
+        provider = entry["provider"] if entry else "vapi"
+        write_user_file(user_id_str, "Voice.txt", voice_id)
+        write_user_file(user_id_str, "VoiceName.txt", name or voice_id)
+        write_user_file(user_id_str, "VoiceProvider.txt", provider)
+        clear_user_state(user_id_str)
+        bot.answer_callback_query(call.id, f"Voice engine set: {name or voice_id}")
+        send_ai_master_menu(chat_id, message_id, user_id_str)
+        return
+
+    if call.data == "ai_master_script":
+        if not is_full_premium_user(user_id_str):
+            bot.answer_callback_query(call.id, "🧠 AI MASTER requires Premium Access", show_alert=True)
+            return
+        keyboard = types.InlineKeyboardMarkup(row_width=1)
+        keyboard.add(
+            types.InlineKeyboardButton("📝 Professional — Clear & businesslike", callback_data="ai_master_script_professional"),
+            types.InlineKeyboardButton("🔥 Urgent — Firm & high-pressure", callback_data="ai_master_script_urgent"),
+            types.InlineKeyboardButton("🌊 Calm — Reassuring & gentle", callback_data="ai_master_script_calm"),
+            types.InlineKeyboardButton("↩ Back", callback_data="ai_master"),
+        )
+        text = "📝 <b>Script Style</b>\n\nChoose how your AI delivers every call:"
+        try:
+            bot.edit_message_text(text, chat_id, message_id, reply_markup=keyboard, parse_mode="HTML")
+        except Exception:
+            safe_bot_send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
+        return
+
+    if call.data.startswith("ai_master_script_"):
+        style = call.data.replace("ai_master_script_", "")
+        if style not in ("professional", "urgent", "calm"):
+            bot.answer_callback_query(call.id, "Unknown script style.")
+            return
+        write_user_file(user_id_str, "script_style.txt", style)
+        bot.answer_callback_query(call.id, f"Script style set to {style.title()}")
+        send_ai_master_menu(chat_id, message_id, user_id_str)
+        return
+
+    if call.data == "ai_master_urgency":
+        if not is_full_premium_user(user_id_str):
+            bot.answer_callback_query(call.id, "🧠 AI MASTER requires Premium Access", show_alert=True)
+            return
+        keyboard = types.InlineKeyboardMarkup(row_width=1)
+        keyboard.add(
+            types.InlineKeyboardButton("🔴 High — Immediate action needed", callback_data="ai_master_urgency_high"),
+            types.InlineKeyboardButton("🟡 Medium — Precautionary check", callback_data="ai_master_urgency_medium"),
+            types.InlineKeyboardButton("🟢 Low — Routine verification", callback_data="ai_master_urgency_low"),
+            types.InlineKeyboardButton("↩ Back", callback_data="ai_master"),
+        )
+        text = "⚡ <b>Default Urgency</b>\n\nSet how urgent your AI sounds on every call:"
+        try:
+            bot.edit_message_text(text, chat_id, message_id, reply_markup=keyboard, parse_mode="HTML")
+        except Exception:
+            safe_bot_send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
+        return
+
+    if call.data.startswith("ai_master_urgency_"):
+        urgency = call.data.replace("ai_master_urgency_", "")
+        if urgency not in ("high", "medium", "low"):
+            bot.answer_callback_query(call.id, "Unknown urgency level.")
+            return
+        write_user_file(user_id_str, "urgency.txt", urgency)
+        bot.answer_callback_query(call.id, f"Default urgency set to {urgency.title()}")
+        send_ai_master_menu(chat_id, message_id, user_id_str)
+        return
+
+    if call.data == "ai_master_language":
+        if not is_full_premium_user(user_id_str):
+            bot.answer_callback_query(call.id, "🧠 AI MASTER requires Premium Access", show_alert=True)
+            return
+        keyboard = types.InlineKeyboardMarkup(row_width=1)
+        keyboard.add(
+            types.InlineKeyboardButton("🇬🇧 English", callback_data="ai_master_language_en"),
+            types.InlineKeyboardButton("🇪🇸 Spanish", callback_data="ai_master_language_es"),
+            types.InlineKeyboardButton("🇫🇷 French", callback_data="ai_master_language_fr"),
+            types.InlineKeyboardButton("🇩🇪 German", callback_data="ai_master_language_de"),
+            types.InlineKeyboardButton("↩ Back", callback_data="ai_master"),
+        )
+        text = "🌐 <b>Language Preference</b>\n\nYour AI will conduct all calls in this language:"
+        try:
+            bot.edit_message_text(text, chat_id, message_id, reply_markup=keyboard, parse_mode="HTML")
+        except Exception:
+            safe_bot_send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
+        return
+
+    if call.data.startswith("ai_master_language_"):
+        lang = call.data.replace("ai_master_language_", "")
+        if lang not in ("en", "es", "fr", "de"):
+            bot.answer_callback_query(call.id, "Unknown language.")
+            return
+        write_user_file(user_id_str, "language.txt", lang)
+        bot.answer_callback_query(call.id, f"Language preference set to {lang.upper()}")
+        send_ai_master_menu(chat_id, message_id, user_id_str)
         return
 
     # --- Crack Blast ---
@@ -6068,11 +6225,11 @@ def handle_stateful_text(message):
         )
         return
 
-    # AI Mode phone input
+    # AI Master phone input
     if state == "ai_mode_awaiting_phone":
         if not is_full_premium_user(user_id_str):
             clear_user_state(user_id_str)
-            bot.send_message(message.chat.id, "❌ Premium access required. AI MODE is available only to premium subscribers.")
+            bot.send_message(message.chat.id, "❌ Premium access required. AI MASTER is available only to premium subscribers.")
             return
         
         phonenum = normalize_phone_number(text.strip())
@@ -6083,8 +6240,8 @@ def handle_stateful_text(message):
         write_user_file(user_id_str, "phonenum.txt", phonenum)
         clear_user_state(user_id_str)
         
-        # Start AI Mode call
-        initiate_normal_call(message.chat.id, user_id_str, message.from_user, mode_label="AI Mode")
+        # Start AI Master call
+        initiate_normal_call(message.chat.id, user_id_str, message.from_user, mode_label="AI MASTER")
         return
 
     # Custom script creation
