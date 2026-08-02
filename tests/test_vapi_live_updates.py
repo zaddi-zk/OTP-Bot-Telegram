@@ -31,7 +31,7 @@ def test_vapi_webhook_sends_live_updates(monkeypatch):
     }
     response = vapi_webhooks.handle_vapi_webhook(FakeRequest(payload))
     assert response.status_code == 200
-    assert any("Call started" in text for _, text, _ in sent)
+    assert any("Ringing" in text for _, text, _ in sent)
 
     payload = {
         "type": "transcript",

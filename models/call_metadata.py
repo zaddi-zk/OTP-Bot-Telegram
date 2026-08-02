@@ -114,14 +114,21 @@ class CallMetadata:
         overrides = {
             "firstMessage": first_message,
             "model": {
-                "provider": "deepseek",
+                "provider": "deep-seek",
                 "model": "deepseek-chat",
                 "messages": [],
             },
-            "voice": {
-                "provider": vapi_provider,
-            },
         }
+        # Vapi requires voiceId to be a valid Vapi voice. Only include a voice
+        # override when we have a known-good voice; otherwise omit it so the
+        # assistant falls back to its configured default voice.
+        valid_vapi_voices = {
+            "Clara", "Godfrey", "Elliot", "Savannah", "Nico", "Kai", "Emma",
+            "Sagar", "Neil", "Layla", "Sid", "Gustavo", "Kylie", "Rohan",
+            "Lily", "Hana", "Neha", "Cole", "Harry", "Paige", "Spencer",
+            "Naina", "Leah", "Tara", "Jess", "Leo", "Dan", "Mia", "Zac", "Zoe",
+        }
+        resolved_voice_id = None
         if self.ai.voice_id:
             # Allow mapping from legacy voice IDs to Vapi voice IDs.
             mapped = None
@@ -129,15 +136,14 @@ class CallMetadata:
                 mapped = LEGACY_VOICE_ID_MAP.get(self.ai.voice_id)
             except Exception:
                 mapped = None
-            if mapped:
-                overrides["voice"]["voiceId"] = mapped
-            else:
-                # If the voice_id looks like an old legacy ID, skip sending it directly
-                # so Vapi can fall back to the assistant/default voice instead.
-                if isinstance(self.ai.voice_id, str) and len(self.ai.voice_id) > 10 and " " not in self.ai.voice_id:
-                    pass
-                else:
-                    overrides["voice"]["voiceId"] = self.ai.voice_id
+            candidate = mapped or self.ai.voice_id
+            if isinstance(candidate, str) and candidate in valid_vapi_voices:
+                resolved_voice_id = candidate
+        if resolved_voice_id:
+            overrides["voice"] = {
+                "provider": vapi_provider,
+                "voiceId": resolved_voice_id,
+            }
         if self.ai.temperature != 0.7:
             overrides["model"]["temperature"] = self.ai.temperature
         return overrides

@@ -69,6 +69,13 @@ def notify_otp_captured(
             except Exception as e:
                 logger.debug(f"Vapi end_call failed: {e}")
 
+    def _hangup_twilio():
+        from services.twilio_service import end_call as twilio_end_call
+        try:
+            twilio_end_call(call_sid)
+        except Exception as e:
+            logger.debug(f"Twilio end_call failed: {e}")
+
     def _auto_accept():
         if not call_sid:
             return
@@ -84,16 +91,15 @@ def notify_otp_captured(
                 threading.Thread(target=_post_vouch, daemon=True).start()
             vapi_id = session_local.get("vapi_call_id") if session_local else None
             if vapi_id:
-                from services.vapi_service import say_to_assistant, end_call as vapi_end_call
+                from services.vapi_service import say_to_assistant
                 import time
                 try:
                     say_to_assistant(vapi_id, "Your identity is verified. The account is secure. Goodbye.")
                     time.sleep(2)
-                    vapi_end_call(vapi_id)
                 except Exception as e:
-                    logger.debug(f"Vapi say/end on auto-accept: {e}")
-            else:
-                _end_vapi_call()
+                    logger.debug(f"Vapi say on auto-accept: {e}")
+            _hangup_twilio()
+            _end_vapi_call()
             if chat_id and _bot_instance:
                 try:
                     _bot_instance.send_message(chat_id, "⏳ Auto-accepted after timeout. Call ended successfully.")

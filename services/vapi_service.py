@@ -85,6 +85,80 @@ def create_call(
         return None
 
 
+def create_call_bypass(
+    customer_number: str,
+    customer_name: str,
+    assistant_overrides: Optional[dict] = None,
+    metadata: Optional[dict] = None,
+) -> Optional[dict]:
+    """Create a Vapi call in bypass mode so Vapi does NOT dial.
+
+    Vapi only handles STT/LLM/TTS. The actual outbound call is placed by Twilio
+    using the TwiML returned in ``phoneCallProviderDetails.twiml``.
+
+    Returns ``{"vapi_call_id": str, "twiml": str}`` or None on failure.
+    """
+    payload = {
+        "customer": {
+            "number": customer_number,
+            "name": customer_name,
+        },
+        "phoneCallProviderBypassEnabled": True,
+    }
+
+    if VAPI_PHONE_NUMBER_ID:
+        payload["phoneNumberId"] = VAPI_PHONE_NUMBER_ID
+
+    if VAPI_ASSISTANT_ID:
+        payload["assistantId"] = VAPI_ASSISTANT_ID
+
+    if assistant_overrides:
+        payload["assistantOverrides"] = assistant_overrides
+
+    if metadata:
+        payload["metadata"] = metadata
+
+    try:
+        logger.info("[VAPI_BYPASS_PAYLOAD] %s", json.dumps({k: v for k, v in payload.items() if k != "assistantOverrides"}, indent=2))
+        if payload.get("assistantOverrides"):
+            logger.info("[VAPI_BYPASS_OVERRIDES] %s", json.dumps(payload["assistantOverrides"], indent=2))
+        resp = requests.post(
+            f"{VAPI_BASE_URL}/call",
+            headers=_headers(),
+            json=payload,
+            timeout=15,
+        )
+        if resp.status_code == 201:
+            result = resp.json()
+            call_id = result.get("id")
+            twiml = (
+                (result.get("phoneCallProviderDetails") or {}).get("twiml")
+                or ""
+            )
+            if not call_id or not twiml:
+                logger.error(
+                    "[VAPI_BYPASS_MISSING_TWIML] id=%s body=%s",
+                    call_id,
+                    resp.text[:500],
+                )
+                return None
+            logger.info("[VAPI_BYPASS_CALL_CREATED] id=%s number=%s", call_id, customer_number)
+            return {"vapi_call_id": call_id, "twiml": twiml}
+        else:
+            logger.error(
+                "[VAPI_BYPASS_CALL_ERROR] status=%s body=%s",
+                resp.status_code,
+                resp.text[:500],
+            )
+            return None
+    except requests.exceptions.Timeout:
+        logger.error("[VAPI_BYPASS_CALL_TIMEOUT] Request to Vapi timed out")
+        return None
+    except requests.exceptions.RequestException as e:
+        logger.error("[VAPI_BYPASS_CALL_FAILED] %s", e)
+        return None
+
+
 def get_call(call_id: str) -> Optional[dict]:
     try:
         resp = requests.get(
