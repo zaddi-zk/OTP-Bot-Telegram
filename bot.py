@@ -3052,8 +3052,6 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                 if not twilio_sid:
                     raise Exception("Failed to place normal call via Twilio")
 
-                bot.send_message(chat_id, f"🎯 Call ID: {twilio_sid}")
-
                 # Clear per-user call setup immediately after initiating the call
                 try:
                     clear_user_call_setup(user_id_str)
