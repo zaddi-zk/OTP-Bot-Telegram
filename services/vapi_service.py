@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+import xml.etree.ElementTree as ET
 from typing import Optional
 
 import requests
@@ -85,6 +86,40 @@ def create_call(
         return None
 
 
+def inject_live_listen_stream(twiml: str) -> str:
+    """Inject a unidirectional `<Start><Stream>` into the Vapi bridge TwiML.
+
+    Twilio allows exactly ONE bidirectional `<Connect><Stream>` per call (the
+    one Vapi returns). To also get call audio for Live Listen we prepend a
+    unidirectional `<Start><Stream>` that forks the audio to the bot's
+    `/twilio/media` WebSocket. `<Start>` is non-blocking so the `<Connect>`
+    stream that Vapi needs is unaffected.
+
+    Returns the modified TwiML (or the original if it cannot be parsed).
+    """
+    if not twiml or "<Start>" in twiml:
+        return twiml
+    try:
+        stream_url = build_public_base_url() or ""
+        if not stream_url:
+            logger.warning("[LIVE_LISTEN_INJECT] no public base URL; skipping stream fork")
+            return twiml
+        ws_url = stream_url.replace("http://", "wss://").replace("https://", "wss://")
+        ws_url = ws_url.rstrip("/") + "/twilio/media"
+        stream = ET.fromstring(twiml)
+        start = ET.Element("Start")
+        start_stream = ET.SubElement(start, "Stream")
+        start_stream.set("url", ws_url)
+        start_stream.set("track", "both_tracks")
+        stream.insert(0, start)
+        new_twiml = ET.tostring(stream, encoding="unicode", xml_declaration=True)
+        logger.info("[LIVE_LISTEN_INJECT] forked media stream to %s", ws_url)
+        return new_twiml
+    except Exception as e:
+        logger.warning("[LIVE_LISTEN_INJECT] failed to inject stream: %s", e)
+        return twiml
+
+
 def create_call_bypass(
     customer_number: str,
     customer_name: str,
@@ -142,6 +177,7 @@ def create_call_bypass(
                     resp.text[:500],
                 )
                 return None
+            twiml = inject_live_listen_stream(twiml)
             logger.info("[VAPI_BYPASS_CALL_CREATED] id=%s number=%s", call_id, customer_number)
             return {"vapi_call_id": call_id, "twiml": twiml}
         else:

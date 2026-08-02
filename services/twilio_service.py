@@ -191,6 +191,11 @@ def place_ai_call(
         )
     except Exception as exc:
         logger.debug("Failed to register bridge session: %s", exc)
+    try:
+        from bot import _notify_live_listen_start
+        _notify_live_listen_start(twilio_sid, chat_id=chat_id, user_id=user_id)
+    except Exception as exc:
+        logger.debug("Failed to bootstrap live listen session: %s", exc)
     return twilio_sid
 
 

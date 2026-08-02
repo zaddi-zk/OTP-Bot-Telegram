@@ -115,13 +115,10 @@ def _notify_live_listen_start(call_sid: str, chat_id: Optional[int] = None, user
     if not LIVE_LISTEN_URL or not call_sid:
         return
 
-    from urllib.parse import urlparse
-    public_base = build_public_base_url() or NGROK_URL
-    target_netloc = urlparse(LIVE_LISTEN_URL).netloc
-    self_netloc = urlparse(public_base).netloc
-    if target_netloc and self_netloc and target_netloc == self_netloc:
-        return
-
+    # The live-listen FastAPI server is mounted in the same process on the same
+    # port, so this self-call is served by uvicorn's event loop and safely hits
+    # the FastAPI /conversation/start route (which shadows the mounted Flask
+    # route of the same path). A separate URL pointing elsewhere also works.
     payload = {"call_sid": call_sid}
     if chat_id is not None:
         payload["chat_id"] = chat_id
@@ -4280,6 +4277,12 @@ def send_live_listen_panel(chat_id: int, user_id_str: str) -> None:
         valid_recording = alt_path.exists() and alt_path.stat().st_size > 128
     if valid_recording:
         buttons.add(types.InlineKeyboardButton("📥 Download Recording", callback_data="download_recording"))
+    try:
+        live_base = LIVE_LISTEN_URL or (build_public_base_url() or NGROK_URL)
+        live_url = f"{live_base.rstrip('/')}/live?call_id={sid}"
+        buttons.add(types.InlineKeyboardButton("🎧 Open Live Stream", url=live_url))
+    except Exception:
+        pass
     buttons.add(types.InlineKeyboardButton("↩ Back", callback_data="back_to_menu"))
     bot.send_message(chat_id, "\n".join(lines), reply_markup=buttons, parse_mode="HTML")
 
@@ -8121,60 +8124,34 @@ if __name__ == "__main__":
     logger.info(f"Starting application in {runtime_mode} mode.")
 
     TARGET_PORT = int(os.getenv("PORT", os.getenv("FLASK_PORT", "5000")))
-    logger.info(f"Starting Flask web server on port {TARGET_PORT}.")
+    logger.info(f"Starting FastAPI (Flask mounted) web server on port {TARGET_PORT}.")
 
-    def run_flask():
+    def run_server():
         try:
-            app.run(host='0.0.0.0', port=TARGET_PORT, debug=False, use_reloader=False, threaded=True)
+            import uvicorn
+            from live_listen.server import app as fastapi_app, build_app
+            server_app = build_app(app)
+            uvicorn.run(
+                server_app,
+                host="0.0.0.0",
+                port=TARGET_PORT,
+                log_level="info",
+            )
         except OSError as e:
             if "Address already in use" in str(e) or "Permission denied" in str(e):
-                logger.critical(f"Cannot bind Flask to port {TARGET_PORT}: {e}. Retrying in 5 seconds...")
+                logger.critical(f"Cannot bind server to port {TARGET_PORT}: {e}. Retrying in 5 seconds...")
                 time.sleep(5)
-                run_flask()  # Recursive retry
+                run_server()  # Recursive retry
             else:
-                logger.error(f"Flask OSError: {e}")
+                logger.error(f"Server OSError: {e}")
         except Exception as e:
-            logger.error(f"Flask failed: {e}")
-            logger.exception("Flask startup traceback:")
+            logger.error(f"Server failed: {e}")
+            logger.exception("Server startup traceback:")
 
-    def run_fastapi():
-        try:
-            import subprocess, os
-            env = os.environ.copy()
-            env["PYTHONPATH"] = str(Path(__file__).parent)
-            fastapi_port = int(os.getenv("FASTAPI_PORT", "5001"))
-            logger.info(f"Starting FastAPI uvicorn on port {fastapi_port}")
-            try:
-                result = subprocess.run([
-                    sys.executable, "-m", "uvicorn",
-                    "live_listen.server:app",
-                    "--host", "0.0.0.0",
-                    "--port", str(fastapi_port),
-                    "--log-level", "info"
-                ], cwd=str(Path(__file__).parent), env=env, capture_output=True, text=True, timeout=300)
-            except subprocess.TimeoutExpired:
-                logger.error(f"FastAPI uvicorn timed out after 300s")
-                return
-            if result.returncode != 0:
-                logger.error(
-                    "FastAPI uvicorn failed: %s\nstdout=%s\nstderr=%s",
-                    result.returncode,
-                    result.stdout.strip() if result.stdout else "(no stdout)",
-                    result.stderr.strip() if result.stderr else "(no stderr)",
-                )
-            else:
-                logger.info(f"FastAPI uvicorn exited cleanly with code {result.returncode}")
-        except Exception as e:
-            logger.exception(f"FastAPI initialization failed: {e}")
+    server_thread = threading.Thread(target=run_server, daemon=True)
+    server_thread.start()
+    logger.info(f"FastAPI server started on 0.0.0.0:{TARGET_PORT}")
 
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    logger.info(f"Flask server started on 0.0.0.0:{TARGET_PORT}")
-    
-    fastapi_thread = threading.Thread(target=run_fastapi, daemon=True)
-    fastapi_thread.start()
-    logger.info(f"FastAPI server started on 0.0.0.0:{os.getenv('FASTAPI_PORT', '5001')}")
-    
     time.sleep(2)
 
     # ========================================================================
@@ -8184,8 +8161,8 @@ if __name__ == "__main__":
     logger.info("🚀 HOTTBOIIHITZZ PREMIUM OTP BOT v4.1 STARTED")
     logger.info("="*70)
     logger.info(f"Runtime Mode:          {runtime_mode.upper()}")
-    logger.info(f"Flask Port:            {TARGET_PORT}")
-    logger.info(f"FastAPI Port:          {os.getenv('FASTAPI_PORT', '5001')}")
+    logger.info(f"Server Port:           {TARGET_PORT} (FastAPI + mounted Flask)")
+    logger.info(f"Live Listen:           {LIVE_LISTEN_URL}")
     logger.info(f"Telegram Polling:      {'ACTIVE' if runtime_mode == 'full' else 'DISABLED'}")
     logger.info(f"Webhook Mode:          {USE_WEBHOOK}")
     logger.info(f"Twilio Configured:     {'YES' if twilio_client else 'NO'}")
