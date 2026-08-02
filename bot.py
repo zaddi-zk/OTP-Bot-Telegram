@@ -1309,6 +1309,150 @@ def log_twilio_request_debug(endpoint_name: str):
     except Exception as e:
         logger.warning(f"Failed to log Twilio {endpoint_name} request debug info: {e}")
 
+
+# ======================================================================
+# TWILIO CALLBACK ROUTES
+# ======================================================================
+@app.route('/twilio/recording', methods=['POST'])
+@twilio_request_logger('/twilio/recording')
+def twilio_recording_callback():
+    """Handle Twilio recording status callbacks. Downloads the recording and
+    forwards it to the Telegram chat of the original call (`user_id`/`chat_id`)."""
+    try:
+        is_valid = validate_twilio_request()
+        if not is_valid:
+            logger.error("[ERROR] Recording callback: Twilio validation FAILED")
+            return Response("OK", status=200)
+
+        recording_sid = request.form.get("RecordingSid") or request.values.get("RecordingSid")
+        recording_url = request.form.get("RecordingUrl") or request.values.get("RecordingUrl")
+        call_sid = request.form.get("CallSid") or request.values.get("CallSid")
+        user_id = request.args.get("user_id") or request.form.get("user_id") or request.values.get("user_id")
+        chat_id = request.args.get("chat_id") or request.form.get("chat_id") or request.values.get("chat_id")
+
+        logger.info(
+            "Recording callback received: call_sid=%s recording_sid=%s user_id=%s chat_id=%s recording_url=%s",
+            call_sid, recording_sid, user_id, chat_id, recording_url,
+        )
+
+        if not recording_sid or not recording_url or not call_sid:
+            logger.warning("Recording callback missing required fields: %s %s %s", recording_sid, recording_url, call_sid)
+            return Response("OK", status=200)
+
+        url = recording_url
+        if url.endswith('.json'):
+            url = url.replace('.json', '.mp3')
+        elif not url.endswith('.mp3') and not url.endswith('.wav'):
+            url = f"{recording_url}.mp3"
+
+        r = _http.get(url, auth=HTTPBasicAuth(ACCOUNT_SID, AUTH_TOKEN), timeout=30)
+        if r.status_code == 200 and r.content and len(r.content) > 128:
+            session = get_call_session(call_sid) or {}
+            saved_user_id = user_id or session.get("user_id")
+            saved_chat_id = chat_id or session.get("chat_id")
+            if saved_user_id:
+                if not save_and_send_recording(call_sid, saved_user_id, saved_chat_id, r.content):
+                    logger.warning(f"Failed to save/send recording for callback CallSid={call_sid}")
+            else:
+                logger.warning(f"Recording callback has no user_id for CallSid={call_sid}")
+        else:
+            logger.warning(
+                f"Failed to download valid recording {recording_sid}: HTTP {r.status_code}, "
+                f"bytes={len(r.content) if r.content is not None else 'None'}"
+            )
+    except Exception as e:
+        logger.exception("Error in /twilio/recording: %s", e)
+
+    return Response("OK", status=200)
+
+
+@app.route('/twilio/status', methods=['POST'])
+@twilio_request_logger('/twilio/status')
+def twilio_status():
+    """Handle call status updates from Twilio (ringing, in-progress, completed, etc.)."""
+    try:
+        is_valid = validate_twilio_request()
+        if not is_valid:
+            logger.error("[ERROR] Status endpoint: Twilio validation FAILED")
+            return Response("OK", status=200)
+
+        call_sid = request.form.get("CallSid")
+        status = request.form.get("CallStatus")
+        chat_id = request.form.get("chat_id") or request.args.get("chat_id")
+        user_id = request.form.get("user_id") or request.args.get("user_id")
+
+        if not call_sid:
+            logger.warning("Twilio status webhook received without CallSid. Ignoring.")
+            return Response("OK", status=200)
+
+        logger.info(f"📊 Call status update: {call_sid} -> {status} (user_id={user_id} chat_id={chat_id})")
+
+        status_text = None
+        final_status = False
+        if status == "queued":
+            status_text = "⏳ Call queued. Awaiting ring..."
+        elif status == "ringing":
+            status_text = "📞 Ringing..."
+        elif status == "in-progress":
+            status_text = "▶️ Call in progress..."
+        elif status == "completed":
+            status_text = "✅ Call ended."
+            final_status = True
+        elif status == "failed":
+            status_text = "❌ Call failed."
+            final_status = True
+        elif status == "no-answer":
+            status_text = "⏱️ No answer."
+            final_status = True
+        elif status == "busy":
+            status_text = "📵 Line busy."
+            final_status = True
+        elif status == "canceled":
+            status_text = "❌ Call canceled."
+            final_status = True
+
+        if status_text:
+            update_call_status_message(call_sid, status_text, final=final_status)
+
+        if status == "completed" and call_sid:
+            try:
+                session = get_call_session(call_sid) or {}
+                answered_by = session.get("answered_by")
+                event_type = (
+                    "Machine" if answered_by and "machine" in answered_by.lower()
+                    else "Voicemail" if answered_by and "voicemail" in answered_by.lower()
+                    else "Completed"
+                )
+                summary = (
+                    f"✅ Call ended.\n"
+                    f"Detected: {event_type}\n"
+                    f"CallSid: <code>{call_sid}</code>\n"
+                    f"AMD Result: {answered_by or 'unknown'}"
+                )
+                if not update_call_status_message(call_sid, summary, final=True):
+                    kb = types.InlineKeyboardMarkup()
+                    kb.add(types.InlineKeyboardButton("Main Menu", callback_data="show_main_menu"))
+                    if chat_id:
+                        safe_bot_send_message(int(chat_id), summary, reply_markup=kb, parse_mode="HTML")
+            except Exception as summ_ex:
+                logger.warning(f"Failed to send final call summary: {summ_ex}")
+    except Exception as e:
+        logger.error(f"[ERROR] Error in /twilio/status endpoint: {e}", exc_info=True)
+
+    return Response("OK", status=200)
+
+
+@app.route('/amd_callback', methods=['POST'])
+@twilio_request_logger('/amd_callback')
+def amd_callback():
+    """AMD callback endpoint - intentionally disabled.
+
+    Twilio may POST to this endpoint in some configurations. The handler has
+    been removed to ensure no machine/human detection logic runs.
+    """
+    return Response("OK", status=200)
+
+
 # ======================================================================
 # In-memory session manager for tracking active call sessions.
 # ======================================================================

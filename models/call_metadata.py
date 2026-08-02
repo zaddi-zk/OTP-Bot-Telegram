@@ -97,7 +97,7 @@ class CallMetadata:
         return errors
 
     def to_vapi_assistant_overrides(self) -> dict:
-        from config import LEGACY_VOICE_ID_MAP
+        from config import LEGACY_VOICE_ID_MAP, VAPI_MODEL_PROVIDER, VAPI_MODEL_NAME
         # Always use Vapi as the voice provider for outbound TTS calls.
         vapi_provider = "vapi"
 
@@ -114,8 +114,8 @@ class CallMetadata:
         overrides = {
             "firstMessage": first_message,
             "model": {
-                "provider": "deep-seek",
-                "model": "deepseek-chat",
+                "provider": VAPI_MODEL_PROVIDER,
+                "model": VAPI_MODEL_NAME,
                 "messages": [],
             },
         }
