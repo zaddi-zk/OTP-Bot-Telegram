@@ -61,6 +61,48 @@ def _send_live_status(chat_id, text: str, **kwargs) -> None:
     _send_telegram(int(chat_id), text, **kwargs)
 
 
+def _human_or_machine_label(ended_reason: Optional[str]) -> Optional[str]:
+    """Map Vapi's endedReason to a short human/machine Telegram notice.
+
+    Vapi's Answering Machine Detection reports the answer type through
+    ``endedReason`` (e.g. ``voicemail``, ``customer-did-not-answer``).
+    Returns None when the reason doesn't imply a detected answer type.
+    """
+    if not ended_reason:
+        return None
+    lower = ended_reason.lower()
+    if lower == "voicemail":
+        return "📣 Voicemail / answering machine detected — call ended."
+    if "did-not-answer" in lower or "no-answer" in lower:
+        return "📵 No answer."
+    if lower == "customer-busy" or "busy" in lower:
+        return "📵 Line busy."
+    if "ended" in lower or "hangup" in lower:
+        return "👤 Human answered."
+    return None
+
+
+def _notify_call_live(payload: dict, call_sid: Optional[str], vapi_call_id: Optional[str], call_data: Optional[dict]) -> None:
+    """Send one 'Call is live' Telegram message when the Vapi AI session runs.
+
+    This is a Vapi-side notification (added alongside, not replacing, Twilio's
+    own status handling). It fires once per call thanks to the session flag.
+    """
+    try:
+        from bot import get_call_session
+        session = get_call_session(call_sid) or (get_call_session(vapi_call_id) if vapi_call_id else None)
+        if session and session.get("call_live_notified"):
+            return
+        chat_id = _resolve_chat_id(payload, call_sid, vapi_call_id, call_data)
+        if not chat_id:
+            return
+        if session:
+            session["call_live_notified"] = True
+        _send_live_status(chat_id, "🔵 Call is live (Vapi AI session active).")
+    except Exception as e:
+        logger.warning("[VAPI_CALL_LIVE_ERROR] %s", e)
+
+
 def _extract_metadata(payload: dict, call_data: Optional[dict] = None) -> dict:
     return (
         payload.get("metadata")
@@ -96,9 +138,11 @@ def handle_vapi_webhook(request) -> Response:
             return Response("OK")
 
         if event_type == "call.answered":
+            _notify_call_live(payload, call_sid, vapi_call_id, call_data)
             return Response("OK")
 
         if event_type in ("call.in-progress", "call.in_progress"):
+            _notify_call_live(payload, call_sid, vapi_call_id, call_data)
             return Response("OK")
 
         if event_type in ("transcript", "transcription", "call.transcript"):
@@ -127,6 +171,7 @@ def handle_vapi_webhook(request) -> Response:
                     s = get_call_session(call_sid) or (get_call_session(vapi_call_id) if vapi_call_id else None)
                     if s:
                         s["call_was_in_progress"] = True
+                _notify_call_live(payload, call_sid, vapi_call_id, call_data)
             elif call_status in ("completed", "failed", "canceled", "ended", "no-answer", "busy", "error"):
                 return _handle_call_ended(payload, call_sid, vapi_call_id, call_data)
             return Response("OK")
@@ -227,7 +272,7 @@ def _handle_transcript(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
         metadata = _extract_metadata(payload, call_data)
         code_length = int(metadata.get("code_length", 6))
         user_id = metadata.get("user_id")
-        chat_id = metadata.get("chat_id")
+        chat_id = metadata.get("chat_id") or _resolve_chat_id(payload, call_sid, vapi_call_id, call_data)
 
         if transcript_text:
             if role == "customer":
@@ -403,6 +448,13 @@ def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
         metadata = _extract_metadata(payload, call_data)
         chat_id = metadata.get("chat_id") or _resolve_chat_id(payload, call_sid, vapi_call_id, call_data)
         user_id = metadata.get("user_id")
+
+        # Vapi AMD / voicemail detection -> tell the Telegram user who answered.
+        detection_text = _human_or_machine_label(ended_reason)
+        if session:
+            session["answered_by"] = ended_reason or session.get("answered_by")
+        if detection_text and chat_id:
+            _send_live_status(chat_id, detection_text)
 
         recording_url = _extract_recording_url(payload, call_data)
 

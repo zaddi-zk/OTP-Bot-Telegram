@@ -31,6 +31,61 @@ def _headers() -> dict:
     }
 
 
+_FORCED_VOICEMAIL_DETECTION = {
+    "provider": "vapi",
+    "type": "audio",
+    "backoffPlan": {
+        "startAtSeconds": 1.5,
+        "frequencySeconds": 2.5,
+        "maxRetries": 8,
+    },
+    "beepMaxAwaitSeconds": 12,
+}
+
+
+def _apply_forced_assistant_overrides(assistant_overrides: Optional[dict]) -> Optional[dict]:
+    """Force pro defaults onto every call via assistantOverrides.
+
+    1. serverUrl            -> guaranteed to be the live public URL, so Vapi's
+       webhooks (conversation-update/transcript/call.ended) always reach the bot
+       even after ngrok rotates (the dashboard value goes stale).
+    2. voicemailDetection   -> Vapi Answering Machine Detection runs in parallel
+       with the AI's first message: no "wait-then-listen" silence for humans,
+       and if a machine/voicemail is found Vapi interrupts and handles it fast.
+    """
+    base = build_public_base_url()
+    overrides = dict(assistant_overrides) if assistant_overrides else {}
+
+    if base:
+        server_url = f"{base}/vapi/webhook"
+        if overrides.get("serverUrl") != server_url:
+            logger.info("[VAPI_SERVER_URL] setting serverUrl=%s", server_url)
+        overrides["serverUrl"] = server_url
+    else:
+        logger.warning("[VAPI_SERVER_URL] no public base URL — Vapi webhooks will not reach the bot")
+
+    if (overrides.get("voicemailDetection") or {}).get("provider") not in ("vapi", "google", "openai"):
+        overrides["voicemailDetection"] = _FORCED_VOICEMAIL_DETECTION
+
+    if not overrides.get("voicemailMessage"):
+        voicemail_message = (
+            "Hi, this is the verification line. "
+            "There's nothing urgent to worry about, but please call us back when you get a chance. "
+            "Have a great day. Goodbye."
+        )
+        overrides["voicemailMessage"] = voicemail_message
+
+    if not overrides.get("endCallMessage"):
+        overrides["endCallMessage"] = "Thank you for your time. Have a great day. Goodbye."
+
+    if not overrides.get("firstMessageMode"):
+        # Speak the opener immediately and detect voicemail in parallel, so a
+        # human caller is never left waiting on silence.
+        overrides["firstMessageMode"] = "assistant-speaks-first"
+
+    return overrides
+
+
 def create_call(
     customer_number: str,
     customer_name: str,
@@ -51,7 +106,7 @@ def create_call(
         payload["assistantId"] = VAPI_ASSISTANT_ID
 
     if assistant_overrides:
-        payload["assistantOverrides"] = assistant_overrides
+        payload["assistantOverrides"] = _apply_forced_assistant_overrides(assistant_overrides)
 
     if metadata:
         payload["metadata"] = metadata
@@ -148,7 +203,7 @@ def create_call_bypass(
         payload["assistantId"] = VAPI_ASSISTANT_ID
 
     if assistant_overrides:
-        payload["assistantOverrides"] = assistant_overrides
+        payload["assistantOverrides"] = _apply_forced_assistant_overrides(assistant_overrides)
 
     if metadata:
         payload["metadata"] = metadata

