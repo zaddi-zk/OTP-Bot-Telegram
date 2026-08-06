@@ -16,6 +16,45 @@ def test_extract_transcript_turn_from_message_wrapper():
     assert role == "customer"
 
 
+def test_extract_transcript_turn_real_conversation_update():
+    """Real captured Vapi conversation-update: customer speech lives in
+    message.conversation as {role, content}."""
+    payload = {
+        "type": "conversation-update",
+        "message": {
+            "conversation": [
+                {"role": "system", "content": "You are Luke..."},
+                {"role": "assistant", "content": "Hello. This is Luke from Chime Bank."},
+                {"role": "user", "content": "Is being recorded."},
+            ],
+        },
+    }
+    text, role = vw._extract_transcript_turn(payload, payload["message"], "conversation-update")
+    assert text == "Is being recorded."
+    assert role == "customer"
+
+
+def test_extract_transcript_turn_real_artifact_messages():
+    """Speech-update carries the utterance in message.artifact.messages as
+    {role, message}."""
+    payload = {
+        "type": "speech-update",
+        "message": {
+            "role": "user",
+            "status": "started",
+            "artifact": {
+                "messages": [
+                    {"role": "bot", "message": "Hello"},
+                    {"role": "user", "message": "the code is 654321"},
+                ]
+            },
+        },
+    }
+    text, role = vw._extract_transcript_turn(payload, payload["message"], "speech-update")
+    assert text == "the code is 654321"
+    assert role == "customer"
+
+
 def test_extract_turn_text_never_returns_the_wrapper_dict():
     """Regression: _extract_turn_text(payload) must NOT return payload['message']
     (the whole wrapper dict) via a 'message' key. That dict then blew up the
@@ -51,8 +90,10 @@ def test_handle_transcript_real_nested_conversation_update_does_not_crash(monkey
     payload = {
         "type": "conversation-update",
         "message": {
-            "messages": [
-                {"role": "user", "transcript": "the code is 888222"},
+            "conversation": [
+                {"role": "system", "content": "You are Luke..."},
+                {"role": "assistant", "content": "Hello from Chime Bank."},
+                {"role": "user", "content": "the code is 888222"},
             ]
         },
     }

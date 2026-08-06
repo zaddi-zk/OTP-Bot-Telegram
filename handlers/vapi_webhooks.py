@@ -451,29 +451,53 @@ def _extract_otp_from_messages(
 
 def _extract_turn_text(obj: dict) -> str:
     """Pull the transcript text out of a speech/message/message-entry dict,
-    whatever key Vapi used (transcript/content/text/transcription).
+    whatever key Vapi used (transcript/content/text/message/transcription).
 
-    Only string values are returned. The top-level ``message`` key is skipped
-    on purpose: on webhook payloads it holds the whole wrapper dict, and
-    returning that would break the callers that call ``.strip()`` on the text.
+    Only string values are returned. The top-level ``message`` key may hold the
+    whole wrapper dict, but the isinstance(str) guard skips it safely.
     """
     if not obj:
         return ""
-    for key in ("transcript", "content", "text", "transcription"):
+    for key in ("transcript", "content", "text", "message", "transcription"):
         value = obj.get(key)
         if isinstance(value, str) and value:
             return value
     return ""
 
 
+def _turn_entries(payload: dict, message: dict):
+    """Best-effort list of role/content transcript entries, newest first.
+
+    Real Vapi payloads carry the live transcript in several shapes, verified
+    from captured webhooks:
+      - ``message.conversation``      : list of {role, content}
+      - ``message.artifact.messages`` : list of {role, message}
+      - ``message.messages``          : list of {role, message}
+    Prefer conversation, then artifact.messages, then messages, then the same
+    keys on the payload top level. Entries are returned newest-first.
+    """
+    artifact = message.get("artifact") if isinstance(message.get("artifact"), dict) else {}
+    containers = (
+        message.get("conversation"),
+        artifact.get("messages"),
+        message.get("messages"),
+        payload.get("conversation"),
+        payload.get("messages"),
+    )
+    for container in containers:
+        if isinstance(container, list) and container:
+            for entry in reversed(container):
+                if isinstance(entry, dict) and entry.get("role"):
+                    yield entry
+
+
 def _extract_transcript_turn(payload: dict, message: dict, event_type: str):
     """Return (transcript_text, role) for the newest turn in the payload.
 
     Vapi nests the live transcript under the top-level ``message`` key
-    (webhooks arrive with payload_keys=['message']), so we read from BOTH the
-    ``message`` wrapper and the payload top level. A top-level-only read is
-    what previously left transcript_text empty and silently disabled the
-    mid-call IVR/machine guard.
+    (``payload_keys=['message']``). The customer's speech is under
+    ``message.conversation`` as ``{role, content}``; we read conversation,
+    then messages, from both the wrapper and the payload top level.
     """
     transcript_text = ""
     role = "assistant"
@@ -490,14 +514,30 @@ def _extract_transcript_turn(payload: dict, message: dict, event_type: str):
         if not transcript_text:
             transcript_text = _extract_turn_text(message)
         role = speech.get("role") or message.get("role", "assistant")
-    elif event_type == "conversation-update":
-        msgs = message.get("messages") or payload.get("messages") or []
-        for msg in reversed(msgs):
-            msg_role = str(msg.get("role", "")).lower()
-            # Vapi uses "user" for the callee and "bot"/"assistant" for the AI.
+        # Speech-update may carry the actual utterance in artifact.messages.
+        if not transcript_text:
+            for entry in _turn_entries(payload, message):
+                msg_role = str(entry.get("role", "")).lower()
+                if msg_role in ("user", "customer", "human"):
+                    text = _extract_turn_text(entry)
+                    if text:
+                        transcript_text = text
+                        role = "customer"
+                        break
+                elif msg_role in ("bot", "assistant"):
+                    text = _extract_turn_text(entry)
+                    if text:
+                        transcript_text = text
+                        role = "assistant"
+                        break
+    elif event_type in ("conversation-update",):
+        # Vapi uses "user" for the callee and "bot"/"assistant" for the AI.
+        for entry in _turn_entries(payload, message):
+            msg_role = str(entry.get("role", "")).lower()
             if msg_role in ("user", "customer", "human"):
-                transcript_text = _extract_turn_text(msg)
-                if transcript_text:
+                text = _extract_turn_text(entry)
+                if text:
+                    transcript_text = text
                     role = "customer"
                     break
     return transcript_text, role
@@ -506,11 +546,10 @@ def _extract_transcript_turn(payload: dict, message: dict, event_type: str):
 def _extract_assistant_turn(payload: dict, message: dict, event_type: str) -> str:
     """Newest assistant/bot utterance, for the passcode-stage notice."""
     if event_type == "conversation-update":
-        msgs = message.get("messages") or payload.get("messages") or []
-        for msg in reversed(msgs):
-            msg_role = str(msg.get("role", "")).lower()
+        for entry in _turn_entries(payload, message):
+            msg_role = str(entry.get("role", "")).lower()
             if msg_role in ("bot", "assistant"):
-                text = _extract_turn_text(msg)
+                text = _extract_turn_text(entry)
                 if text:
                     return text
         return ""
