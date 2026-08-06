@@ -143,13 +143,11 @@ def _handle_machine_detected(
                 text = (
                     "🤖 IVR / automated system detected.\n"
                     f"Detected: {snippet}\n"
-                    "Hanging up to save credits."
+                    "Hanging up."
                 )
             else:
-                text = (
-                    f"🤖 {kind} detected.\n"
-                    "Hanging up to save credits."
-                )
+                label = _human_or_machine_label(snippet)
+                text = f"{label or '🤖 Machine detected.'} Hanging up."
             _send_live_status(int(chat_id), text)
 
         logger.info("[VAPI_MACHINE_DETECTED] kind=%s vapi_call_id=%s call_sid=%s snippet=%s",
@@ -222,6 +220,8 @@ def _human_or_machine_label(ended_reason: Optional[str]) -> Optional[str]:
     if not ended_reason:
         return None
     lower = ended_reason.lower()
+    if "fax" in lower:
+        return "📠 Fax detected — call ended."
     if lower == "voicemail":
         return "📣 Voicemail / answering machine detected — call ended."
     if "did-not-answer" in lower or "no-answer" in lower:
@@ -666,10 +666,11 @@ def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
         detection_text = _human_or_machine_label(ended_reason)
         if session:
             session["answered_by"] = ended_reason or session.get("answered_by")
-        if detection_text and chat_id:
+        is_machine_end = bool(ended_reason) and ended_reason.lower() in _MACHINE_ENDED_REASONS
+        if detection_text and chat_id and not is_machine_end:
             _send_live_status(chat_id, detection_text)
 
-        if ended_reason and ended_reason.lower() in _MACHINE_ENDED_REASONS:
+        if is_machine_end:
             _handle_machine_detected(
                 payload,
                 call_sid,
@@ -749,7 +750,6 @@ def _fetch_and_send_recording_via_api(vapi_call_id: str, call_sid: Optional[str]
         )
         if not recording_url:
             logger.warning("[VAPI_RECORDING_API] no recordingUrl in fetched call data for %s", vapi_call_id)
-            _send_telegram(chat_id, "⚠️ No recording URL found for this call.")
             return
         logger.info("[VAPI_RECORDING_API] got recording url from API for %s", vapi_call_id)
         _download_and_send_recording(recording_url, call_sid, vapi_call_id, chat_id, user_id)

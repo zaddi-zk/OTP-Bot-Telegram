@@ -35,11 +35,11 @@ _FORCED_VOICEMAIL_DETECTION = {
     "provider": "vapi",
     "type": "audio",
     "backoffPlan": {
-        "startAtSeconds": 1.5,
-        "frequencySeconds": 2.5,
-        "maxRetries": 8,
+        "startAtSeconds": 2.0,
+        "frequencySeconds": 2.0,
+        "maxRetries": 12,
     },
-    "beepMaxAwaitSeconds": 12,
+    "beepMaxAwaitSeconds": 0,
 }
 
 
@@ -68,12 +68,7 @@ def _apply_forced_assistant_overrides(assistant_overrides: Optional[dict]) -> Op
         overrides["voicemailDetection"] = _FORCED_VOICEMAIL_DETECTION
 
     if not overrides.get("voicemailMessage"):
-        voicemail_message = (
-            "Hi, this is the verification line. "
-            "There's nothing urgent to worry about, but please call us back when you get a chance. "
-            "Have a great day. Goodbye."
-        )
-        overrides["voicemailMessage"] = voicemail_message
+        overrides["voicemailMessage"] = "Goodbye."
 
     if not overrides.get("endCallMessage"):
         overrides["endCallMessage"] = "Thank you for your time. Have a great day. Goodbye."
