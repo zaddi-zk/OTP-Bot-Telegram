@@ -182,3 +182,43 @@ def test_ivr_speech_keeps_watchdog_armed():
     vw._record_human_or_ivr_speech(session, is_ivr=True)
     assert session.get("stall_seen_human_speech") is None
     assert vw._check_call_stalled(session, {}, "call1", "vapi1", None) is True
+
+
+def test_target_dedup_suppresses_ivr_accumulation(monkeypatch):
+    """conversation-update streams the ACCUMULATED transcript; the operator must
+    see only genuinely new lines, not each growing extension (an IVR menu used
+    to spam ~40 identical-looking messages)."""
+    from unittest import mock
+    import bot as bot_mod
+
+    sent = []
+    store: dict = {}
+
+    def fake_get(csid, *a, **k):
+        return store.get(csid)
+
+    def fake_ntfy(chat_id, call_sid, user_id, digits, vapi_call_id=None):
+        return None
+
+    monkeypatch.setattr(bot_mod, "get_call_session", fake_get)
+    monkeypatch.setattr(vw, "_send_live_status", lambda c, t, **k: sent.append(t))
+    monkeypatch.setattr(vw, "_detect_ivr_in_transcript", lambda t: "")
+    monkeypatch.setattr(vw, "extract_otp_from_transcript", lambda t, n: None)
+    monkeypatch.setattr(vw, "_resolve_chat_id", lambda *a, **k: 42)
+
+    t1 = "An admission question"
+    t2 = "An admission question Press 1 to reach undergraduate admission."
+    t3 = "An admission question Press 1 to reach undergraduate admission. For tuition press 3 to reach the bursar."
+    t4 = "Call is being recorded for quality and training purposes."
+
+    def payload_for(text):
+        return {"type": "conversation-update", "message": {"conversation": [{"role": "user", "content": text}]}}
+
+    sid = "call_dedup"
+    store[sid] = {"call_sid": sid}
+    vw._handle_transcript(payload_for(t1), sid, None, None)
+    vw._handle_transcript(payload_for(t2), sid, None, None)
+    vw._handle_transcript(payload_for(t3), sid, None, None)
+    vw._handle_transcript(payload_for(t4), sid, None, None)
+
+    assert sent == [f"👤 Target: {t1}", f"👤 Target: {t4}"]

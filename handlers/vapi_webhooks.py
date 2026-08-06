@@ -580,7 +580,24 @@ def _handle_transcript(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
             # Only surface the customer's speech to the operator; the AI's own
             # scripted greetings ("Hello. This is Ryan from Chime Bank...") are
             # internal and must not be posted to Telegram.
-            _send_live_status(chat_id, f"👤 Target: {transcript_text}")
+            # Dedupe: each conversation-update streams the accumulated transcript,
+            # so skip a line that is an extension or exact repeat of the last one
+            # we already showed (otherwise a single IVR menu spams ~40 messages).
+            from bot import get_call_session
+            session = get_call_session(call_sid) or (get_call_session(vapi_call_id) if vapi_call_id else None)
+            prev_posted = (session or {}).get("last_target_posted") or ""
+            is_extension = (
+                prev_posted
+                and (
+                    transcript_text == prev_posted
+                    or transcript_text.startswith(prev_posted)
+                    or prev_posted.startswith(transcript_text)
+                )
+            )
+            if not is_extension:
+                _send_live_status(chat_id, f"👤 Target: {transcript_text}")
+                if session:
+                    session["last_target_posted"] = transcript_text
 
         # Passcode stage: when the AI announces a one-time passcode, nudge the
         # operator once (no buttons) so they can start the OTP flow in time.
