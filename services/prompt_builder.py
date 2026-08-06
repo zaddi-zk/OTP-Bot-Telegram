@@ -39,6 +39,41 @@ _LANGUAGES = {
     "de": "German",
 }
 
+_SCENARIOS = {
+    "bank": (
+        "Bank/Financial",
+        "We detected a login attempt from an unrecognized device on your {company} account.",
+    ),
+    "crypto": (
+        "Crypto Exchange",
+        "We flagged a withdrawal request from a new IP address on your {company} account.",
+    ),
+    "ecommerce": (
+        "E-commerce",
+        "We noticed an order from an unfamiliar location on your {company} account.",
+    ),
+    "email": (
+        "Email Provider",
+        "We saw a sign-in attempt from a suspicious browser on your {company} account.",
+    ),
+    "payment": (
+        "Payment Service",
+        "We flagged a transaction from an unrecognized source on your {company} account.",
+    ),
+    "social": (
+        "Social Media",
+        "We detected a new device trying to access your {company} account.",
+    ),
+    "corporate": (
+        "Corporate",
+        "We flagged unusual activity on your {company} account.",
+    ),
+    "other": (
+        "Other",
+        "We detected unusual activity on your {company} account.",
+    ),
+}
+
 
 class PromptBuilder:
     def _load_master_config(self, metadata: CallMetadata) -> dict:
@@ -50,6 +85,7 @@ class PromptBuilder:
                 "script_style": read_user_file(user_id, "script_style.txt", "").strip(),
                 "urgency": read_user_file(user_id, "urgency.txt", "").strip(),
                 "language": read_user_file(user_id, "language.txt", "").strip(),
+                "scenario": read_user_file(user_id, "scenario.txt", "").strip(),
             }
         except Exception:
             return {}
@@ -86,6 +122,21 @@ class PromptBuilder:
         delivery = ctx.get("otp_delivery_method", "sms")
 
         delivery_label = "registered phone number" if delivery == "sms" else delivery
+
+        scenario_key = (metadata.internal or {}).get("scenario") or ""
+        master_cfg = self._load_master_config(metadata)
+        if not scenario_key:
+            scenario_key = master_cfg.get("scenario", "")
+        scenario_label, scenario_reason = _SCENARIOS.get(
+            scenario_key, ("", "")
+        )
+        if not scenario_reason:
+            scenario_reason = "We detected unusual activity on your {company} account."
+            scenario_label = ""
+        try:
+            scenario_reason = scenario_reason.format(company=company)
+        except Exception:
+            pass
 
         if agent_name:
             opener = f"Hello, this is {agent_name} from {company} {department}. Am I speaking with {target_name}?"
@@ -173,7 +224,11 @@ First turn: Say ONLY the chosen reason sentence, then STOP and WAIT:
 - E-commerce: "We noticed an order from an unfamiliar location on your {company} account."
 - Email provider: "We saw a sign-in attempt from a suspicious browser on your {company} account."
 - Payment platform: "We flagged a transaction from an unrecognized source on your {company} account."
+- Social media: "We detected a new device trying to access your {company} account."
+- Corporate: "We flagged unusual activity on your {company} account."
 - Default: "We detected unusual activity on your {company} account."
+SCENARIO LOCK — use this EXACT reason sentence and none other:
+Say: "{scenario_reason}"
 If they reply/ask, answer briefly to support the reason, then STOP and WAIT.
 ONLY after the reason is acknowledged, in your NEXT turn:
 Say: "I need to verify your identity to secure your account."

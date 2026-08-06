@@ -1770,6 +1770,8 @@ def clear_user_call_setup(user_id: str) -> None:
             "VoiceName.txt",
             "emotion.txt",
             "call_mode_label.txt",
+            "scenario.txt",
+            "urgency.txt",
             # Manual calling wizard
             "manual_phonenum.txt",
             "manual_script.txt",
@@ -1822,6 +1824,8 @@ def _compute_setup_hash(user_id: str) -> str:
             "Voice.txt",
             "VoiceName.txt",
             "emotion.txt",
+            "scenario.txt",
+            "urgency.txt",
         ]
         parts = []
         for k in keys:
@@ -5048,19 +5052,18 @@ def _handle_query_processing(call, _):
         bot.send_message(chat_id, "❌ Normal Call scheduling moved to the new flow. Use /normal to start the professional Normal Call setup.")
         return
 
-    # --- Normal Call: Edit All (restart) ---
-    if call.data == "normal_edit":
-        clear_user_state(user_id_str)
+    # --- Normal Call: Scenario selection ---
+    if call.data.startswith("normal_scenario_"):
         import handlers.call_flow as cf
         cf.init_bot(bot)
-        cf.step1_name(chat_id, user_id_str)
+        cf.select_normal_scenario(call, user_id_str, chat_id, message_id)
         return
 
-    # --- Normal Call: Preview Voice ---
-    if call.data == "normal_preview_voice":
+    # --- Normal Call: Urgency selection ---
+    if call.data.startswith("normal_urgency_"):
         import handlers.call_flow as cf
         cf.init_bot(bot)
-        cf.generate_voice_preview(chat_id, user_id_str)
+        cf.select_normal_urgency(call, user_id_str, chat_id, message_id)
         return
 
     # --- Normal Call: Confirm & Initiate (Professional Flow) ---
@@ -5875,7 +5878,7 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
                 bot.send_message(chat_id, "💠 Step 6/8: Delay Before Speaking\nEnter delay in seconds (0-10).")
                 return
 
-            if state == "normal_call_step_9_voice":
+            if state == "normal_call_step_10_voice":
                 try:
                     write_user_file(user_id_str, "Voice.txt", voice_id)
                     write_user_file(user_id_str, "VoiceName.txt", name)
@@ -6747,7 +6750,7 @@ def handle_stateful_text(message):
         write_user_file(user_id_str, "Delivery.txt", delivery)
         write_user_file(user_id_str, "Digits.txt", otp_length)
         write_user_file(user_id_str, "CodeLength.txt", otp_length)
-        set_user_state(user_id_str, "normal_call_step_9_voice")
+        set_user_state(user_id_str, "normal_call_step_10_voice")
 
         summary = f"⚡ Fast call ready:\n{name} @ {company}\nPhone: {phone_clean}"
         try:
@@ -7554,8 +7557,18 @@ def skip_command(message):
     state = get_user_state(user_id_str)
 
     if state == "normal_call_step_4_callerid":
-        clear_user_state(user_id_str)
-        bot.send_message(message.chat.id, "⚠️ Legacy Normal Call steps removed. Use /normal to start the upgraded flow.")
+        write_user_file(user_id_str, "Caller ID.txt", "")
+        set_user_state(user_id_str, "normal_call_step_5_fromname")
+        name = read_user_file(user_id_str, "Name.txt", "Customer")
+        bot.send_message(
+            message.chat.id,
+            f"ℹ️ Caller ID set to default: {TWILIO_PHONE_NUMBER}\n"
+            f"💠 Step 6/11: Display Name\n\n"
+            f"👤 Name: {name}\n"
+            f"📞 Caller ID: {TWILIO_PHONE_NUMBER}\n"
+            f"Enter display name (shown on caller ID):\n"
+            f"— Example: Support Team",
+        )
         return
 
     if state == "manual_call_step_2_callerid":

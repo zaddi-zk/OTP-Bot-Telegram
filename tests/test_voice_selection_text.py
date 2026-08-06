@@ -21,11 +21,19 @@ def test_normal_call_step_9_lists_voice_descriptions(monkeypatch):
     import handlers.call_flow as call_flow
 
     monkeypatch.setattr(call_flow, "_telebot_instance", bot)
+    monkeypatch.setattr(
+        call_flow,
+        "get_voice_mapping",
+        lambda: {
+            "1": {"name": "Clara", "id": "clara-1", "desc": "Natural female, professional"},
+            "2": {"name": "Naina", "id": "naina-1", "desc": "Friendly Indian English female"},
+        },
+    )
 
     handled = handle_normal_step(
         123,
         "user-1",
-        "normal_call_step_8_digits",
+        "normal_call_step_9_digits",
         "6",
     )
 
