@@ -576,11 +576,11 @@ def _handle_transcript(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
         user_id = metadata.get("user_id")
         chat_id = metadata.get("chat_id") or _resolve_chat_id(payload, call_sid, vapi_call_id, call_data)
 
-        if transcript_text:
-            if role == "customer":
-                _send_live_status(chat_id, f"👤 Target: {transcript_text}")
-            else:
-                _send_live_status(chat_id, f"💬 AI: {transcript_text}")
+        if transcript_text and role == "customer":
+            # Only surface the customer's speech to the operator; the AI's own
+            # scripted greetings ("Hello. This is Ryan from Chime Bank...") are
+            # internal and must not be posted to Telegram.
+            _send_live_status(chat_id, f"👤 Target: {transcript_text}")
 
         # Passcode stage: when the AI announces a one-time passcode, nudge the
         # operator once (no buttons) so they can start the OTP flow in time.
