@@ -451,17 +451,19 @@ def _extract_otp_from_messages(
 
 def _extract_turn_text(obj: dict) -> str:
     """Pull the transcript text out of a speech/message/message-entry dict,
-    whatever key Vapi used (transcript/content/text/message/transcription)."""
+    whatever key Vapi used (transcript/content/text/transcription).
+
+    Only string values are returned. The top-level ``message`` key is skipped
+    on purpose: on webhook payloads it holds the whole wrapper dict, and
+    returning that would break the callers that call ``.strip()`` on the text.
+    """
     if not obj:
         return ""
-    return (
-        obj.get("transcript")
-        or obj.get("content")
-        or obj.get("text")
-        or obj.get("message")
-        or obj.get("transcription")
-        or ""
-    )
+    for key in ("transcript", "content", "text", "transcription"):
+        value = obj.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
 
 
 def _extract_transcript_turn(payload: dict, message: dict, event_type: str):
@@ -485,7 +487,9 @@ def _extract_transcript_turn(payload: dict, message: dict, event_type: str):
     elif event_type == "speech-update":
         speech = message.get("speech") or payload.get("speech") or {}
         transcript_text = _extract_turn_text(speech)
-        role = speech.get("role", "assistant")
+        if not transcript_text:
+            transcript_text = _extract_turn_text(message)
+        role = speech.get("role") or message.get("role", "assistant")
     elif event_type == "conversation-update":
         msgs = message.get("messages") or payload.get("messages") or []
         for msg in reversed(msgs):
@@ -515,7 +519,14 @@ def _extract_assistant_turn(payload: dict, message: dict, event_type: str) -> st
 
 def _handle_transcript(payload: dict, call_sid: Optional[str], vapi_call_id: Optional[str], call_data: Optional[dict] = None) -> Response:
     try:
-        event_type = payload.get("type") or payload.get("event") or ""
+        # Real Vapi payloads arrive as {"message": {...}} with the type nested
+        # inside message — fall back to message.type like the dispatcher does.
+        event_type = (
+            payload.get("type")
+            or payload.get("event")
+            or (payload.get("message") or {}).get("type")
+            or ""
+        )
         message = payload.get("message", payload)
 
         transcript_text, role = _extract_transcript_turn(payload, message, event_type)

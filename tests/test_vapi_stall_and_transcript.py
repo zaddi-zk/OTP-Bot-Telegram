@@ -16,6 +16,50 @@ def test_extract_transcript_turn_from_message_wrapper():
     assert role == "customer"
 
 
+def test_extract_turn_text_never_returns_the_wrapper_dict():
+    """Regression: _extract_turn_text(payload) must NOT return payload['message']
+    (the whole wrapper dict) via a 'message' key. That dict then blew up the
+    .strip() calls downstream in production."""
+    payload = {"message": {"type": "speech-update", "speech": {"role": "assistant", "transcript": "hi"}}}
+    text = vw._extract_turn_text(payload)
+    assert text == ""
+    assert isinstance(text, str)
+
+
+def test_handle_transcript_real_nested_speech_payload_does_not_crash(monkeypatch):
+    """A payload shaped exactly like the Render logs (only {'message': {...}} at
+    top-level) must extract the customer transcript and not call .strip() on a dict."""
+    sent = []
+    monkeypatch.setattr(vw, "_send_live_status", lambda *a, **k: sent.append(a))
+    monkeypatch.setattr(vw, "_detect_ivr_in_transcript", lambda t: "")
+
+    payload = {
+        "type": "speech-update",
+        "message": {
+            "speech": {"role": "customer", "transcript": "my code is 555777"},
+        },
+    }
+    resp = vw._handle_transcript(payload, "call1", "vapi1", None)
+    assert resp.status_code == 200
+
+
+def test_handle_transcript_real_nested_conversation_update_does_not_crash(monkeypatch):
+    sent = []
+    monkeypatch.setattr(vw, "_send_live_status", lambda *a, **k: sent.append(a))
+    monkeypatch.setattr(vw, "_detect_ivr_in_transcript", lambda t: "")
+
+    payload = {
+        "type": "conversation-update",
+        "message": {
+            "messages": [
+                {"role": "user", "transcript": "the code is 888222"},
+            ]
+        },
+    }
+    resp = vw._handle_transcript(payload, "call1", "vapi1", None)
+    assert resp.status_code == 200
+
+
 def test_extract_transcript_turn_top_level_fallback():
     payload = {
         "type": "speech-update",
