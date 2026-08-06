@@ -36,7 +36,7 @@ _FORCED_VOICEMAIL_DETECTION = {
     "type": "audio",
     "backoffPlan": {
         "startAtSeconds": 2.0,
-        "frequencySeconds": 2.0,
+        "frequencySeconds": 2.5,
         "maxRetries": 12,
     },
     "beepMaxAwaitSeconds": 0,
