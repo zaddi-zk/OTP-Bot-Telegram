@@ -35,11 +35,11 @@ _FORCED_VOICEMAIL_DETECTION = {
     "provider": "vapi",
     "type": "audio",
     "backoffPlan": {
-        "startAtSeconds": 2.0,
+        "startAtSeconds": 1.5,
         "frequencySeconds": 2.5,
-        "maxRetries": 10,
+        "maxRetries": 8,
     },
-    "beepMaxAwaitSeconds": 0,
+    "beepMaxAwaitSeconds": 12,
 }
 
 

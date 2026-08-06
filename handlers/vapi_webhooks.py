@@ -39,6 +39,13 @@ _MACHINE_ENDED_REASONS = {
     "customer-did-not-answer",
 }
 
+# Hard backstop: if a call sits connected this long without capturing an OTP,
+# ANY human speech, or IVR speech, it is a dead/silent leg silently burning
+# credits. Force it down. Once real speech or an OTP appears the watchdog is
+# disarmed for the rest of the call, so legitimate multi-minute calls and the
+# 5-minute scenario are never cut off by this.
+_CALL_STALL_HARD_CAP_SECONDS = 180.0
+
 # Phrases the AI says right before/when delivering the one-time passcode.
 # We use these to tell the operator the call is at the "code stage" so they
 # can start the real OTP flow on their side at the right moment.
@@ -117,6 +124,54 @@ def _hangup_call(vapi_call_id: Optional[str], twilio_sid: Optional[str]) -> None
             twilio_end_call(twilio_sid)
         except Exception as e:
             logger.warning("[VAPI_HANGUP_ERROR] twilio side: %s", e)
+
+
+def _record_human_or_ivr_speech(session, is_ivr: bool) -> None:
+    """Track observed customer speech on the session.
+
+    Only human-like (non-IVR) speech disarms the stall watchdog. Recognized IVR
+    speech is handled by the immediate machine-hangup path; unrecognized machine
+    chatter leaves the watchdog armed so a silent leg still gets force-ended.
+    """
+    if not session:
+        return
+    session["stall_seen_speech"] = True
+    if not is_ivr:
+        session["stall_seen_human_speech"] = True
+
+def _check_call_stalled(session, payload: dict, call_sid: Optional[str], vapi_call_id: Optional[str], call_data: Optional[dict]) -> bool:
+    """Force-hangup a silent, credit-burning leg. Returns True if hung up.
+
+    Only triggers when ALL are true: call connected > cap, no OTP captured yet,
+    no customer speech (human or IVR) observed yet. Real speech or an OTP
+    disarms it, so a human conversation or the long 5-minute scenario is safe.
+    """
+    if not session:
+        return False
+    if session.get("stall_hangup_fired") or session.get("otp"):
+        return False
+    if session.get("stall_seen_human_speech"):
+        return False
+
+    started_at = session.get("call_started_at")
+    if not started_at:
+        return False
+    elapsed = (datetime.utcnow() - started_at).total_seconds()
+    if elapsed < _CALL_STALL_HARD_CAP_SECONDS:
+        return False
+
+    session["stall_hangup_fired"] = True
+    logger.info(
+        "[VAPI_STALL_HANGUP] call=%s vapi_call_id=%s elapsed=%.0fs reason=no-speech-no-otp",
+        call_sid, vapi_call_id, elapsed,
+    )
+    chat_id = _resolve_chat_id(payload, call_sid, vapi_call_id, call_data)
+    if chat_id:
+        _send_live_status(int(chat_id), "⏹️ Call stalled (no speech / no code) — hung up to save credits.")
+    threading.Thread(
+        target=_hangup_call, args=(vapi_call_id, call_sid), daemon=True
+    ).start()
+    return True
 
 
 def _handle_machine_detected(
@@ -292,6 +347,15 @@ def handle_vapi_webhook(request) -> Response:
             logger.info("[VAPI_WEBHOOK] no chat_id — payload top keys=%s call keys=%s",
                          list(payload.keys()), list(call_data.keys()))
 
+        # Backstop for silent/stuck legs: resolve the session and force-hangup
+        # if the call is connected past the cap with no OTP and no human speech.
+        # Runs on every live webhook so the check fires even when a silent leg
+        # never produces a customer transcript.
+        from bot import get_call_session
+        _stall_session = get_call_session(call_sid) or (get_call_session(vapi_call_id) if vapi_call_id else None)
+        if event_type not in ("call.ended", "call.completed", "call.failed", "call.error", "end-of-call-report") and _check_call_stalled(_stall_session, payload, call_sid, vapi_call_id, call_data):
+            return Response("OK")
+
         if event_type in ("call.started", "call.ringing"):
             return Response("OK")
 
@@ -385,75 +449,77 @@ def _extract_otp_from_messages(
     return None
 
 
+def _extract_turn_text(obj: dict) -> str:
+    """Pull the transcript text out of a speech/message/message-entry dict,
+    whatever key Vapi used (transcript/content/text/message/transcription)."""
+    if not obj:
+        return ""
+    return (
+        obj.get("transcript")
+        or obj.get("content")
+        or obj.get("text")
+        or obj.get("message")
+        or obj.get("transcription")
+        or ""
+    )
+
+
+def _extract_transcript_turn(payload: dict, message: dict, event_type: str):
+    """Return (transcript_text, role) for the newest turn in the payload.
+
+    Vapi nests the live transcript under the top-level ``message`` key
+    (webhooks arrive with payload_keys=['message']), so we read from BOTH the
+    ``message`` wrapper and the payload top level. A top-level-only read is
+    what previously left transcript_text empty and silently disabled the
+    mid-call IVR/machine guard.
+    """
+    transcript_text = ""
+    role = "assistant"
+
+    if event_type in ("transcript", "transcription", "call.transcript"):
+        transcript_text = _extract_turn_text(message)
+        role = message.get("role", "assistant")
+        if not transcript_text:
+            transcript_text = _extract_turn_text(payload)
+            role = payload.get("role", role)
+    elif event_type == "speech-update":
+        speech = message.get("speech") or payload.get("speech") or {}
+        transcript_text = _extract_turn_text(speech)
+        role = speech.get("role", "assistant")
+    elif event_type == "conversation-update":
+        msgs = message.get("messages") or payload.get("messages") or []
+        for msg in reversed(msgs):
+            msg_role = str(msg.get("role", "")).lower()
+            # Vapi uses "user" for the callee and "bot"/"assistant" for the AI.
+            if msg_role in ("user", "customer", "human"):
+                transcript_text = _extract_turn_text(msg)
+                if transcript_text:
+                    role = "customer"
+                    break
+    return transcript_text, role
+
+
+def _extract_assistant_turn(payload: dict, message: dict, event_type: str) -> str:
+    """Newest assistant/bot utterance, for the passcode-stage notice."""
+    if event_type == "conversation-update":
+        msgs = message.get("messages") or payload.get("messages") or []
+        for msg in reversed(msgs):
+            msg_role = str(msg.get("role", "")).lower()
+            if msg_role in ("bot", "assistant"):
+                text = _extract_turn_text(msg)
+                if text:
+                    return text
+        return ""
+    return _extract_turn_text(message) or _extract_turn_text(payload)
+
+
 def _handle_transcript(payload: dict, call_sid: Optional[str], vapi_call_id: Optional[str], call_data: Optional[dict] = None) -> Response:
     try:
         event_type = payload.get("type") or payload.get("event") or ""
         message = payload.get("message", payload)
 
-        transcript_text = ""
-        role = "assistant"
-
-        if event_type in ("transcript", "transcription", "call.transcript"):
-            transcript_text = (
-                message.get("transcript")
-                or message.get("text")
-                or message.get("transcription")
-                or ""
-            )
-            role = message.get("role", "assistant")
-        elif event_type == "speech-update":
-            speech = payload.get("speech", {})
-            transcript_text = (
-                speech.get("transcript")
-                or speech.get("text")
-                or speech.get("transcription")
-                or ""
-            )
-            role = speech.get("role", "assistant")
-        elif event_type == "conversation-update":
-            message_body = payload.get("message", payload)
-            msgs = message_body.get("messages") or payload.get("messages") or []
-            for msg in reversed(msgs):
-                msg_role = str(msg.get("role", "")).lower()
-                # Vapi uses "user" for the callee and "bot"/"assistant" for the AI.
-                if msg_role in ("user", "customer", "human"):
-                    transcript_text = (
-                        msg.get("transcript")
-                        or msg.get("content")
-                        or msg.get("text")
-                        or msg.get("message")
-                        or ""
-                    )
-                    if transcript_text:
-                        role = "customer"
-                        break
-
-        # Capture the newest assistant utterance too, so the passcode-stage
-        # notice fires even on conversation-update payloads.
-        assistant_turn = None
-        if event_type == "conversation-update":
-            message_body = payload.get("message", payload)
-            msgs = message_body.get("messages") or payload.get("messages") or []
-            for msg in reversed(msgs):
-                msg_role = str(msg.get("role", "")).lower()
-                if msg_role in ("bot", "assistant"):
-                    assistant_turn = (
-                        msg.get("transcript")
-                        or msg.get("content")
-                        or msg.get("text")
-                        or msg.get("message")
-                        or ""
-                    )
-                    if assistant_turn:
-                        break
-        else:
-            transcript_text = (
-                message.get("transcript")
-                or message.get("text")
-                or message.get("transcription")
-                or ""
-            )
-            role = message.get("role", "assistant")
+        transcript_text, role = _extract_transcript_turn(payload, message, event_type)
+        assistant_turn = _extract_assistant_turn(payload, message, event_type)
 
         metadata = _extract_metadata(payload, call_data)
         code_length = int(metadata.get("code_length", 6))
@@ -500,6 +566,11 @@ def _handle_transcript(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
 
         if role == "customer" and transcript_text:
             ivr_snippet = _detect_ivr_in_transcript(transcript_text)
+            session = get_call_session(call_sid) or (get_call_session(vapi_call_id) if vapi_call_id else None)
+            # Real speech (human or IVR) observed -> disarm the stall watchdog.
+            _record_human_or_ivr_speech(session, is_ivr=bool(ivr_snippet))
+            # Don't let IVR chatter fool the watchdog while we detect it here;
+            # hand off to the machine handler and hang up immediately.
             if ivr_snippet:
                 _handle_machine_detected(
                     payload,
@@ -509,6 +580,7 @@ def _handle_transcript(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
                     kind="IVR",
                     snippet=ivr_snippet,
                 )
+                return Response("OK")
         return Response("OK")
     except Exception as e:
         logger.error("[VAPI_TRANSCRIPT_ERROR] %s", e)

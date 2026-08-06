@@ -1464,6 +1464,7 @@ class _SessionManager:
             existing.update(kwargs)
             return existing
         session = {"call_sid": call_sid, **kwargs}
+        session["call_started_at"] = datetime.utcnow()
         self._sessions[call_sid] = session
         return session
 
@@ -1558,7 +1559,6 @@ def register_call_session(
     session["status"] = "in-progress"
     session["last_activity_time"] = datetime.utcnow()
     return session
-
 
 # ======================================================================
 # CALL SESSION VOICE HELPERS
