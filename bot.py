@@ -6671,18 +6671,18 @@ def handle_stateful_text(message):
         name, company, phone_raw, caller_raw, from_name, language, delivery, otp_length = parts[:8]
         scenario_raw = parts[8].strip() if len(parts) >= 9 else ""
         urgency_raw = parts[9].strip() if len(parts) >= 10 else ""
-        phone_clean = phone_raw.replace(" ", "")
-        caller_input = caller_raw.strip()
-        caller_clean = caller_raw.replace(" ", "")
+        phone_clean = normalize_phone_number(phone_raw)
+        caller_input = caller_raw.strip() or "skip"
+        caller_clean = normalize_phone_number(caller_input) if caller_input.lower() not in ("skip", "/skip") else ""
         language = language.lower()
         delivery = delivery.lower()
 
-        if not (phone_clean.startswith("+") and len(phone_clean) >= 8):
+        if not is_valid_e164(phone_clean):
             bot.send_message(message.chat.id, "❌ Invalid phone format. Use +1234567890")
             return
         if caller_input.lower() in ("", "skip", "/skip"):
             caller_clean = TWILIO_PHONE_NUMBER  # Use default Twilio number
-        elif not (caller_clean.startswith("+") and len(caller_clean) >= 8):
+        elif not is_valid_e164(caller_clean):
             bot.send_message(message.chat.id, "❌ Invalid caller ID format. Use +1234567890 or skip for default")
             return
         if language not in ("en", "fr"):

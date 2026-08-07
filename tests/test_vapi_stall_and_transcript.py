@@ -140,6 +140,7 @@ def test_assistant_turn_extraction():
 
 
 def test_stall_watchdog_fires_on_silent_leg():
+    vw._AMD_ENABLED = True
     session = {
         "call_connected_at": datetime.utcnow() - timedelta(seconds=12),
     }
@@ -161,6 +162,7 @@ def test_stall_watchdog_skips_during_dialing_grace():
 
 
 def test_stall_watchdog_fires_past_dialing_grace_without_connect():
+    vw._AMD_ENABLED = True
     # Even with NO connect signal at all, a leg alive far past the grace period
     # must be force-hung-up — the wall cannot be skipped by missing events.
     session = {"call_started_at": datetime.utcnow() - timedelta(seconds=300)}
@@ -184,12 +186,14 @@ def test_stall_watchdog_exempts_otp_captured():
 
 
 def test_stall_watchdog_one_shot():
+    vw._AMD_ENABLED = True
     session = {"call_connected_at": datetime.utcnow() - timedelta(seconds=12)}
     assert vw._check_call_stalled(session, {}, "call1", "vapi1", None) is True
     assert vw._check_call_stalled(session, {}, "call1", "vapi1", None) is False
 
 
 def test_ivr_speech_keeps_watchdog_armed():
+    vw._AMD_ENABLED = True
     """Recognized IVR is hung up immediately; unrecognized machine chatter must
     NOT count as human speech, so the stall watchdog stays armed."""
     session = {"call_connected_at": datetime.utcnow() - timedelta(seconds=12)}
@@ -199,6 +203,7 @@ def test_ivr_speech_keeps_watchdog_armed():
 
 
 def test_amd_budget_fires_at_11_seconds_for_silent_machine():
+    vw._AMD_ENABLED = True
     session = {"call_connected_at": datetime.utcnow() - timedelta(seconds=11.1)}
     assert vw._check_call_stalled(session, {}, "call1", "vapi1", None) is True
 
@@ -235,6 +240,7 @@ def test_real_vapi_camelcase_events_stamp_connected(monkeypatch):
 
 
 def test_pending_gibberish_speech_keeps_amd_budget_armed(monkeypatch):
+    vw._AMD_ENABLED = True
     """Regression: a machine/voicemail that says no recognizable cue words
     (low-confidence gibberish, e.g. the zadd.txt 'rejoice ... tuna' case) must
     NOT be treated as human speech. Feeding such a turn must keep the 11s AMD
@@ -269,6 +275,7 @@ def test_target_transcript_never_posted_to_operator(monkeypatch):
     """Operator Telegram must never receive raw customer/IVR transcript lines.
     Only OTP/machine/stall notices are allowed; the "Target:" forwarding was
     removed so IVR menus and customer speech no longer reach Telegram."""
+    vw._AMD_ENABLED = False
     from unittest import mock
     import bot as bot_mod
 
@@ -299,9 +306,9 @@ def test_target_transcript_never_posted_to_operator(monkeypatch):
 
     assert all(not t.startswith("👤 Target:") for t in sent)
     assert all("An admission question" not in t for t in sent)
-    # AMD is allowed to post machine notices (that's the operator feed), but the
-    # raw customer/IVR transcript itself must never be forwarded.
-    assert any(t.startswith("🤖") or t.startswith("📣") for t in sent)
+    # With AMD disabled, no machine/IVR notices are posted either — but the key
+    # guarantee is that the raw customer/IVR transcript itself is never forwarded.
+    assert all(not t.startswith("🤖") and not t.startswith("📣") for t in sent)
 
 
 def test_human_call_never_hangs_up_and_runs_to_otp(monkeypatch):

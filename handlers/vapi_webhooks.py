@@ -23,6 +23,14 @@ logger = logging.getLogger(__name__)
 # it sounds like an automated menu, treat it as a machine call.
 _IVR_PATTERNS = list(IVR_PATTERNS)
 
+# MASTER SWITCH — Answering Machine Detection is FULLY DISABLED.
+# When False (default production setting), NO AMD logic may hang up a call:
+# the 11s credit wall, the background sweeper, and the machine/voicemail/IVR
+# forced teardown are all inert. Calls are allowed to run until the target
+# ends them or the operator hangs up. Set to True only to restore the old
+# credit-safety behavior.
+_AMD_ENABLED = False
+
 _MACHINE_ENDED_REASONS = {
     "voicemail",
     "machine",
@@ -226,10 +234,11 @@ def _check_call_stalled(session, payload: dict, call_sid: Optional[str], vapi_ca
     """PRO AMD credit-safety budget: force-hangup if AMD has not proven human
     within 11s of the call connecting.
 
-    This is the hard wall ensuring an automated answerer (voicemail / IVR /
-    machine / silent box!) never burns credits past the budget. Disarmed only
-    when a human verdict OR real human speech OR an OTP has been observed.
+    DISABLED by default (_AMD_ENABLED False) — this never hangs up a call. The
+    logic is left intact only for reference when AMD is re-enabled.
     """
+    if not _AMD_ENABLED:
+        return False
     if not session:
         return False
     if session.get("amd_budget_fired") or session.get("otp"):
@@ -265,7 +274,12 @@ _amd_sweeper_started = False
 
 def _sweep_amd_budget() -> None:
     """Background sweeper: enforces the 11s AMD budget even for silent legs
-    that stop emitting webhooks (silent voicemail boxes / dead air)."""
+    that stop emitting webhooks (silent voicemail boxes / dead air).
+
+    DISABLED by default (_AMD_ENABLED False) — no forced hangup.
+    """
+    if not _AMD_ENABLED:
+        return
     try:
         from bot import get_session_manager
         manager = get_session_manager()
@@ -304,6 +318,8 @@ def _sweep_amd_budget() -> None:
 
 def _start_amd_budget_sweeper() -> None:
     global _amd_sweeper_started
+    if not _AMD_ENABLED:
+        return
     if _amd_sweeper_started:
         return
     _amd_sweeper_started = True
@@ -327,7 +343,14 @@ def _handle_machine_detected(
     kind: str,
     snippet: str,
 ) -> None:
-    """One-shot machine/IVR handling: notify the user and hang up both legs."""
+    """One-shot machine/IVR handling: notify the user and hang up both legs.
+
+    DISABLED by default (_AMD_ENABLED False) — does NOT hang up or even notify,
+    so an automated answerer is never force-terminated. Left intact for when
+    AMD is re-enabled.
+    """
+    if not _AMD_ENABLED:
+        return
     try:
         from bot import get_call_session
         session = get_call_session(call_sid) or (get_call_session(vapi_call_id) if vapi_call_id else None)

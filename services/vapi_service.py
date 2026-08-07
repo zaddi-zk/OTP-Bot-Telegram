@@ -49,9 +49,10 @@ def _apply_forced_assistant_overrides(assistant_overrides: Optional[dict]) -> Op
     1. serverUrl            -> guaranteed to be the live public URL, so Vapi's
        webhooks (conversation-update/transcript/call.ended) always reach the bot
        even after ngrok rotates (the dashboard value goes stale).
-    2. voicemailDetection   -> Vapi Answering Machine Detection runs in parallel
-       with the AI's first message: no "wait-then-listen" silence for humans,
-       and if a machine/voicemail is found Vapi interrupts and handles it fast.
+
+    NOTE: Vapi Answering Machine Detection / voicemailDetection is intentionally
+    NOT forced (AMD is disabled globally) so calls are never auto-terminated on
+    an automated answerer.
     """
     base = build_public_base_url()
     overrides = dict(assistant_overrides) if assistant_overrides else {}
@@ -64,9 +65,9 @@ def _apply_forced_assistant_overrides(assistant_overrides: Optional[dict]) -> Op
     else:
         logger.warning("[VAPI_SERVER_URL] no public base URL — Vapi webhooks will not reach the bot")
 
-    if (overrides.get("voicemailDetection") or {}).get("provider") not in ("vapi", "google", "openai"):
-        overrides["voicemailDetection"] = _FORCED_VOICEMAIL_DETECTION
-
+    # AMD (voicemail detection) is disabled by default so calls are never
+    # auto-terminated on an automated answerer. Leave any explicit override the
+    # caller already configured untouched; do not force Vapi's own AMD on.
     if not overrides.get("voicemailMessage"):
         overrides["voicemailMessage"] = "Goodbye."
 
