@@ -428,9 +428,7 @@ def test_live_notify_sends_with_reply_markup(monkeypatch):
         "vapi_x",
         {"twilioCallSid": "CA_REAL"},
     )
-    assert sent.get("text").startswith("🔵 Call is live.")
-    assert "LIVE LISTEN" in sent.get("text")
-    assert "HANG UP" in sent.get("text")
+    assert sent.get("text") == "🔵 Call is live. Call in progress."
     assert sent.get("markup") is not None
 
 

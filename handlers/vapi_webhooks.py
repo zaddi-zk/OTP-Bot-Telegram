@@ -472,9 +472,7 @@ def _notify_call_live(payload: dict, call_sid: Optional[str], vapi_call_id: Opti
         real_sid = _resolve_real_twilio_sid(vapi_call_id, call_sid)
         _send_live_status(
             chat_id,
-            "🔵 Call is live. Call in progress with customer.\n\n"
-            "• 🎧 LIVE LISTEN — Tap to open the live monitoring panel and stream the call.\n"
-            "• 📴 HANG UP — Tap to instantly hang up this call.",
+            "🔵 Call is live. Call in progress.",
             reply_markup=_build_live_control_keyboard(real_sid or call_sid or "unknown"),
         )
     except Exception as e:

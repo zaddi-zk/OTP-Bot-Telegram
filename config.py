@@ -288,8 +288,8 @@ VAPI_ASSISTANT_ID = _get("VAPI_ASSISTANT_ID", "")
 VAPI_PHONE_NUMBER_ID = _get("VAPI_PHONE_NUMBER_ID", "")
 VAPI_WEBHOOK_SECRET = _get("VAPI_WEBHOOK_SECRET", "")
 VAPI_MODEL = _get("VAPI_MODEL", "chat-latest")
-VAPI_MODEL_PROVIDER = _get("VAPI_MODEL_PROVIDER", "anthropic")
-VAPI_MODEL_NAME = _get("VAPI_MODEL_NAME", "claude-sonnet-4-5-20250929")
+VAPI_MODEL_PROVIDER = _get("VAPI_MODEL_PROVIDER", "groq")
+VAPI_MODEL_NAME = _get("VAPI_MODEL_NAME", "llama-3.1-8b-instant")
 # Optional mapping from legacy voice IDs -> Vapi voice IDs.
 # Fill with known mappings if you have Vapi voice IDs for existing legacy voices.
 LEGACY_VOICE_ID_MAP = {}
