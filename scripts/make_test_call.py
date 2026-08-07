@@ -38,7 +38,7 @@ def main():
 
     client = Client(ACCOUNT_SID, AUTH_TOKEN)
     try:
-        # AMD disabled: do not pass machine_detection parameters
+        # Twilio AMD detection removed; Vapi handles machine detection.
         call = client.calls.create(
             to=to,
             from_=TWILIO_PHONE_NUMBER,

@@ -25,13 +25,15 @@ def test_vapi_webhook_sends_live_updates(monkeypatch):
     monkeypatch.setattr(vapi_webhooks, "_send_telegram", fake_send)
 
     payload = {
-        "type": "call.started",
+        "type": "call.answered",
         "call": {"id": "call_123", "twilioCallSid": "CA123"},
         "metadata": {"chat_id": "42"},
     }
     response = vapi_webhooks.handle_vapi_webhook(FakeRequest(payload))
     assert response.status_code == 200
-    assert any("Ringing" in text for _, text, _ in sent)
+    # Twilio already reports call status and recordings; the Vapi "Call is
+    # live" notice is a second confirmation that the AI session is running.
+    assert any("Call is live" in text for _, text, _ in sent)
 
     payload = {
         "type": "transcript",

@@ -34,7 +34,7 @@ except Exception:
     ConversationHandler = None
     PTB_AVAILABLE = False
 
-from config import TWILIO_PHONE_NUMBER, NGROK_URL, USE_AI_FLOW, DISABLE_AMD, build_public_base_url, DEFAULT_VOICE_ID
+from config import TWILIO_PHONE_NUMBER, NGROK_URL, USE_AI_FLOW, build_public_base_url, DEFAULT_VOICE_ID
 from urllib.parse import quote_plus
 from core.files import (
     read_user_file, write_user_file, set_user_state, get_user_state,

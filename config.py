@@ -107,12 +107,6 @@ PAYMENT_ADDRESSES = {
 LIVE_LISTEN_URL = _get("LIVE_LISTEN_URL", NGROK_URL)
 LIVE_LISTEN_SECRET = _get("LIVE_LISTEN_SECRET", "")
 
-# Disable Twilio Answering Machine Detection globally.
-# AMD is DISABLED by default because it adds latency and can interfere with
-# the Media Stream AI flow. Set DISABLE_AMD=false to re-enable.
-DISABLE_AMD = _get("DISABLE_AMD", "true").lower() in ("true", "1", "yes")
-AMD_ENABLED = not DISABLE_AMD
-
 # Abstract API
 ABSTRACT_API_KEY = _get("ABSTRACT_API_KEY", "")
 

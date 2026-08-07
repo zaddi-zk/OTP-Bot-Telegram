@@ -39,7 +39,7 @@ _FORCED_VOICEMAIL_DETECTION = {
         "frequencySeconds": 2.5,
         "maxRetries": 8,
     },
-    "beepMaxAwaitSeconds": 12,
+    "beepMaxAwaitSeconds": 6,
 }
 
 

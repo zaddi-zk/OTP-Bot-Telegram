@@ -3,11 +3,14 @@ import logging
 import os
 import re
 import threading
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 from typing import Optional
 
 import requests
 from flask import Response
+
+from services.amd import AmdStateMachine, IVR_PATTERNS
 
 logger = logging.getLogger(__name__)
 
@@ -18,18 +21,7 @@ logger = logging.getLogger(__name__)
 # IVR ("thanks for calling ... press 1") answers with speech, so AMD labels
 # it "human". We therefore ALSO read the actual customer transcript and, if
 # it sounds like an automated menu, treat it as a machine call.
-_IVR_PATTERNS = [
-    re.compile(r"(press|dial|hit|enter)[^\w]{0,16}(1|2|3|4|5|6|7|8|9|0|#|\*|one|two|three|four|five|six|seven|eight|nine|zero)", re.I),
-    re.compile(r"\b(thank you for calling|thanks for calling|welcome to)\b", re.I),
-    re.compile(r"\b(account number|your account|your pin|your password|your zip|your ssn|your social security)\b", re.I),
-    re.compile(r"\benter (your |the )?(pin|password|account|code|number|zip)\b", re.I),
-    re.compile(r"\b(call may be|call is being|this call is)[^\w]{0,4}(monitored|recorded)\b", re.I),
-    re.compile(r"press [\w]+ (for|to) ", re.I),
-    re.compile(r"\b(main menu|automated (assistant|system|service)|virtual assistant)\b", re.I),
-    re.compile(r"\b(to continue|for more options|stay on the line|all our representatives)\b", re.I),
-    re.compile(r"\b(call is in queue|in queue and will be answered|the next available|representative)\b", re.I),
-    re.compile(r"\b(to (help you|get you to)|what can i help you|how can i help you|say a few words)\b", re.I),
-]
+_IVR_PATTERNS = list(IVR_PATTERNS)
 
 _MACHINE_ENDED_REASONS = {
     "voicemail",
@@ -45,6 +37,21 @@ _MACHINE_ENDED_REASONS = {
 # disarmed for the rest of the call, so legitimate multi-minute calls and the
 # 5-minute scenario are never cut off by this.
 _CALL_STALL_HARD_CAP_SECONDS = 180.0
+
+# PRO CREDIT-SAFETY BUDGET: every call that enters an automated answerer
+# (voicemail / IVR / machine) MUST be torn down within 11 seconds of the moment
+# the call connects. This is a hard wall — NOT a waiter. It fires whenever AMD
+# has not yet proven "human" within the budget, covering silent voicemail boxes
+# and slow IVRs that slip past pattern/cadence matching. It is disarmed the
+# instant a human verdict or an OTP is observed, so a real human conversation
+# is never clipped.
+_AMD_HARD_CAP_SECONDS = 11.0
+
+# If no explicit answer/stamp event ever arrives, the wall still engages once the
+# call has lived past the dialing grace. This guarantees an automated / silent /
+# voicemail leg can never run unbounded even when Vapi neglects to send a
+# connect signal. (A human verdict or OTP still disarms it before this point.)
+_AMD_DIALING_GRACE_SECONDS = 15.0
 
 # Phrases the AI says right before/when delivering the one-time passcode.
 # We use these to tell the operator the call is at the "code stage" so they
@@ -126,6 +133,35 @@ def _hangup_call(vapi_call_id: Optional[str], twilio_sid: Optional[str]) -> None
             logger.warning("[VAPI_HANGUP_ERROR] twilio side: %s", e)
 
 
+def _stamp_call_connected(session) -> None:
+    """Record the moment the leg actually answers; anchors the 11s AMD budget.
+    Idempotent (only sets it once, on the first answer signal)."""
+    if session is None:
+        return
+    if not session.get("call_connected_at"):
+        session["call_connected_at"] = datetime.utcnow()
+
+
+def _amd_budget_anchor(session) -> Optional[datetime]:
+    """Best-known time the call leg came up, for the 11s AMD wall.
+
+    1. Explicit answer stamp (call.answered / call.in-progress / real Vapi
+       inProgress / transcript evidence) when present.
+    2. Otherwise the call's start time plus the dialing grace — so a leg that
+       never produced a connect signal (silent box, Vapi omission) is still
+       bounded instead of running forever.
+    """
+    if not session:
+        return None
+    connected = session.get("call_connected_at")
+    if connected:
+        return connected
+    started = session.get("call_started_at")
+    if started:
+        return started + timedelta(seconds=_AMD_DIALING_GRACE_SECONDS)
+    return None
+
+
 def _record_human_or_ivr_speech(session, is_ivr: bool) -> None:
     """Track observed customer speech on the session.
 
@@ -139,39 +175,102 @@ def _record_human_or_ivr_speech(session, is_ivr: bool) -> None:
     if not is_ivr:
         session["stall_seen_human_speech"] = True
 
-def _check_call_stalled(session, payload: dict, call_sid: Optional[str], vapi_call_id: Optional[str], call_data: Optional[dict]) -> bool:
-    """Force-hangup a silent, credit-burning leg. Returns True if hung up.
 
-    Only triggers when ALL are true: call connected > cap, no OTP captured yet,
-    no customer speech (human or IVR) observed yet. Real speech or an OTP
-    disarms it, so a human conversation or the long 5-minute scenario is safe.
+def _check_call_stalled(session, payload: dict, call_sid: Optional[str], vapi_call_id: Optional[str], call_data: Optional[dict]) -> bool:
+    """PRO AMD credit-safety budget: force-hangup if AMD has not proven human
+    within 11s of the call connecting.
+
+    This is the hard wall ensuring an automated answerer (voicemail / IVR /
+    machine / silent box!) never burns credits past the budget. Disarmed only
+    when a human verdict OR real human speech OR an OTP has been observed.
     """
     if not session:
         return False
-    if session.get("stall_hangup_fired") or session.get("otp"):
+    if session.get("amd_budget_fired") or session.get("otp"):
         return False
     if session.get("stall_seen_human_speech"):
         return False
 
-    started_at = session.get("call_started_at")
+    started_at = _amd_budget_anchor(session)
     if not started_at:
         return False
     elapsed = (datetime.utcnow() - started_at).total_seconds()
-    if elapsed < _CALL_STALL_HARD_CAP_SECONDS:
+    if elapsed < _AMD_HARD_CAP_SECONDS:
         return False
 
-    session["stall_hangup_fired"] = True
+    # Cap reached: hang it up unless a human verdict/OTP was observed.
+    session["amd_budget_fired"] = True
     logger.info(
-        "[VAPI_STALL_HANGUP] call=%s vapi_call_id=%s elapsed=%.0fs reason=no-speech-no-otp",
+        "[VAPI_AMD_BUDGET] call=%s vapi_call_id=%s elapsed=%.0fs reason=machine-or-silent-allocated",
         call_sid, vapi_call_id, elapsed,
     )
     chat_id = _resolve_chat_id(payload, call_sid, vapi_call_id, call_data)
     if chat_id:
-        _send_live_status(int(chat_id), "⏹️ Call stalled (no speech / no code) — hung up to save credits.")
+        _send_live_status(int(chat_id), "🤖 Automated/Silent line — hung up to save credits (11s budget).")
     threading.Thread(
         target=_hangup_call, args=(vapi_call_id, call_sid), daemon=True
     ).start()
     return True
+
+
+_AMD_SWEEP_INTERVAL_SECONDS = 3.0
+_amd_sweeper_started = False
+
+
+def _sweep_amd_budget() -> None:
+    """Background sweeper: enforces the 11s AMD budget even for silent legs
+    that stop emitting webhooks (silent voicemail boxes / dead air)."""
+    try:
+        from bot import get_session_manager
+        manager = get_session_manager()
+        if manager is None:
+            return
+        for _call_sid, session in manager.all_sessions():
+            try:
+                if session.get("amd_budget_fired") or session.get("otp"):
+                    continue
+                if session.get("stall_seen_human_speech"):
+                    continue
+                started_at = _amd_budget_anchor(session)
+                if not started_at:
+                    continue
+                elapsed = (datetime.utcnow() - started_at).total_seconds()
+                if elapsed < _AMD_HARD_CAP_SECONDS:
+                    continue
+                session["amd_budget_fired"] = True
+                vapi_call_id = session.get("vapi_call_id")
+                call_sid = session.get("call_sid") or vapi_call_id
+                logger.info(
+                    "[VAPI_AMD_BUDGET_SWEEP] call=%s vapi_call_id=%s elapsed=%.0fs",
+                    call_sid, vapi_call_id, elapsed,
+                )
+                chat_id = session.get("chat_id")
+                if chat_id:
+                    _send_live_status(int(chat_id), "🤖 Automated/Silent line — hung up to save credits (11s budget).")
+                threading.Thread(
+                    target=_hangup_call, args=(vapi_call_id, call_sid), daemon=True
+                ).start()
+            except Exception:
+                logger.exception("[VAPI_AMD_BUDGET_SWEEP_ERROR]")
+    except Exception:
+        logger.exception("[VAPI_AMD_BUDGET_SWEEP_FAILED]")
+
+
+def _start_amd_budget_sweeper() -> None:
+    global _amd_sweeper_started
+    if _amd_sweeper_started:
+        return
+    _amd_sweeper_started = True
+
+    def _loop() -> None:
+        while True:
+            try:
+                _sweep_amd_budget()
+            except Exception:
+                logger.exception("[VAPI_AMD_SWEEP_LOOP_ERROR]")
+            time.sleep(_AMD_SWEEP_INTERVAL_SECONDS)
+
+    threading.Thread(target=_loop, daemon=True).start()
 
 
 def _handle_machine_detected(
@@ -194,12 +293,14 @@ def _handle_machine_detected(
 
         chat_id = _resolve_chat_id(payload, call_sid, vapi_call_id, call_data)
         if chat_id:
-            if kind == "IVR":
-                text = (
-                    "🤖 IVR / automated system detected.\n"
-                    f"Detected: {snippet}\n"
-                    "Hanging up."
-                )
+            kmap = {
+                "ivr": "🤖 IVR / automated system detected.",
+                "voicemail": "📣 Voicemail / answering machine detected.",
+                "monologue": "🤖 Machine detected (no human response).",
+            }
+            head = kmap.get(kind)
+            if head:
+                text = f"{head}\n{snippet}\nHanging up before the beep."
             else:
                 label = _human_or_machine_label(snippet)
                 text = f"{label or '🤖 Machine detected.'} Hanging up."
@@ -320,6 +421,7 @@ def _extract_metadata(payload: dict, call_data: Optional[dict] = None) -> dict:
 
 def handle_vapi_webhook(request) -> Response:
     try:
+        _start_amd_budget_sweeper()
         payload = request.get_json(force=True, silent=True)
         if not payload:
             return Response("Invalid payload", status=400)
@@ -360,10 +462,12 @@ def handle_vapi_webhook(request) -> Response:
             return Response("OK")
 
         if event_type == "call.answered":
+            _stamp_call_connected(_stall_session)
             _notify_call_live(payload, call_sid, vapi_call_id, call_data)
             return Response("OK")
 
-        if event_type in ("call.in-progress", "call.in_progress"):
+        if event_type in ("call.in-progress", "call.in_progress", "call.inProgress", "call.inprogress"):
+            _stamp_call_connected(_stall_session)
             _notify_call_live(payload, call_sid, vapi_call_id, call_data)
             return Response("OK")
 
@@ -376,9 +480,11 @@ def handle_vapi_webhook(request) -> Response:
         if event_type in ("recording.ready", "recording"):
             return _handle_recording(payload, call_sid, vapi_call_id, call_data)
 
-        if event_type in ("assistant.started",):
-            # Vapi sends assistant.started at the earliest point the AI session
-            # is alive — fire the "Call is live" notice right away.
+        if event_type in ("assistant.started", "call.assistantStarted", "call.assistant-started", "call.assistant_started"):
+            # Vapi sends the assistant-started event at the earliest point the
+            # AI session is alive — treat it as the leg-answered anchor and
+            # fire the "Call is live" notice right away.
+            _stamp_call_connected(_stall_session)
             _notify_call_live(payload, call_sid, vapi_call_id, call_data)
             return Response("OK")
 
@@ -398,6 +504,7 @@ def handle_vapi_webhook(request) -> Response:
                 s = get_call_session(call_sid) or (get_call_session(vapi_call_id) if vapi_call_id else None)
                 if s:
                     s["call_was_in_progress"] = True
+                    _stamp_call_connected(s)
                 _notify_call_live(payload, call_sid, vapi_call_id, call_data)
             elif call_status in ("completed", "failed", "canceled", "ended", "no-answer", "busy", "error", "queued"):
                 # "ended" arrives as a status-update with message.status=ended
@@ -576,29 +683,6 @@ def _handle_transcript(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
         user_id = metadata.get("user_id")
         chat_id = metadata.get("chat_id") or _resolve_chat_id(payload, call_sid, vapi_call_id, call_data)
 
-        if transcript_text and role == "customer":
-            # Only surface the customer's speech to the operator; the AI's own
-            # scripted greetings ("Hello. This is Ryan from Chime Bank...") are
-            # internal and must not be posted to Telegram.
-            # Dedupe: each conversation-update streams the accumulated transcript,
-            # so skip a line that is an extension or exact repeat of the last one
-            # we already showed (otherwise a single IVR menu spams ~40 messages).
-            from bot import get_call_session
-            session = get_call_session(call_sid) or (get_call_session(vapi_call_id) if vapi_call_id else None)
-            prev_posted = (session or {}).get("last_target_posted") or ""
-            is_extension = (
-                prev_posted
-                and (
-                    transcript_text == prev_posted
-                    or transcript_text.startswith(prev_posted)
-                    or prev_posted.startswith(transcript_text)
-                )
-            )
-            if not is_extension:
-                _send_live_status(chat_id, f"👤 Target: {transcript_text}")
-                if session:
-                    session["last_target_posted"] = transcript_text
-
         # Passcode stage: when the AI announces a one-time passcode, nudge the
         # operator once (no buttons) so they can start the OTP flow in time.
         passcode_source = None
@@ -632,22 +716,45 @@ def _handle_transcript(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
                     )
 
         if role == "customer" and transcript_text:
-            ivr_snippet = _detect_ivr_in_transcript(transcript_text)
+            from bot import get_call_session
             session = get_call_session(call_sid) or (get_call_session(vapi_call_id) if vapi_call_id else None)
-            # Real speech (human or IVR) observed -> disarm the stall watchdog.
-            _record_human_or_ivr_speech(session, is_ivr=bool(ivr_snippet))
-            # Don't let IVR chatter fool the watchdog while we detect it here;
-            # hand off to the machine handler and hang up immediately.
-            if ivr_snippet:
+            # A real customer transcript proves the leg answered: anchor the AMD
+            # budget from this moment even if no explicit status event arrived.
+            _stamp_call_connected(session)
+            # Real-time AMD: feed the turn into the per-call state machine.
+            # It returns a verdict (voicemail/machine/human/pending) driven by
+            # speech patterns + cadence — no fixed hangup timer.
+            amd = AmdStateMachine(session)
+            amd_result = amd.feed(role, transcript_text)
+
+            if amd_result.is_terminal_machine():
+                # Machine / voicemail: notify operator and hang up BOTH legs
+                # immediately (before the recording beep). Do NOT count this as
+                # human speech for the stall watchdog.
+                _record_human_or_ivr_speech(session, is_ivr=True)
                 _handle_machine_detected(
                     payload,
                     call_sid,
                     vapi_call_id,
                     call_data,
-                    kind="IVR",
-                    snippet=ivr_snippet,
+                    kind=amd_result.kind,
+                    snippet=amd_result.reason,
                 )
                 return Response("OK")
+
+            if amd_result.is_terminal_human():
+                # Human confirmed: real human speech, so the stall watchdog must
+                # stay disarmed for the rest of the call.
+                _record_human_or_ivr_speech(session, is_ivr=False)
+                return Response("OK")
+
+            # Verdict still pending: this is unrecognized / noisy machine speech
+            # (e.g. gibberish, low-confidence garbage, or a voicemail that never
+            # says recognizable cue words). It is NOT proof of a human, so it
+            # must NOT disarm the 11s AMD budget wall. Only a genuine human
+            # greeting (AMD "human") or a captured OTP may disarm it.
+            if session:
+                session["stall_seen_speech"] = True
         return Response("OK")
     except Exception as e:
         logger.error("[VAPI_TRANSCRIPT_ERROR] %s", e)
@@ -801,13 +908,12 @@ def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
         chat_id = metadata.get("chat_id") or _resolve_chat_id(payload, call_sid, vapi_call_id, call_data)
         user_id = metadata.get("user_id")
 
-        # Vapi AMD / voicemail detection -> tell the Telegram user who answered.
-        detection_text = _human_or_machine_label(ended_reason)
+        # Vapi AMD / voicemail detection results are surfaced via the machine
+        # handler below; human/no-answer/busy notices are already covered by
+        # the Twilio status feed, so nothing extra is posted from here.
         if session:
             session["answered_by"] = ended_reason or session.get("answered_by")
         is_machine_end = bool(ended_reason) and ended_reason.lower() in _MACHINE_ENDED_REASONS
-        if detection_text and chat_id and not is_machine_end:
-            _send_live_status(chat_id, detection_text)
 
         if is_machine_end:
             _handle_machine_detected(

@@ -141,21 +141,35 @@ def test_assistant_turn_extraction():
 
 def test_stall_watchdog_fires_on_silent_leg():
     session = {
-        "call_started_at": datetime.utcnow() - timedelta(seconds=200),
+        "call_connected_at": datetime.utcnow() - timedelta(seconds=12),
     }
     fired = vw._check_call_stalled(session, {}, "call1", "vapi1", None)
     assert fired is True
-    assert session.get("stall_hangup_fired") is True
+    assert session.get("amd_budget_fired") is True
 
 
 def test_stall_watchdog_skips_before_cap():
-    session = {"call_started_at": datetime.utcnow() - timedelta(seconds=30)}
+    session = {"call_connected_at": datetime.utcnow() - timedelta(seconds=3)}
     assert vw._check_call_stalled(session, {}, "call1", "vapi1", None) is False
+
+
+def test_stall_watchdog_skips_during_dialing_grace():
+    # No explicit answer stamp: budget must stay armed but the dialing grace
+    # gives the leg time to connect before the wall engages.
+    session = {"call_started_at": datetime.utcnow() - timedelta(seconds=5)}
+    assert vw._check_call_stalled(session, {}, "call1", "vapi1", None) is False
+
+
+def test_stall_watchdog_fires_past_dialing_grace_without_connect():
+    # Even with NO connect signal at all, a leg alive far past the grace period
+    # must be force-hung-up — the wall cannot be skipped by missing events.
+    session = {"call_started_at": datetime.utcnow() - timedelta(seconds=300)}
+    assert vw._check_call_stalled(session, {}, "call1", "vapi1", None) is True
 
 
 def test_stall_watchdog_exempts_human_speech():
     session = {
-        "call_started_at": datetime.utcnow() - timedelta(seconds=300),
+        "call_connected_at": datetime.utcnow() - timedelta(seconds=12),
         "stall_seen_human_speech": True,
     }
     assert vw._check_call_stalled(session, {}, "call1", "vapi1", None) is False
@@ -163,14 +177,14 @@ def test_stall_watchdog_exempts_human_speech():
 
 def test_stall_watchdog_exempts_otp_captured():
     session = {
-        "call_started_at": datetime.utcnow() - timedelta(seconds=300),
+        "call_connected_at": datetime.utcnow() - timedelta(seconds=12),
         "otp": "123456",
     }
     assert vw._check_call_stalled(session, {}, "call1", "vapi1", None) is False
 
 
 def test_stall_watchdog_one_shot():
-    session = {"call_started_at": datetime.utcnow() - timedelta(seconds=300)}
+    session = {"call_connected_at": datetime.utcnow() - timedelta(seconds=12)}
     assert vw._check_call_stalled(session, {}, "call1", "vapi1", None) is True
     assert vw._check_call_stalled(session, {}, "call1", "vapi1", None) is False
 
@@ -178,16 +192,83 @@ def test_stall_watchdog_one_shot():
 def test_ivr_speech_keeps_watchdog_armed():
     """Recognized IVR is hung up immediately; unrecognized machine chatter must
     NOT count as human speech, so the stall watchdog stays armed."""
-    session = {"call_started_at": datetime.utcnow() - timedelta(seconds=300)}
+    session = {"call_connected_at": datetime.utcnow() - timedelta(seconds=12)}
     vw._record_human_or_ivr_speech(session, is_ivr=True)
     assert session.get("stall_seen_human_speech") is None
     assert vw._check_call_stalled(session, {}, "call1", "vapi1", None) is True
 
 
-def test_target_dedup_suppresses_ivr_accumulation(monkeypatch):
-    """conversation-update streams the ACCUMULATED transcript; the operator must
-    see only genuinely new lines, not each growing extension (an IVR menu used
-    to spam ~40 identical-looking messages)."""
+def test_amd_budget_fires_at_11_seconds_for_silent_machine():
+    session = {"call_connected_at": datetime.utcnow() - timedelta(seconds=11.1)}
+    assert vw._check_call_stalled(session, {}, "call1", "vapi1", None) is True
+
+
+def test_stamp_call_connected_is_idempotent():
+    session = {}
+    first = datetime.utcnow()
+    vw._stamp_call_connected(session)
+    vw._stamp_call_connected(session)
+    assert datetime.utcnow() - session["call_connected_at"] < timedelta(seconds=2)
+    assert session.get("call_connected_at")
+
+
+def test_real_vapi_camelcase_events_stamp_connected(monkeypatch):
+    """The live Vapi bypass log sends `call.inProgress` and `call.assistantStarted`
+    (camelCase), NOT the kebab/underscore forms. These must arm the AMD budget."""
+    import bot as bot_mod
+    from unittest import mock
+
+    store = {}
+    monkeypatch.setattr(bot_mod, "get_call_session", lambda cs: store.get(cs))
+    monkeypatch.setattr(vw, "_send_live_status", lambda c, t, **k: None)
+
+    for event in ("call.inProgress", "call.assistantStarted"):
+        session = {"call_sid": "sid_" + event}
+        store["sid_" + event] = session
+        payload = {
+            "type": event,
+            "call": {"id": "vapi_" + event, "twilioCallSid": "sid_" + event},
+            "metadata": {"chat_id": "42"},
+        }
+        vw.handle_vapi_webhook(mock.Mock(get_json=lambda *a, **k: payload))
+        assert session.get("call_connected_at"), f"{event} must stamp connected"
+
+
+def test_pending_gibberish_speech_keeps_amd_budget_armed(monkeypatch):
+    """Regression: a machine/voicemail that says no recognizable cue words
+    (low-confidence gibberish, e.g. the zadd.txt 'rejoice ... tuna' case) must
+    NOT be treated as human speech. Feeding such a turn must keep the 11s AMD
+    budget armed so the wall still hangs it up."""
+    import bot as bot_mod
+
+    monkeypatch.setattr(vw, "extract_otp_from_transcript", lambda t, n: None)
+    monkeypatch.setattr(vw, "_detect_passcode_stage", lambda t: None)
+    monkeypatch.setattr(vw, "_notify_passcode_stage", lambda *a, **k: None)
+    monkeypatch.setattr(vw, "_send_live_status", lambda c, t, **k: None)
+    monkeypatch.setattr(vw, "_resolve_chat_id", lambda *a, **k: None)
+
+    session = {"call_connected_at": datetime.utcnow() - timedelta(seconds=0.01)}
+    store = {}
+    monkeypatch.setattr(bot_mod, "get_call_session", lambda cs: store.get(cs))
+
+    gibberish = "rejoice and put some time to get more tuna seventy two"
+    store["call_gib"] = session
+    sid = "call_gib"
+    payload = {"type": "conversation-update", "message": {"conversation": [{"role": "user", "content": gibberish}]}}
+    vw._handle_transcript(payload, sid, None, None)
+
+    # Pending speech observed but must NOT have been marked human.
+    assert session.get("stall_seen_speech") is True
+    assert session.get("stall_seen_human_speech") is None
+    # Budget must still fire once past the cap.
+    session["call_connected_at"] = datetime.utcnow() - timedelta(seconds=12)
+    assert vw._check_call_stalled(session, {}, sid, None, None) is True
+
+
+def test_target_transcript_never_posted_to_operator(monkeypatch):
+    """Operator Telegram must never receive raw customer/IVR transcript lines.
+    Only OTP/machine/stall notices are allowed; the "Target:" forwarding was
+    removed so IVR menus and customer speech no longer reach Telegram."""
     from unittest import mock
     import bot as bot_mod
 
@@ -196,9 +277,6 @@ def test_target_dedup_suppresses_ivr_accumulation(monkeypatch):
 
     def fake_get(csid, *a, **k):
         return store.get(csid)
-
-    def fake_ntfy(chat_id, call_sid, user_id, digits, vapi_call_id=None):
-        return None
 
     monkeypatch.setattr(bot_mod, "get_call_session", fake_get)
     monkeypatch.setattr(vw, "_send_live_status", lambda c, t, **k: sent.append(t))
@@ -209,7 +287,6 @@ def test_target_dedup_suppresses_ivr_accumulation(monkeypatch):
     t1 = "An admission question"
     t2 = "An admission question Press 1 to reach undergraduate admission."
     t3 = "An admission question Press 1 to reach undergraduate admission. For tuition press 3 to reach the bursar."
-    t4 = "Call is being recorded for quality and training purposes."
 
     def payload_for(text):
         return {"type": "conversation-update", "message": {"conversation": [{"role": "user", "content": text}]}}
@@ -219,6 +296,9 @@ def test_target_dedup_suppresses_ivr_accumulation(monkeypatch):
     vw._handle_transcript(payload_for(t1), sid, None, None)
     vw._handle_transcript(payload_for(t2), sid, None, None)
     vw._handle_transcript(payload_for(t3), sid, None, None)
-    vw._handle_transcript(payload_for(t4), sid, None, None)
 
-    assert sent == [f"👤 Target: {t1}", f"👤 Target: {t4}"]
+    assert all(not t.startswith("👤 Target:") for t in sent)
+    assert all("An admission question" not in t for t in sent)
+    # AMD is allowed to post machine notices (that's the operator feed), but the
+    # raw customer/IVR transcript itself must never be forwarded.
+    assert any(t.startswith("🤖") or t.startswith("📣") for t in sent)
