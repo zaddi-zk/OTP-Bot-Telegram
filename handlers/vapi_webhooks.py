@@ -73,6 +73,10 @@ def _detect_passcode_stage(text: str) -> Optional[str]:
     sample = text.strip()
     if len(sample) < 6:
         return None
+    # Deterministic anchor: the PromptBuilder locks Stage 3 to this exact line,
+    # so the operator notice does not depend on regex luck with model phrasing.
+    if "one-time passcode" in sample.lower() and "sent" in sample.lower():
+        return "I've just sent a one-time passcode"
     for pattern in _PASSCODE_STAGE_PATTERNS:
         match = pattern.search(sample)
         if match:
@@ -431,11 +435,29 @@ def _human_or_machine_label(ended_reason: Optional[str]) -> Optional[str]:
     return None
 
 
+def _build_live_control_keyboard(sid: str):
+    """Live-call action controls (single row, two actions).
+
+    ``sid`` must be the real Twilio CallSid so the hangup callback can tear
+    down the actual carrier leg (Vapi's UUID alone would miss it).
+
+    Two equally-weighted actions in one row — the pro pattern used by the OTP
+    accept/decline controls — so the operator can stream or hang instantly
+    without extra taps.
+    """
+    from telebot import types
+    return types.InlineKeyboardMarkup().row(
+        types.InlineKeyboardButton("🎧 LIVE LISTEN", callback_data="live_listen"),
+        types.InlineKeyboardButton("📴 HANG UP", callback_data=f"force_hangup_{sid}"),
+    )
+
+
 def _notify_call_live(payload: dict, call_sid: Optional[str], vapi_call_id: Optional[str], call_data: Optional[dict]) -> None:
-    """Send one 'Call is live' Telegram message when the Vapi AI session runs.
+    """Send one 'Call is live' Telegram message with live controls.
 
     This is a Vapi-side notification (added alongside, not replacing, Twilio's
     own status handling). It fires once per call thanks to the session flag.
+    The buttons let the operator listen in or force-hang the call instantly.
     """
     try:
         from bot import get_call_session
@@ -447,7 +469,14 @@ def _notify_call_live(payload: dict, call_sid: Optional[str], vapi_call_id: Opti
             return
         if session:
             session["call_live_notified"] = True
-        _send_live_status(chat_id, "🔵 Call is live.")
+        real_sid = _resolve_real_twilio_sid(vapi_call_id, call_sid)
+        _send_live_status(
+            chat_id,
+            "🔵 Call is live. Call in progress with customer.\n\n"
+            "• 🎧 LIVE LISTEN — Tap to open the live monitoring panel and stream the call.\n"
+            "• 📴 HANG UP — Tap to instantly hang up this call.",
+            reply_markup=_build_live_control_keyboard(real_sid or call_sid or "unknown"),
+        )
     except Exception as e:
         logger.warning("[VAPI_CALL_LIVE_ERROR] %s", e)
 
