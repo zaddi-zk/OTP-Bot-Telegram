@@ -4221,7 +4221,7 @@ def send_live_listen_panel(chat_id: int, user_id_str: str) -> None:
     try:
         live_base = LIVE_LISTEN_URL or (build_public_base_url() or NGROK_URL)
         live_url = f"{live_base.rstrip('/')}/live?call_id={sid}"
-        buttons.add(types.InlineKeyboardButton("🎧 Open Live Stream", url=live_url))
+        buttons.add(types.InlineKeyboardButton("🎧 Open Live Stream", web_app=types.WebAppInfo(url=live_url)))
     except Exception:
         pass
     buttons.add(types.InlineKeyboardButton("↩ Back", callback_data="back_to_menu"))
