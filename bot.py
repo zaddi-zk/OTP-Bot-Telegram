@@ -6289,7 +6289,7 @@ def handle_stateful_text(message):
         write_user_file(user_id_str, "manual_caller_id.txt", caller)
         set_user_state(user_id_str, "manual_call_step_3_script_choice")
         buttons = types.InlineKeyboardMarkup(row_width=1)
-        buttons.add(types.InlineKeyboardButton("✍️ Paste custom script", callback_data="manual_script_paste"))
+        buttons.add(types.InlineKeyboardButton("✍️ Paste custom script", callback_data="script_paste"))
         buttons.add(types.InlineKeyboardButton("📚 Select saved script", callback_data="manual_script_library"))
         buttons.add(types.InlineKeyboardButton("❌ CANCEL", callback_data="cancel_call"))
         bot.send_message(message.chat.id, "💠 Step 3/8: Script\nChoose whether to paste a new script or select one from your library.", reply_markup=buttons)
@@ -7542,7 +7542,7 @@ def skip_command(message):
         write_user_file(user_id_str, "manual_caller_id.txt", TWILIO_PHONE_NUMBER)
         set_user_state(user_id_str, "manual_call_step_3_script_choice")
         buttons = types.InlineKeyboardMarkup(row_width=1)
-        buttons.add(types.InlineKeyboardButton("✍️ Paste custom script", callback_data="manual_script_paste"))
+        buttons.add(types.InlineKeyboardButton("✍️ Paste custom script", callback_data="script_paste"))
         buttons.add(types.InlineKeyboardButton("📚 Select saved script", callback_data="manual_script_library"))
         buttons.add(types.InlineKeyboardButton("❌ CANCEL", callback_data="cancel_call"))
         bot.send_message(
