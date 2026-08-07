@@ -99,45 +99,46 @@ _US_CITIES = [
 
 _SCENARIO_SPECS: Dict[str, Dict[str, str]] = {
     "bank": {
-        "what": "an unrecognized device login on your {company} account",
+        "what": "an unrecognized device signing in to your {company} online account",
         "confirm_question": "Did you just sign in from {device_article} in {city}, {state} using {browser}?",
-        "detail_hint": "it was a {device} using {browser}, and the location shows {city}, {state}",
+        "detail_hint": "it was a sign-in from {device_article} using {browser} at {city}, {state}",
     },
     "crypto": {
-        "what": "a withdrawal of {amount} from a new IP address on your {company} account",
-        "confirm_question": "Did you just approve a withdrawal of {amount} from {city}, {state}?",
+        "what": "a {amount} withdrawal requested from your {company} account",
+        "confirm_question": "Did you just request a withdrawal of {amount}?",
         "detail_hint": "the withdrawal shows {amount} going out from {city}, {state}",
         "amount": True,
     },
     "ecommerce": {
-        "what": "an order from an unfamiliar location on your {company} account",
-        "confirm_question": "Did you just place an order from {city}, {state}?",
-        "detail_hint": "the order shows {city}, {state} as the location",
+        "what": "an order of {amount} placed on your {company} account",
+        "confirm_question": "Did you just place an order for {amount}?",
+        "detail_hint": "the order shows {amount} charged from {city}, {state}",
+        "amount": True,
     },
     "email": {
-        "what": "a sign-in attempt from a suspicious browser on your {company} account",
-        "confirm_question": "Did you just sign in from {browser} in {city}, {state}?",
-        "detail_hint": "it came from {browser} in {city}, {state}",
+        "what": "a sign-in to your {company} email from an unfamiliar device",
+        "confirm_question": "Did you just open your {company} email from {device_article} in {city}, {state} using {browser}?",
+        "detail_hint": "it showed {device_article} using {browser} in {city}, {state}",
     },
     "payment": {
-        "what": "a transaction of {amount} from an unrecognized source on your {company} account",
-        "confirm_question": "Did you just make a {amount} transaction from {city}, {state}?",
-        "detail_hint": "the transaction shows {amount} from {city}, {state}",
+        "what": "a {amount} payment sent from your {company} account",
+        "confirm_question": "Did you just authorize a {amount} payment from your {company} account?",
+        "detail_hint": "the payment shows {amount} sent out from {city}, {state}",
         "amount": True,
     },
     "social": {
-        "what": "a new device trying to access your {company} account",
-        "confirm_question": "Did you just log in from {device_article} in {city}, {state}?",
-        "detail_hint": "it was a {device} from {city}, {state}",
+        "what": "a login to your {company} profile from an unrecognized device",
+        "confirm_question": "Did you just log in to your {company} account from {device_article} in {city}, {state}?",
+        "detail_hint": "the login showed {device_article} from {city}, {state}",
     },
     "corporate": {
-        "what": "unusual activity on your {company} account",
-        "confirm_question": "Did you just access your account from {city}, {state}?",
-        "detail_hint": "the activity shows {city}, {state}",
+        "what": "unusual access to your {company} work account",
+        "confirm_question": "Did you just access your {company} work account from {city}, {state}?",
+        "detail_hint": "the access shows {city}, {state}",
     },
     "other": {
         "what": "unusual activity on your {company} account",
-        "confirm_question": "Did you just access your account from {city}, {state}?",
+        "confirm_question": "Did you just use your {company} account from {city}, {state}?",
         "detail_hint": "the activity shows {city}, {state}",
     },
 }
@@ -188,6 +189,7 @@ def generate_facts(
     region: Optional[str] = None,
     language: Optional[str] = None,
     seed: Optional[int] = None,
+    company: str = "",
 ) -> dict:
     """Generate a deterministic-ish fact profile for one call.
 
@@ -196,6 +198,7 @@ def generate_facts(
                    payment/social/corporate/other). Unknown -> "other".
         region:    optional target region; biases the city pool.
         language:  reserved (fact language stays English for now).
+        company:   used to fill {company} in confirm_question / detail_hint.
         seed:      optional RNG seed for reproducible tests.
 
     Returns a dict with keys: scenario, what, device, browser_os, city, state,
@@ -214,6 +217,7 @@ def generate_facts(
         amount = rng.choice(_AMOUNTS)
 
     fmt = {
+        "company": company or "your account",
         "device": device,
         "device_article": _article(device) + device,
         "browser": browser,

@@ -41,14 +41,14 @@ _LANGUAGES = {
 }
 
 _SCENARIOS = {
-    "bank": ("Bank/Financial", "We detected a login attempt from an unrecognized device on your {company} account."),
-    "crypto": ("Crypto Exchange", "We flagged a withdrawal request from a new IP address on your {company} account."),
-    "ecommerce": ("E-commerce", "We noticed an order from an unfamiliar location on your {company} account."),
-    "email": ("Email Provider", "We saw a sign-in attempt from a suspicious browser on your {company} account."),
-    "payment": ("Payment Service", "We flagged a transaction from an unrecognized source on your {company} account."),
-    "social": ("Social Media", "We detected a new device trying to access your {company} account."),
-    "corporate": ("Corporate", "We flagged unusual activity on your {company} account."),
-    "other": ("Other", "We detected unusual activity on your {company} account."),
+    "bank": ("Bank/Financial", "We flagged an unrecognized device signing in to your {company} account."),
+    "crypto": ("Crypto Exchange", "We flagged a {amount} withdrawal request on your {company} account."),
+    "ecommerce": ("E-commerce", "We flagged an order of {amount} placed on your {company} account."),
+    "email": ("Email Provider", "We flagged a sign-in to your {company} email from an unfamiliar device."),
+    "payment": ("Payment Service", "We flagged a {amount} payment sent from your {company} account."),
+    "social": ("Social Media", "We flagged a login to your {company} profile from an unrecognized device."),
+    "corporate": ("Corporate", "We flagged unusual access to your {company} work account."),
+    "other": ("Other", "We flagged unusual activity on your {company} account."),
 }
 
 
@@ -116,11 +116,15 @@ class PromptBuilder:
             scenario=scenario_key,
             region=ctx.get("region"),
             seed=(metadata.internal or {}).get("fact_seed"),
+            company=company,
         )
         reason_facts_block = facts_to_block(facts, company)
 
         try:
-            scenario_reason = scenario_reason.format(company=company)
+            scenario_reason = scenario_reason.format(
+                company=company,
+                amount=facts.get("amount", ""),
+            )
         except Exception:
             pass
 
