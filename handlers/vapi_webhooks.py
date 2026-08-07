@@ -117,18 +117,60 @@ def _detect_ivr_in_transcript(text: str) -> Optional[str]:
     return None
 
 
+def _resolve_real_twilio_sid(vapi_call_id: Optional[str], twilio_sid: Optional[str]) -> Optional[str]:
+    """Return a real Twilio Call SID (CA...) for this call, if one is known.
+
+    Vapi sends bypass/Twilio calls with NO ``twilioCallSid`` in webhooks, so the
+    ``call_sid`` that reaches us often IS the Vapi UUID. The actual outbound
+    phone leg is placed by Twilio and its real SID lives in the session (keyed
+    by the SID and aliased under the Vapi id). Resolve it here so the Twilio
+    hangup targets the real call instead of a junk UUID.
+    """
+    candidate_approved = twilio_sid and str(twilio_sid).startswith("CA")
+    if candidate_approved:
+        return str(twilio_sid)
+    try:
+        from bot import get_call_session
+        session = (
+            get_call_session(vapi_call_id)
+            if vapi_call_id
+            else (get_call_session(twilio_sid) if twilio_sid else None)
+        )
+        if session:
+            sess_sid = session.get("call_sid") or session.get("twilio_call_sid")
+            if sess_sid and str(sess_sid).startswith("CA"):
+                return str(sess_sid)
+            if twilio_sid and str(twilio_sid).startswith("CA"):
+                return str(twilio_sid)
+    except Exception as e:
+        logger.warning("[VAPI_HANGUP_RESOLVE] could not resolve Twilio sid: %s", e)
+    return twilio_sid
+
+
 def _hangup_call(vapi_call_id: Optional[str], twilio_sid: Optional[str]) -> None:
-    """Force-end the call on both legs to stop credit usage immediately."""
+    """Force-end the call on both legs to stop credit usage immediately.
+
+    Both the Vapi session AND the real Twilio phone leg are torn down. The Twilio
+    SID is re-resolved from the session because Vapi bypass webhooks do not send
+    ``twilioCallSid`` (and ``call_sid`` here is often just the Vapi UUID).
+    """
+    real_twilio_sid = _resolve_real_twilio_sid(vapi_call_id, twilio_sid)
+    logger.info("[VAPI_HANGUP] vapi_call_id=%s twilio_sid=%s real_twilio_sid=%s",
+                vapi_call_id, twilio_sid, real_twilio_sid)
     if vapi_call_id:
         try:
             from services.vapi_service import end_call as vapi_end_call
-            vapi_end_call(vapi_call_id)
+            ok = vapi_end_call(vapi_call_id)
+            logger.info("[VAPI_HANGUP] vapi end_call ok=%s id=%s", ok, vapi_call_id)
         except Exception as e:
             logger.warning("[VAPI_HANGUP_ERROR] vapi side: %s", e)
-    if twilio_sid:
+    if real_twilio_sid:
         try:
             from services.twilio_service import end_call as twilio_end_call
-            twilio_end_call(twilio_sid)
+            ok = twilio_end_call(real_twilio_sid)
+            logger.info("[VAPI_HANGUP] twilio end_call ok=%s sid=%s", ok, real_twilio_sid)
+            if not ok:
+                logger.warning("[VAPI_HANGUP] twilio end_call returned failure sid=%s", real_twilio_sid)
         except Exception as e:
             logger.warning("[VAPI_HANGUP_ERROR] twilio side: %s", e)
 
@@ -206,7 +248,7 @@ def _check_call_stalled(session, payload: dict, call_sid: Optional[str], vapi_ca
     )
     chat_id = _resolve_chat_id(payload, call_sid, vapi_call_id, call_data)
     if chat_id:
-        _send_live_status(int(chat_id), "🤖 Automated/Silent line — hung up to save credits (11s budget).")
+        _send_live_status(int(chat_id), "🤖 Machine detected. Hanging up.")
     threading.Thread(
         target=_hangup_call, args=(vapi_call_id, call_sid), daemon=True
     ).start()
@@ -246,7 +288,7 @@ def _sweep_amd_budget() -> None:
                 )
                 chat_id = session.get("chat_id")
                 if chat_id:
-                    _send_live_status(int(chat_id), "🤖 Automated/Silent line — hung up to save credits (11s budget).")
+                    _send_live_status(int(chat_id), "🤖 Machine detected. Hanging up.")
                 threading.Thread(
                     target=_hangup_call, args=(vapi_call_id, call_sid), daemon=True
                 ).start()
@@ -294,13 +336,13 @@ def _handle_machine_detected(
         chat_id = _resolve_chat_id(payload, call_sid, vapi_call_id, call_data)
         if chat_id:
             kmap = {
-                "ivr": "🤖 IVR / automated system detected.",
-                "voicemail": "📣 Voicemail / answering machine detected.",
-                "monologue": "🤖 Machine detected (no human response).",
+                "ivr": "🤖 Automated system detected.",
+                "voicemail": "📣 Voicemail detected. Hanging up.",
+                "monologue": "🤖 Machine detected.",
             }
             head = kmap.get(kind)
             if head:
-                text = f"{head}\n{snippet}\nHanging up before the beep."
+                text = f"{head} Hanging up."
             else:
                 label = _human_or_machine_label(snippet)
                 text = f"{label or '🤖 Machine detected.'} Hanging up."

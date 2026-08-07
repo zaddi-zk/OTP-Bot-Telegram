@@ -280,16 +280,30 @@ def say_to_assistant(call_id: str, message: str) -> bool:
 
 
 def end_call(call_id: str) -> bool:
-    try:
-        resp = requests.post(
-            f"{VAPI_BASE_URL}/call/{call_id}/end",
-            headers=_headers(),
-            timeout=10,
-        )
-        return resp.status_code in (200, 201, 204)
-    except Exception as e:
-        logger.warning("[VAPI_END_CALL_ERROR] id=%s error=%s", call_id, e)
-        return False
+    """End a Vapi call session. Returns True if Vapi accepted the end request.
+
+    The HTTP 2xx only means Vapi accepted the request — it does NOT prove the
+    underlying phone leg dropped. Callers that need a hard guarantee should also
+    terminate the Twilio leg (see ``twilio_service.end_call``).
+    """
+    for attempt in range(1, 3):
+        try:
+            resp = requests.post(
+                f"{VAPI_BASE_URL}/call/{call_id}/end",
+                headers=_headers(),
+                timeout=10,
+            )
+            if resp.status_code in (200, 201, 204):
+                logger.info("[VAPI_END_CALL] id=%s ok attempt=%s", call_id, attempt)
+                return True
+            logger.warning(
+                "[VAPI_END_CALL] status=%s id=%s attempt=%s body=%s",
+                resp.status_code, call_id, attempt, resp.text[:200],
+            )
+        except Exception as e:
+            logger.warning("[VAPI_END_CALL_ERROR] id=%s attempt=%s error=%s", call_id, attempt, e)
+        time.sleep(1)
+    return False
 
 
 def verify_webhook_signature(payload: bytes, signature: str, secret: str) -> bool:
