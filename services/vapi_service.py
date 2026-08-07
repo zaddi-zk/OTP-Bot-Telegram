@@ -84,31 +84,15 @@ def _apply_forced_assistant_overrides(assistant_overrides: Optional[dict]) -> Op
 
 
 def _apply_noise_tuning(overrides: dict) -> None:
-    """Pro noise/pacing defaults for human-feeling calls.
+    """Pro noise defaults for human-feeling calls.
 
-    1. endTurnOnSilence   -> end the AI's turn ~750ms after the caller stops
-       speaking. Fast enough to feel natural, slow enough not to cut the caller
-       off mid-thought (they may be reading a code aloud).
-    2. interruptionSettings -> never allow the AI to talk over the caller; if
-       the caller starts speaking the AI stops at the first phoneme. The
-       caller stays in control of pacing.
-    3. transcriber        -> Deepgram Nova-2 (or Whisper if unavailable) with
-       bilingual fallback; lowers hallucinated filler transcripts that trigger
-       off-topic/stall chatter.
+    NOTE: Vapi's call endpoint rejects endTurnOnSilence / interruptionSettings
+    in assistantOverrides (400 Bad Request) — the transcriber override alone is
+    accepted. Only safe fields are applied here.
+
+    transcriber -> Deepgram Nova-2 with English default; lowers hallucinated
+    filler transcripts that trigger off-topic/stall chatter.
     """
-    if not isinstance(overrides.get("endTurnOnSilence"), (int, float)):
-        overrides["endTurnOnSilence"] = 750
-
-    current = overrides.get("interruptionSettings") or {}
-    merged = {
-        "shouldInterruptIfListening": True,
-        "shouldInterruptIfPlaying": False,
-        "forceInterruptAt": None,
-        "disableOnInterruptedWords": True,
-    }
-    merged.update({k: v for k, v in current.items() if v is not None})
-    overrides["interruptionSettings"] = merged
-
     transcriber = overrides.get("transcriber") or {}
     if not transcriber.get("provider"):
         overrides["transcriber"] = {
