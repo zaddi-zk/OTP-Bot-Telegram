@@ -4366,9 +4366,12 @@ def _handle_query_processing(call, _):
             text = (
                 "🚀 <b>FAST MODE</b>\n\nOne-line high-speed call setup. Use this when you want a pro launch without extra prompts.\n\n"
                 "Format:\n"
-                "name, company, phone, caller_id, from_name, language, delivery, code_length\n\n"
+                "name, company, phone, caller_id, from_name, language, delivery, code_length, scenario, urgency\n\n"
+                "Scenario: bank, crypto, ecommerce, email, payment, social, corporate, other\n"
+                "Urgency: high, medium, low\n"
+                "(scenario & urgency optional — defaults: bank, medium)\n\n"
                 "Example:\n"
-                "John Smith, Chase Bank, +1234567890, +18009359935, Support Team, en, sms, 6\n\n"
+                "John Smith, Chase Bank, +1234567890, +18009359935, Support Team, en, sms, 6, bank, high\n\n"
                 "Send the line now or use /start to return to the main menu."
             )
             buttons = types.InlineKeyboardMarkup()
@@ -6658,14 +6661,16 @@ def handle_stateful_text(message):
             bot.send_message(message.chat.id, "❌ Premium access required. FAST MODE is available only to premium subscribers. Visit /start > SHOP to upgrade.")
             return
         parts = [p.strip() for p in text.split(",")]
-        if len(parts) != 8:
+        if len(parts) not in (8, 9, 10):
             bot.send_message(
                 message.chat.id,
-                "❌ Invalid format.\nUse:\nname, company, phone, caller_id, from_name, language, delivery, code_length"
+                "❌ Invalid format.\nUse:\nname, company, phone, caller_id, from_name, language, delivery, code_length, scenario, urgency"
             )
             return
 
-        name, company, phone_raw, caller_raw, from_name, language, delivery, otp_length = parts
+        name, company, phone_raw, caller_raw, from_name, language, delivery, otp_length = parts[:8]
+        scenario_raw = parts[8].strip() if len(parts) >= 9 else ""
+        urgency_raw = parts[9].strip() if len(parts) >= 10 else ""
         phone_clean = phone_raw.replace(" ", "")
         caller_input = caller_raw.strip()
         caller_clean = caller_raw.replace(" ", "")
@@ -6699,15 +6704,22 @@ def handle_stateful_text(message):
         write_user_file(user_id_str, "Delivery.txt", delivery)
         write_user_file(user_id_str, "Digits.txt", otp_length)
         write_user_file(user_id_str, "CodeLength.txt", otp_length)
-        # Fast Mode is a one-line shortcut into the shared Normal Call flow.
-        # The upgraded prompt builder needs the new Scenario + Urgency steps that
-        # the full wizard collects; default them so the locked reason facts and
-        # urgency tone always apply (operator can override via Normal Call).
-        write_user_file(user_id_str, "scenario.txt", "bank")
-        write_user_file(user_id_str, "urgency.txt", "medium")
+        # Scenario + urgency drive the upgraded prompt builder's locked reason
+        # facts and tone. Accept them on the line (backward-compatible) with
+        # defaults when omitted so Fast Mode always works end-to-end.
+        _FAST_SCENARIOS = {"bank", "crypto", "ecommerce", "email", "payment", "social", "corporate", "other"}
+        _FAST_URGENCIES = {"high", "medium", "low"}
+        scenario_key = scenario_raw.lower()
+        urgency_key = urgency_raw.lower()
+        if scenario_key not in _FAST_SCENARIOS:
+            scenario_key = "bank"
+        if urgency_key not in _FAST_URGENCIES:
+            urgency_key = "medium"
+        write_user_file(user_id_str, "scenario.txt", scenario_key)
+        write_user_file(user_id_str, "urgency.txt", urgency_key)
         set_user_state(user_id_str, "normal_call_step_10_voice")
 
-        summary = f"⚡ Fast call ready:\n{name} @ {company}\nPhone: {phone_clean}"
+        summary = f"⚡ Fast call ready:\n{name} @ {company}\nPhone: {phone_clean}\nScenario: {scenario_key} | Urgency: {urgency_key}"
         try:
             keyboard = build_voice_selection_keyboard()
         except Exception:
