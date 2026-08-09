@@ -21,6 +21,8 @@ import base64
 import json
 import logging
 import os
+import struct
+import time
 from typing import Optional
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -57,13 +59,67 @@ def _ulaw2lin(ulaw_byte: int) -> int:
 
 def ulaw_to_pcm16(payload: bytes) -> bytes:
     """Convert a block of µ-law audio bytes to 16-bit little-endian PCM."""
-    import struct
     out = bytearray(len(payload) * 2)
     for i, b in enumerate(payload):
         s = _ulaw2lin(b)
         out[i * 2] = s & 0xFF
         out[i * 2 + 1] = (s >> 8) & 0xFF
     return bytes(out)
+
+
+# ======================================================================
+# Two-track mixer for `track="both_tracks"`.
+#
+# Twilio's unidirectional `<Start><Stream>` fork emits inbound AND outbound
+# media events every ~20 ms. Relaying both to the browser separately makes
+# it play at 2x speed with both sides overlapped (garbled noise). Instead we
+# pair the inbound/outbound frames that share the same presentation-time
+# slot, sum them into a single normal-speed PCM16 frame, and broadcast that.
+# ======================================================================
+_MIX_SLOT_MS = 20
+_MIX_STATE: dict = {}  # call_sid -> {slot_ms: {"samples": list[int], "tracks": set}}
+
+
+def _mix_call_frame(call_sid: str, track: str, pcm16: bytes, timestamp_ms: str) -> Optional[bytes]:
+    """Accumulate one track's decoded frame into the current mixing slot.
+
+    Returns a ready-to-broadcast PCM16 frame when a slot contains both tracks
+    (the normal path), or when a newer slot forces the previous partial slot
+    out (single-track fallback). Returns None while still accumulating.
+    """
+    n = len(pcm16) // 2
+    if n == 0:
+        return None
+    samples = struct.unpack(f"<{n}h", pcm16)
+    try:
+        ts = int(float(timestamp_ms or 0))
+    except (TypeError, ValueError):
+        ts = int(time.time() * 1000)
+    slot = ts // _MIX_SLOT_MS
+
+    state = _MIX_STATE.setdefault(call_sid, {})
+    flush = None
+    for prev_slot in sorted(s for s in state.keys() if s < slot):
+        expired = state.pop(prev_slot)
+        if flush is None and expired.get("samples"):
+            flush = struct.pack(f"<{n}h", *expired["samples"])
+
+    entry = state.get(slot)
+    if entry is None:
+        state[slot] = {"samples": list(samples), "tracks": {track}}
+        return flush
+    if track in entry["tracks"]:
+        return flush  # duplicate for the same slot+track; ignore
+    entry["samples"] = [max(-32635, min(32635, a + b)) for a, b in zip(entry["samples"], samples)]
+    entry["tracks"].add(track)
+    state.pop(slot)
+    if flush is not None:
+        return flush
+    return struct.pack(f"<{n}h", *entry["samples"])
+
+
+def _clear_mix_state(call_sid: str) -> None:
+    _MIX_STATE.pop(call_sid, None)
 
 
 # ======================================================================
@@ -214,7 +270,13 @@ async def twilio_media(ws: WebSocket):
             if event == "start":
                 start = data.get("start", {})
                 call_sid = start.get("callSid")
-                logger.info("[TWILIO_MEDIA_START] call_sid=%s stream_sid=%s", call_sid, start.get("streamSid"))
+                tracks = start.get("tracks") or []
+                logger.info(
+                    "[TWILIO_MEDIA_START] call_sid=%s stream_sid=%s tracks=%s",
+                    call_sid,
+                    start.get("streamSid"),
+                    tracks,
+                )
                 await manager.ensure_session(call_sid or "unknown", call_sid=call_sid)
                 if call_sid:
                     await manager.set_state(call_sid, "in-progress")
@@ -226,9 +288,14 @@ async def twilio_media(ws: WebSocket):
                     try:
                         audio_bytes = base64.b64decode(payload_b64)
                         pcm16 = ulaw_to_pcm16(audio_bytes)
-                        await manager.broadcast_media(call_sid, pcm16, sequence=media.get("sequence"))
+                        track = media.get("track", "inbound")
+                        mixed = _mix_call_frame(call_sid, track, pcm16, media.get("timestamp"))
+                        if mixed is not None:
+                            await manager.broadcast_media(
+                                call_sid, mixed, sequence=media.get("chunk")
+                            )
                     except Exception as e:
-                        logger.error("[TWILIO_MEDIA_RELAY_ERROR] %s", e)
+                        logger.error("[TWILIO_MEDIA_RELAY_ERROR] call_sid=%s error=%s", call_sid, e)
 
             elif event == "dtmf":
                 digit = (data.get("dtmf") or {}).get("digit")
@@ -243,6 +310,7 @@ async def twilio_media(ws: WebSocket):
                 logger.info("[TWILIO_MEDIA_STOP] call_sid=%s", call_sid)
                 if call_sid:
                     await manager.set_state(call_sid, "completed")
+                    _clear_mix_state(call_sid)
                 break
     except WebSocketDisconnect:
         logger.info("[TWILIO_MEDIA_DISCONNECT] call_sid=%s", call_sid)
@@ -250,6 +318,7 @@ async def twilio_media(ws: WebSocket):
         logger.error("[TWILIO_MEDIA_ERROR] call_sid=%s error=%s", call_sid, e)
     finally:
         if call_sid:
+            _clear_mix_state(call_sid)
             await manager.set_state(call_sid, "completed")
 
 
