@@ -190,6 +190,7 @@ def generate_facts(
     language: Optional[str] = None,
     seed: Optional[int] = None,
     company: str = "",
+    overrides: Optional[dict] = None,
 ) -> dict:
     """Generate a deterministic-ish fact profile for one call.
 
@@ -200,6 +201,16 @@ def generate_facts(
         language:  reserved (fact language stays English for now).
         company:   used to fill {company} in confirm_question / detail_hint.
         seed:      optional RNG seed for reproducible tests.
+        overrides: optional operator-pinned facts, applied ONLY where they make
+                   sense for the scenario:
+                     - "city"/"state": pinned location (already validated for
+                       E.164/format elsewhere; applied verbatim).
+                     - "amount": pinned ONLY for scenarios whose spec sets
+                       ``"amount": True`` (crypto/ecommerce/payment). Otherwise
+                       the amount is dropped so the story never contradicts the
+                       scenario (e.g. no "withdrawal from an Amazon login").
+                     - "device": pinned device phrasing (used for the confirm
+                       question).
 
     Returns a dict with keys: scenario, what, device, browser_os, city, state,
     city_state, timeframe, amount ("" when N/A), confirm_question, detail_hint.
@@ -207,6 +218,7 @@ def generate_facts(
     rng = random.Random(seed)
     spec = _SCENARIO_SPECS.get(scenario or "", _SCENARIO_SPECS["other"])
     scenario_key = scenario if scenario in _SCENARIO_SPECS else "other"
+    overrides = overrides or {}
 
     device = rng.choice(_DEVICES)
     browser = rng.choice(_BROWSERS)
@@ -215,6 +227,22 @@ def generate_facts(
     amount = ""
     if spec.get("amount"):
         amount = rng.choice(_AMOUNTS)
+
+    # ---- Operator-pinned facts (scenario-validated) ----
+    pinned_city = (overrides.get("city") or "").strip()
+    pinned_state = (overrides.get("state") or "").strip()
+    if pinned_city:
+        city = pinned_city
+    if pinned_state:
+        state = pinned_state
+
+    pinned_amount = (overrides.get("amount") or "").strip()
+    if pinned_amount and spec.get("amount"):
+        amount = pinned_amount
+
+    pinned_device = (overrides.get("device") or "").strip()
+    if pinned_device:
+        device = pinned_device
 
     fmt = {
         "company": company or "your account",

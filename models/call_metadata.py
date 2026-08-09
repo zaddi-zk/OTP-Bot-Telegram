@@ -106,10 +106,45 @@ class CallMetadata:
         department = self.company.department
         target_name = self.target.name
 
-        if agent_name:
-            first_message = f"Hello, this is {agent_name} from {company_name} {department}. Am I speaking with {target_name}?"
-        else:
-            first_message = f"Hello, this is {company_name} {department}. Am I speaking with {target_name}?"
+        first_message = None
+        # Flow-aware greeting: when a Manual/Custom flow (custom_instructions)
+        # is present, derive the Vapi firstMessage from the flow's GREETING line
+        # so the AI never speaks a generic opener AND the flow's greeting (which
+        # would make the call sound scripted). Fall back to the standard opener.
+        custom = (self.custom_instructions or "").strip()
+        if custom:
+            greeting_candidates = [
+                line for line in custom.splitlines()
+                if line.strip().lower().startswith(("greeting:", "[greeting]"))
+            ]
+            if greeting_candidates:
+                raw = greeting_candidates[0].strip()
+                if raw.lower().startswith("greeting:"):
+                    first_message = raw.split(":", 1)[-1].strip()
+                else:
+                    first_message = raw[len("[GREETING]"):].strip()
+                    if not first_message:
+                        first_message = raw[len("[greeting]"):].strip()
+                first_message = first_message or None
+            else:
+                first_line = next(
+                    (line.strip() for line in custom.splitlines()
+                     if line.strip() and not line.strip().startswith(("[", "("))),
+                    "",
+                )
+                if first_line:
+                    # De-references {name}/{company} tokens so the TTS literal
+                    # never reads a placeholder out loud.
+                    first_line = first_line.replace("{name}", target_name)
+                    first_line = first_line.replace("{company}", company_name)
+                    if len(first_line) <= 40:
+                        first_message = first_line
+
+        if not first_message:
+            if agent_name:
+                first_message = f"Hello, this is {agent_name} from {company_name} {department}. Am I speaking with {target_name}?"
+            else:
+                first_message = f"Hello, this is {company_name} {department}. Am I speaking with {target_name}?"
 
         overrides = {
             "firstMessage": first_message,

