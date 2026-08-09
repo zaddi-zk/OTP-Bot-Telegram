@@ -100,9 +100,18 @@ async def websocket_live(websocket: WebSocket, call_id: Optional[str] = None):
         await websocket.close(code=1008)
         return
     await websocket.accept()
+    logger.info("[LIVE_CLIENT_CONNECTED] client=%s call_id=%s", websocket.client, call_id)
     await manager.add_client(call_id, websocket)
     try:
         s = await manager.ensure_session(call_id)
+        logger.info(
+            "[LIVE_CLIENT_ATTACHED_TO_CALL] client=%s call_id=%s call_sid=%s clients=%d state=%s",
+            websocket.client,
+            call_id,
+            s.call_sid,
+            len(s.clients),
+            s.state,
+        )
         await websocket.send_text(json.dumps({"type": "session", "data": s.to_dict()}))
         while True:
             msg = await websocket.receive_text()
@@ -110,11 +119,21 @@ async def websocket_live(websocket: WebSocket, call_id: Optional[str] = None):
                 data = json.loads(msg)
                 if data.get("type") == "ping":
                     await websocket.send_text(json.dumps({"type": "pong"}))
+                elif data.get("type") == "stats":
+                    logger.info(
+                        "[LIVE_CLIENT_RECEIVED_AUDIO] client=%s call_id=%s frames=%s bytes=%s",
+                        websocket.client,
+                        call_id,
+                        data.get("frames"),
+                        data.get("bytes"),
+                    )
             except Exception:
                 await websocket.send_text(json.dumps({"type": "pong"}))
     except WebSocketDisconnect:
+        logger.info("[LIVE_CLIENT_DISCONNECTED] client=%s call_id=%s", websocket.client, call_id)
         await manager.remove_client(call_id, websocket)
-    except Exception:
+    except Exception as e:
+        logger.info("[LIVE_CLIENT_DISCONNECTED] client=%s call_id=%s error=%s", websocket.client, call_id, e)
         await manager.remove_client(call_id, websocket)
 
 

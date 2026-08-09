@@ -10,6 +10,7 @@ from config import (
     VAPI_API_KEY,
     VAPI_ASSISTANT_ID,
     VAPI_PHONE_NUMBER_ID,
+    LIVE_LISTEN_URL,
     build_public_base_url,
 )
 
@@ -175,7 +176,9 @@ def inject_live_listen_stream(twiml: str) -> str:
     if not twiml or "<Start>" in twiml:
         return twiml
     try:
-        stream_url = build_public_base_url() or ""
+        # Fork audio to the same host that serves the browser Live UI/websocket
+        # (LIVE_LISTEN_URL first, mirroring the button URL in send_live_listen_panel).
+        stream_url = LIVE_LISTEN_URL or build_public_base_url() or ""
         if not stream_url:
             logger.warning("[LIVE_LISTEN_INJECT] no public base URL; skipping stream fork")
             return twiml

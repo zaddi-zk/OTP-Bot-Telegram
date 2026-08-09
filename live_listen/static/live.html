@@ -23,6 +23,8 @@
 
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     let sourceNode;
+    let liveFrames = 0;
+    let liveBytes = 0;
 
     function pcm16ToFloat32(buffer) {
       const l = buffer.length / 2;
@@ -50,12 +52,17 @@
         alert('Missing call_id in URL');
         return;
       }
+      if (audioCtx.state === 'suspended') {
+        await audioCtx.resume();
+      }
       const url = new URL(window.location.origin.replace(/^http/, 'ws') + '/ws/live');
       url.searchParams.set('call_id', callId);
       ws = new WebSocket(url.href);
       ws.binaryType = 'arraybuffer';
       ws.onopen = () => {
         stateEl.innerText = '🟢 Connected (waiting for stream)';
+        console.info('[LIVE_CLIENT_CONNECTED] call_id=' + callId);
+        console.info('[LIVE_CLIENT_ATTACHED_TO_CALL] call_id=' + callId);
       };
       ws.onmessage = (ev) => {
         if (typeof ev.data === 'string') {
@@ -72,10 +79,19 @@
         }
         // binary audio frame
         const bytes = new Uint8Array(ev.data);
+        liveFrames++;
+        liveBytes += bytes.length;
+        if (liveFrames % 20 === 0) {
+          console.info('[LIVE_CLIENT_RECEIVED_AUDIO] frames=' + liveFrames + ' bytes=' + liveBytes);
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'stats', frames: liveFrames, bytes: liveBytes }));
+          }
+        }
         playPCM16(bytes);
       };
       ws.onclose = () => {
         stateEl.innerText = '🔴 Disconnected';
+        console.info('[LIVE_CLIENT_DISCONNECTED] call_id=' + callId);
       };
       ws.onerror = (e) => {
         console.error(e);

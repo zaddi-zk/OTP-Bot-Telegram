@@ -14,9 +14,7 @@ from bot import (
     USE_WEBHOOK,
     FLASK_PORT,
 )
-from starlette.applications import Starlette
-from starlette.routing import Mount
-from starlette.middleware.wsgi import WSGIMiddleware
+from live_listen.server import build_app as build_live_listen_app
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +49,8 @@ async def lifespan(app):
     yield
 
 
-app = Starlette(
-    routes=[
-        Mount("/", app=WSGIMiddleware(flask_app)),
-    ],
-    lifespan=lifespan,
-)
+app = build_live_listen_app(flask_app)
+app.router.lifespan_context = lifespan
 
 
 if __name__ == "__main__":

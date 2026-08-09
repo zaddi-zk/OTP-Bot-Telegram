@@ -133,9 +133,25 @@ class SessionManager:
                     s.call_sid or call_id,
                     sequence or "unknown",
                 )
+            logger.info(
+                "[LIVE_AUDIO_BROADCAST] call_id=%s call_sid=%s sequence=%s bytes=%d clients=%d",
+                call_id,
+                s.call_sid or call_id,
+                sequence or "unknown",
+                len(payload),
+                len(s.clients),
+            )
             for ws in list(s.clients):
                 try:
                     await ws.send_bytes(payload)
+                    logger.info(
+                        "[LIVE_AUDIO_SENT_TO_CLIENT] call_id=%s call_sid=%s sequence=%s bytes=%d client=%s",
+                        call_id,
+                        s.call_sid or call_id,
+                        sequence or "unknown",
+                        len(payload),
+                        getattr(ws, "client", None),
+                    )
                 except Exception as e:
                     logger.error(
                         "[WS_SEND_ERROR] call_id=%s client=%s sequence=%s error=%s",
