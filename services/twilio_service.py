@@ -33,9 +33,9 @@ CALL_QUEUED = QueuedMarker()
 
 class SelfDialError(Exception):
     """Raised when the requested destination is one of the account's own
-    Twilio numbers (pool numbers or numbers with an inbound voice URL). Twilio
-    refuses to terminate to its own number without a working inbound handler,
-    so this surfaces as a confusing 603/busy unless caught before dialing."""
+    Twilio numbers that cannot receive calls (a pool caller-ID line, or an
+    owned number with no working inbound handler). Dialing such a number makes
+    Twilio decline with a confusing SIP 603/busy unless caught before dialing."""
 
 
 _owned_numbers_cache = None
@@ -43,47 +43,60 @@ _owned_numbers_loaded_at = 0.0
 _OWNED_NUMBERS_TTL = 300.0  # re-query Twilio every 5 minutes
 
 
-def owned_twilio_numbers() -> set:
-    """All E.164 numbers owned by this Twilio account (cached 5 min).
-
-    Includes the proxy pool plus any numbers with an inbound voice URL, so both
-    self-dial failure modes are covered.
+def _owned_numbers():
+    """E.164 -> inbound voice handler for every number owned by this account
+    (cached 5 min). A number with an empty/missing handler cannot receive calls.
     """
     global _owned_numbers_cache, _owned_numbers_loaded_at
     import time as _time
     now = _time.time()
     if _owned_numbers_cache is not None and (now - _owned_numbers_loaded_at) < _OWNED_NUMBERS_TTL:
         return _owned_numbers_cache
-    numbers = set()
+    numbers = {}
     client = get_twilio_client()
     try:
         if client:
             for pn in client.incoming_phone_numbers.list(limit=100):
                 num = (getattr(pn, "phone_number", "") or "").strip()
-                if num:
-                    numbers.add(num)
+                if not num:
+                    continue
+                handler = (getattr(pn, "voice_url", "") or "").strip() or getattr(pn, "voice_application_sid", "") or ""
+                numbers[num] = handler
     except Exception as exc:
         logger.warning("[OWNED_NUMBERS] could not load from Twilio: %s", exc)
-    numbers.update(PROXY_POOL)
+    for num in PROXY_POOL:
+        numbers.setdefault(num, "")
     _owned_numbers_cache = numbers
     _owned_numbers_loaded_at = now
     return numbers
 
 
-def ensure_external_destination(to: Optional[str]) -> None:
-    """Raise :class:`SelfDialError` if ``to`` is one of the account's own numbers.
+def owned_twilio_numbers() -> set:
+    """All E.164 numbers owned by this Twilio account (cached 5 min)."""
+    return set(_owned_numbers())
 
-    Prevents dialing a Twilio-owned number (pool number / inbound-enabled line)
-    which would otherwise fail with a misleading SIP 603 'busy'.
+
+def ensure_external_destination(to: Optional[str]) -> None:
+    """Raise :class:`SelfDialError` if ``to`` cannot receive an inbound call.
+
+    Blocks pool caller-ID lines (they only dial out) and any owned number with
+    no inbound handler (Twilio declines with a misleading SIP 603 'busy').
+    Owned numbers with a working inbound handler (e.g. a Zoiper-routed line such
+    as +15074012012 -> /zoiper) are allowed as legitimate call targets.
     """
     if not to:
         return
     number = str(to).strip()
-    if number in owned_twilio_numbers():
+    if number in PROXY_POOL:
         raise SelfDialError(
-            f"Destination {number} is one of this bot's own Twilio numbers. "
-            "Pick an external phone number to call (pool numbers and "
-            "inbound-enabled lines are caller IDs only)."
+            f"Destination {number} is a pool caller-ID line. Pool numbers only "
+            "dial out; pick an external phone number to call."
+        )
+    handler = _owned_numbers().get(number)
+    if handler is not None and not handler:
+        raise SelfDialError(
+            f"Destination {number} is owned by this Twilio account but has no "
+            "inbound handler configured. Pick an external phone number to call."
         )
 
 

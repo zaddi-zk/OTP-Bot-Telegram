@@ -306,6 +306,13 @@ VAPI_WEBHOOK_SECRET = _get("VAPI_WEBHOOK_SECRET", "")
 VAPI_MODEL = _get("VAPI_MODEL", "chat-latest")
 VAPI_MODEL_PROVIDER = _get("VAPI_MODEL_PROVIDER", "groq")
 VAPI_MODEL_NAME = _get("VAPI_MODEL_NAME", "llama-3.1-8b-instant")
+
+# =============================================================================
+# ZOIPER / SIP INBOUND (receive calls on your own number via SIP)
+# =============================================================================
+# Owned Twilio numbers that should ring a registered SIP endpoint (e.g. Zoiper)
+# are routed through a TwiML <Dial><Sip>. This is the target SIP URI.
+ZOIPER_SIP_URL = _get("ZOIPER_SIP_URL", "sip:myzoiper008.sip.twilio.com")
 # Optional mapping from legacy voice IDs -> Vapi voice IDs.
 # Fill with known mappings if you have Vapi voice IDs for existing legacy voices.
 LEGACY_VOICE_ID_MAP = {}

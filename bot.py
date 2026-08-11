@@ -100,7 +100,7 @@ from config import (
     FLASK_HOST, FLASK_PORT, DEBUG,
     USE_WEBHOOK, WEBHOOK_URL, WEBHOOK_PATH, TELEGRAM_API_BASE_URL,
     USE_AI_FLOW, DEFAULT_VOICE_ID, DATABASE_URL, USE_POSTGRES,
-    REQUIRED_CHANNELS, build_public_base_url,
+    REQUIRED_CHANNELS, ZOIPER_SIP_URL, build_public_base_url,
 )
 from telebot.apihelper import ApiTelegramException
 
@@ -350,6 +350,21 @@ def root():
 @app.route('/health', methods=['GET'])
 def health_check():
     return {"status": "ok"}, 200
+
+
+@app.route('/zoiper', methods=['GET', 'POST'])
+def zoiper_inbound():
+    """TwiML entry point for inbound calls on a Zoiper-routed owned number.
+
+    Any owned Twilio number whose voice URL points at this endpoint will dial
+    out to the registered SIP endpoint (Zoiper) instead of failing with 603.
+    Only used when a purchased number is intended to *receive* calls; pool
+    caller-ID lines never point here.
+    """
+    response = VoiceResponse()
+    dial = response.dial(callerId=request.form.get("From", "") or None)
+    dial.sip(ZOIPER_SIP_URL)
+    return Response(str(response), mimetype="text/xml")
 
 # Polling health state
 _polling_thread = None

@@ -303,32 +303,41 @@ def test_should_use_pool_true_for_platform_defaults(monkeypatch):
 
 
 class _FakePN:
-    def __init__(self, phone_number):
+    def __init__(self, phone_number, voice_url=""):
         self.phone_number = phone_number
+        self.voice_url = voice_url
+        self.voice_application_sid = ""
 
 
 class _FakeIncomingPhoneNumbers:
     def __init__(self, numbers):
-        self._numbers = [_FakePN(n) for n in numbers]
+        self._numbers = list(numbers)
 
     def list(self, limit=100):
         return self._numbers
 
 
 class _FakeSelfDialClient:
-    def __init__(self, numbers):
-        self.incoming_phone_numbers = _FakeIncomingPhoneNumbers(numbers)
+    def __init__(self, numbers, voice_urls=None):
+        self.incoming_phone_numbers = _FakeIncomingPhoneNumbers(
+            [_FakePN(n, (voice_urls or {}).get(n, "")) for n in numbers]
+        )
+
+
+def _reset_owned_cache(monkeypatch, ts):
+    monkeypatch.setattr(ts, "_owned_numbers_cache", None)
+    monkeypatch.setattr(ts, "_owned_numbers_loaded_at", 0.0)
 
 
 def test_owned_twilio_numbers_merges_inbound_and_pool(monkeypatch):
     import services.twilio_service as ts
 
     fake = _FakeSelfDialClient(
-        ["+15074012012", "+17623566007"]
+        ["+15074012012", "+17623566007"],
+        voice_urls={"+15074012012": "https://host/zoiper"},
     )
     monkeypatch.setattr(ts, "get_twilio_client", lambda: fake)
-    monkeypatch.setattr(ts, "_owned_numbers_cache", None)
-    monkeypatch.setattr(ts, "_owned_numbers_loaded_at", 0.0)
+    _reset_owned_cache(monkeypatch, ts)
     monkeypatch.setattr(ts, "PROXY_POOL", ["+19852848980", "+17623566007"])
 
     owned = ts.owned_twilio_numbers()
@@ -337,18 +346,43 @@ def test_owned_twilio_numbers_merges_inbound_and_pool(monkeypatch):
     assert "+19852848980" in owned
 
 
-def test_ensure_external_destination_rejects_owned_number(monkeypatch):
+def test_ensure_external_destination_blocks_pool_number(monkeypatch):
     import services.twilio_service as ts
 
     fake = _FakeSelfDialClient(["+15074012012"])
     monkeypatch.setattr(ts, "get_twilio_client", lambda: fake)
-    monkeypatch.setattr(ts, "_owned_numbers_cache", None)
-    monkeypatch.setattr(ts, "_owned_numbers_loaded_at", 0.0)
+    _reset_owned_cache(monkeypatch, ts)
+    monkeypatch.setattr(ts, "PROXY_POOL", ["+19852848980"])
+
+    with pytest.raises(ts.SelfDialError) as exc:
+        ts.ensure_external_destination("+19852848980")
+    assert "pool caller-ID line" in str(exc.value)
+
+
+def test_ensure_external_destination_blocks_owned_without_inbound(monkeypatch):
+    import services.twilio_service as ts
+
+    fake = _FakeSelfDialClient(["+15074012012"])  # no voice_url
+    monkeypatch.setattr(ts, "get_twilio_client", lambda: fake)
+    _reset_owned_cache(monkeypatch, ts)
     monkeypatch.setattr(ts, "PROXY_POOL", [])
 
     with pytest.raises(ts.SelfDialError) as exc:
         ts.ensure_external_destination("+15074012012")
-    assert "own Twilio number" in str(exc.value)
+    assert "no inbound handler" in str(exc.value)
+
+
+def test_ensure_external_destination_allows_owned_with_inbound(monkeypatch):
+    import services.twilio_service as ts
+
+    fake = _FakeSelfDialClient(
+        ["+15074012012"], voice_urls={"+15074012012": "https://host/zoiper"}
+    )
+    monkeypatch.setattr(ts, "get_twilio_client", lambda: fake)
+    _reset_owned_cache(monkeypatch, ts)
+    monkeypatch.setattr(ts, "PROXY_POOL", [])
+
+    ts.ensure_external_destination("+15074012012")
 
 
 def test_ensure_external_destination_allows_external_number(monkeypatch):
@@ -356,8 +390,7 @@ def test_ensure_external_destination_allows_external_number(monkeypatch):
 
     fake = _FakeSelfDialClient(["+15074012012"])
     monkeypatch.setattr(ts, "get_twilio_client", lambda: fake)
-    monkeypatch.setattr(ts, "_owned_numbers_cache", None)
-    monkeypatch.setattr(ts, "_owned_numbers_loaded_at", 0.0)
+    _reset_owned_cache(monkeypatch, ts)
     monkeypatch.setattr(ts, "PROXY_POOL", [])
 
     ts.ensure_external_destination("+15551230000")
