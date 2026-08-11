@@ -312,7 +312,10 @@ VAPI_MODEL_NAME = _get("VAPI_MODEL_NAME", "llama-3.1-8b-instant")
 # =============================================================================
 # Owned Twilio numbers that should ring a registered SIP endpoint (e.g. Zoiper)
 # are routed through a TwiML <Dial><Sip>. This is the target SIP URI.
-ZOIPER_SIP_URL = _get("ZOIPER_SIP_URL", "sip:myzoiper008.sip.twilio.com")
+# NOTE: must include the registered username (e.g. zaddi008@domain) — a bare
+# domain gets an instant 404/failed SIP leg because Twilio can't route it to a
+# registered AoR. Dialing the username routes that account's registered device.
+ZOIPER_SIP_URL = _get("ZOIPER_SIP_URL", "sip:zaddi008@myzoiper008.sip.twilio.com")
 # Optional mapping from legacy voice IDs -> Vapi voice IDs.
 # Fill with known mappings if you have Vapi voice IDs for existing legacy voices.
 LEGACY_VOICE_ID_MAP = {}
