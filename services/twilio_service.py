@@ -30,6 +30,24 @@ class QueuedMarker:
 
 CALL_QUEUED = QueuedMarker()
 
+
+def _vapi_inline_number_ref(from_number: Optional[str]) -> Optional[dict]:
+    """Inline Vapi phone-number reference used when VAPI_PHONE_NUMBER_ID is
+    missing or stale (e.g. the Twilio number it was bound to was deleted).
+
+    Uses the caller id actually dialed (pool number or platform default) so Vapi
+    always has a real, owned Twilio number to bind the bypass TwiML to."""
+    if not ACCOUNT_SID or not AUTH_TOKEN:
+        return None
+    number = (from_number or OUTBOUND_CALLER_ID or TWILIO_PHONE_NUMBER or "").strip()
+    if not number:
+        return None
+    return {
+        "twilioPhoneNumber": number,
+        "twilioAccountSid": ACCOUNT_SID,
+        "twilioAuthToken": AUTH_TOKEN,
+    }
+
 _twilio_client = None
 _call_executor = ThreadPoolExecutor(
     max_workers=4,
@@ -195,6 +213,7 @@ def place_ai_call(
             customer_name=customer_name,
             assistant_overrides=assistant_overrides,
             metadata=metadata,
+            phone_number_ref=_vapi_inline_number_ref(from_number),
         )
         if not bridge:
             logger.error("[VAPI_BRIDGE] bypass call failed for %s (user=%s)", to, user_id)

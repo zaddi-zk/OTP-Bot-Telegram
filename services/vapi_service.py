@@ -203,11 +203,17 @@ def create_call_bypass(
     customer_name: str,
     assistant_overrides: Optional[dict] = None,
     metadata: Optional[dict] = None,
+    phone_number_ref: Optional[dict] = None,
 ) -> Optional[dict]:
     """Create a Vapi call in bypass mode so Vapi does NOT dial.
 
     Vapi only handles STT/LLM/TTS. The actual outbound call is placed by Twilio
     using the TwiML returned in ``phoneCallProviderDetails.twiml``.
+
+    ``phone_number_ref`` is an inline ``{"twilioPhoneNumber": ..., "twilioAccountSid": ...,
+    "twilioAuthToken": ...}`` dict used when VAPI_PHONE_NUMBER_ID is missing or stale
+    (e.g. the Twilio number it was bound to was deleted). If a ``phoneNumberId`` 400s
+    with "does not exist", the request is retried with this inline ref.
 
     Returns ``{"vapi_call_id": str, "twiml": str}`` or None on failure.
     """
@@ -221,6 +227,8 @@ def create_call_bypass(
 
     if VAPI_PHONE_NUMBER_ID:
         payload["phoneNumberId"] = VAPI_PHONE_NUMBER_ID
+    elif phone_number_ref:
+        payload["phoneNumber"] = phone_number_ref
 
     if VAPI_ASSISTANT_ID:
         payload["assistantId"] = VAPI_ASSISTANT_ID
@@ -232,15 +240,27 @@ def create_call_bypass(
         payload["metadata"] = metadata
 
     try:
-        logger.info("[VAPI_BYPASS_PAYLOAD] %s", json.dumps({k: v for k, v in payload.items() if k != "assistantOverrides"}, indent=2))
-        if payload.get("assistantOverrides"):
-            logger.info("[VAPI_BYPASS_OVERRIDES] %s", json.dumps(payload["assistantOverrides"], indent=2))
         resp = requests.post(
             f"{VAPI_BASE_URL}/call",
             headers=_headers(),
             json=payload,
             timeout=15,
         )
+        if (
+            resp.status_code == 400
+            and "does not exist" in (resp.text or "")
+            and VAPI_PHONE_NUMBER_ID
+            and phone_number_ref
+        ):
+            logger.warning("[VAPI_BYPASS_NUMBER_FALLBACK] phoneNumberId stale; retrying inline number")
+            payload.pop("phoneNumberId", None)
+            payload["phoneNumber"] = phone_number_ref
+            resp = requests.post(
+                f"{VAPI_BASE_URL}/call",
+                headers=_headers(),
+                json=payload,
+                timeout=15,
+            )
         if resp.status_code == 201:
             result = resp.json()
             call_id = result.get("id")
