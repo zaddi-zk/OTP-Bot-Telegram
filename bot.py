@@ -203,7 +203,8 @@ from core.user_manager import (
 # GLOBAL CLIENTS
 # ======================================================================
 # Prefer services wrapper for Twilio call dispatch to ensure non-blocking behaviour
-from services.twilio_service import get_twilio_client
+from services.twilio_service import get_twilio_client, CALL_QUEUED
+from services.proxy_pool import AllLinesBusyError
 
 twilio_client = Client(ACCOUNT_SID, AUTH_TOKEN) if ACCOUNT_SID and "YOUR_" not in ACCOUNT_SID else None
 # Initialize bot with threaded=True for better concurrency and timeout handling
@@ -1454,6 +1455,15 @@ def twilio_status():
         if status_text:
             update_call_status_message(call_sid, status_text, final=final_status)
 
+        if final_status:
+            try:
+                from services.proxy_pool import proxy_pool
+                released = proxy_pool.release_by_sid(call_sid)
+                if released:
+                    logger.info("[NUMBER_POOL] freed number for call %s (status=%s)", call_sid, status)
+            except Exception as release_exc:
+                logger.warning("[NUMBER_POOL] release failed for call %s: %s", call_sid, release_exc)
+
         if status == "completed" and call_sid:
             try:
                 session = get_call_session(call_sid) or {}
@@ -1542,6 +1552,7 @@ def register_call_session(
     status_chat_id: Optional[int] = None,
     status_message_id: Optional[int] = None,
     vapi_call_id: Optional[str] = None,
+    pool_number: Optional[str] = None,
 ):
     if not call_sid:
         return None
@@ -1586,6 +1597,8 @@ def register_call_session(
         session["status_message_id"] = status_message_id
     if mode_label is not None:
         session["mode_label"] = mode_label
+    if pool_number is not None:
+        session["pool_number"] = pool_number
     if endpoint:
         endpoints = session.get("endpoints_hit") or []
         if endpoint not in endpoints:
@@ -2767,30 +2780,34 @@ def _place_mode_ai_call(
     overrides["model"]["messages"] = [{"role": "system", "content": system_prompt}]
 
     resolved_caller = caller_id or read_user_file(user_id, "Caller ID.txt", "").strip() or TWILIO_PHONE_NUMBER
-    sid = place_ai_call(
-        to=to,
-        user_id=user_id,
-        chat_id=chat_id,
-        customer_name=name,
-        assistant_overrides=overrides,
-        metadata=metadata.internal,
-        from_number=OUTBOUND_CALLER_ID,
-        caller_id=resolved_caller,
-        record=True,
-        endpoint=endpoint,
-        mode_label=mode_label,
-        voice_id=voice_id,
-        voice_name=voice_name,
-        name=name,
-        company=company,
-        from_name=from_name or company,
-        delivery=delivery,
-        language=language,
-        code_length=code_length,
-        emotion=emotion or "neutral",
-        status_chat_id=chat_id,
-        status_message_id=status_message_id,
-    )
+    try:
+        sid = place_ai_call(
+            to=to,
+            user_id=user_id,
+            chat_id=chat_id,
+            customer_name=name,
+            assistant_overrides=overrides,
+            metadata=metadata.internal,
+            from_number=resolved_caller,
+            caller_id=resolved_caller,
+            record=True,
+            endpoint=endpoint,
+            mode_label=mode_label,
+            voice_id=voice_id,
+            voice_name=voice_name,
+            name=name,
+            company=company,
+            from_name=from_name or company,
+            delivery=delivery,
+            language=language,
+            code_length=code_length,
+            emotion=emotion or "neutral",
+            status_chat_id=chat_id,
+            status_message_id=status_message_id,
+        )
+    except AllLinesBusyError:
+        logger.warning("[NUMBER_POOL] busy; skipping %s (mode=%s)", to, mode_label)
+        return ""
     return sid
 
 
@@ -2890,7 +2907,19 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
                     emotion=emotion,
                     status_chat_id=chat_id,
                     status_message_id=status_message_id,
+                    queue_on_busy=True,
+                    queue_key=f"emotion-{user_id_str}",
                 )
+                if twilio_sid is CALL_QUEUED:
+                    try:
+                        bot.send_message(
+                            chat_id,
+                            "⚠️ <b>ALL LINES BUSY</b>\n\nAll numbers are currently active on other calls. Your call is <b>queued</b> and will start automatically as soon as a line frees up (max 2 minutes).",
+                            parse_mode="HTML",
+                        )
+                    except Exception:
+                        pass
+                    return
                 if not twilio_sid:
                     raise Exception("Failed to place AI emotion call via Twilio")
                 
@@ -3042,7 +3071,7 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                 overrides["model"]["messages"] = [{"role": "system", "content": system_prompt}]
 
                 # Place the call via Twilio; Vapi (bypass) only does STT/LLM/TTS.
-                from services.twilio_service import place_ai_call
+                from services.twilio_service import place_ai_call, CALL_QUEUED
                 twilio_sid = place_ai_call(
                     to=phonenum,
                     user_id=user_id_str,
@@ -3066,7 +3095,19 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                     emotion=emotion,
                     status_chat_id=chat_id,
                     status_message_id=status_message_id,
+                    queue_on_busy=True,
+                    queue_key=f"normal-{user_id_str}",
                 )
+                if twilio_sid is CALL_QUEUED:
+                    try:
+                        bot.send_message(
+                            chat_id,
+                            "⚠️ <b>ALL LINES BUSY</b>\n\nAll numbers are currently active on other calls. Your call is <b>queued</b> and will start automatically as soon as a line frees up (max 2 minutes).",
+                            parse_mode="HTML",
+                        )
+                    except Exception:
+                        pass
+                    return
                 if not twilio_sid:
                     raise Exception("Failed to place normal call via Twilio")
 

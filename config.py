@@ -57,6 +57,22 @@ TWILIO_PHONE_NUMBER = _get("TWILIO_PHONE_NUMBER", "+1234567890")
 # TWILIO_PHONE_NUMBER if not set.
 OUTBOUND_CALLER_ID = _get("OUTBOUND_CALLER_ID", "").strip() or TWILIO_PHONE_NUMBER
 NGROK_URL = _get("NGROK_URL", "https://your-ngrok-url.ngrok-free.dev")
+
+# =============================================================================
+# Twilio Proxy number pool (multi-number concurrency)
+# =============================================================================
+# The Proxy Service SID is the authoritative pool registry. PROXY_POOL_NUMBERS
+# is the comma-separated E.164 fallback list used when the Proxy Service is not
+# reachable/configured.
+PROXY_SERVICE_SID = _get("PROXY_SERVICE_SID", "").strip()
+PROXY_POOL_NUMBERS = _get("PROXY_POOL_NUMBERS", "")
+PROXY_POOL = [n.strip() for n in PROXY_POOL_NUMBERS.split(",") if n.strip()]
+_pool_configured = bool(PROXY_SERVICE_SID or PROXY_POOL)
+PROXY_POOL_ENABLED = _get(
+    "PROXY_POOL_ENABLED", "true" if _pool_configured else "false"
+).strip().lower() in ("true", "1", "yes", "on")
+PROXY_LEASE_TTL_SECONDS = int(_get("PROXY_LEASE_TTL_SECONDS", "3600"))
+PROXY_QUEUE_TTL_SECONDS = int(_get("PROXY_QUEUE_TTL_SECONDS", "120"))
 NGROK_TOKEN = _get("NGROK_TOKEN", "")
 
 # Channels

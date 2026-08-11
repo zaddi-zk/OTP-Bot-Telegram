@@ -1062,6 +1062,21 @@ def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
         if session:
             session["call_ended_processed"] = True
 
+        # Number-pool cleanup: release the pooled number as soon as the calling
+        # leg ends. Resolve the real Twilio SID (CA...) because Vapi bypass
+        # webhooks key on the Vapi UUID.
+        try:
+            from services.proxy_pool import proxy_pool
+            twilio_sid = (session or {}).get("call_sid") or call_sid
+            if not str(twilio_sid).startswith("CA"):
+                twilio_sid = _resolve_real_twilio_sid(vapi_call_id, twilio_sid or call_sid)
+            if twilio_sid and str(twilio_sid).startswith("CA"):
+                released = proxy_pool.release_by_sid(str(twilio_sid))
+                if released:
+                    logger.info("[NUMBER_POOL] freed number for ended call %s", twilio_sid)
+        except Exception as release_exc:
+            logger.warning("[NUMBER_POOL] vapi end release failed: %s", release_exc)
+
         return Response("OK")
     except Exception as e:
         logger.error("[VAPI_CALL_ENDED_ERROR] %s", e)

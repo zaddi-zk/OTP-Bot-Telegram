@@ -45,6 +45,7 @@ from core.auth import (
     get_free_calls
 )
 from services.twilio_service import make_call, make_call_and_store_async, store_call_metadata, get_twilio_client
+from services.proxy_pool import AllLinesBusyError
 
 # ======================================================================
 # SCENARIOS & URGENCY (drives PromptBuilder Stage 2 reason + tone)
@@ -948,6 +949,8 @@ async def initiate_call_from_query(query, user_id: str):
             )
         else:
             await query.edit_message_text("❌ Call failed to initiate. Check Twilio configuration.")
+    except AllLinesBusyError:
+        await query.edit_message_text("⚠️ <b>ALL LINES BUSY</b>\n\nAll numbers are currently active on other calls. Please try again in a moment.", parse_mode="HTML")
     except Exception as e:
         logger.error(f"Call initiation error: {e}", exc_info=True)
         await query.edit_message_text(f"❌ Error: {str(e)}")
