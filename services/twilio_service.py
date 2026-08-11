@@ -213,7 +213,7 @@ def place_ai_call(
             customer_name=customer_name,
             assistant_overrides=assistant_overrides,
             metadata=metadata,
-            phone_number_ref=_vapi_inline_number_ref(from_number),
+            phone_number_ref=_vapi_inline_number_ref(pool_number or OUTBOUND_CALLER_ID or from_number),
         )
         if not bridge:
             logger.error("[VAPI_BRIDGE] bypass call failed for %s (user=%s)", to, user_id)

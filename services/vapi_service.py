@@ -211,9 +211,10 @@ def create_call_bypass(
     using the TwiML returned in ``phoneCallProviderDetails.twiml``.
 
     ``phone_number_ref`` is an inline ``{"twilioPhoneNumber": ..., "twilioAccountSid": ...,
-    "twilioAuthToken": ...}`` dict used when VAPI_PHONE_NUMBER_ID is missing or stale
-    (e.g. the Twilio number it was bound to was deleted). If a ``phoneNumberId`` 400s
-    with "does not exist", the request is retried with this inline ref.
+    "twilioAuthToken": ...}`` dict. When provided it is the PRIMARY phone reference so
+    Vapi builds TwiML and records the live dialed number (pool rotation is reflected
+    in Vapi's dashboard). ``VAPI_PHONE_NUMBER_ID`` is used only as a fallback when no
+    inline ref is given or the inline request 400s.
 
     Returns ``{"vapi_call_id": str, "twiml": str}`` or None on failure.
     """
@@ -225,10 +226,10 @@ def create_call_bypass(
         "phoneCallProviderBypassEnabled": True,
     }
 
-    if VAPI_PHONE_NUMBER_ID:
-        payload["phoneNumberId"] = VAPI_PHONE_NUMBER_ID
-    elif phone_number_ref:
+    if phone_number_ref:
         payload["phoneNumber"] = phone_number_ref
+    elif VAPI_PHONE_NUMBER_ID:
+        payload["phoneNumberId"] = VAPI_PHONE_NUMBER_ID
 
     if VAPI_ASSISTANT_ID:
         payload["assistantId"] = VAPI_ASSISTANT_ID
@@ -248,13 +249,13 @@ def create_call_bypass(
         )
         if (
             resp.status_code == 400
-            and "does not exist" in (resp.text or "")
-            and VAPI_PHONE_NUMBER_ID
             and phone_number_ref
+            and VAPI_PHONE_NUMBER_ID
+            and "phoneNumber" in payload
         ):
-            logger.warning("[VAPI_BYPASS_NUMBER_FALLBACK] phoneNumberId stale; retrying inline number")
-            payload.pop("phoneNumberId", None)
-            payload["phoneNumber"] = phone_number_ref
+            logger.warning("[VAPI_BYPASS_NUMBER_FALLBACK] inline number rejected; retrying phoneNumberId")
+            payload.pop("phoneNumber", None)
+            payload["phoneNumberId"] = VAPI_PHONE_NUMBER_ID
             resp = requests.post(
                 f"{VAPI_BASE_URL}/call",
                 headers=_headers(),
