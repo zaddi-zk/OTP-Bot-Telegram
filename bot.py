@@ -204,6 +204,7 @@ from core.user_manager import (
 # ======================================================================
 # Prefer services wrapper for Twilio call dispatch to ensure non-blocking behaviour
 from services.twilio_service import get_twilio_client, CALL_QUEUED
+from services.twilio_service import SelfDialError
 from services.proxy_pool import AllLinesBusyError
 
 twilio_client = Client(ACCOUNT_SID, AUTH_TOKEN) if ACCOUNT_SID and "YOUR_" not in ACCOUNT_SID else None
@@ -2807,6 +2808,9 @@ def _place_mode_ai_call(
         )
     except AllLinesBusyError:
         logger.warning("[NUMBER_POOL] busy; skipping %s (mode=%s)", to, mode_label)
+        return ""
+    except SelfDialError:
+        logger.warning("[SELF_DIAL] destination %s is one of our own Twilio numbers (mode=%s)", to, mode_label)
         return ""
     return sid
 

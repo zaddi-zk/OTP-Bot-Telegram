@@ -13,7 +13,7 @@ from urllib.parse import quote_plus
 
 from twilio.rest import Client
 
-from config import ACCOUNT_SID, AUTH_TOKEN, TWILIO_PHONE_NUMBER, OUTBOUND_CALLER_ID, NGROK_URL, build_public_base_url
+from config import ACCOUNT_SID, AUTH_TOKEN, TWILIO_PHONE_NUMBER, OUTBOUND_CALLER_ID, NGROK_URL, PROXY_POOL, build_public_base_url
 from core.files import ensure_user_path, user_conf_path, write_user_file
 from services.proxy_pool import AllLinesBusyError, proxy_pool, should_use_pool
 
@@ -29,6 +29,62 @@ class QueuedMarker:
 
 
 CALL_QUEUED = QueuedMarker()
+
+
+class SelfDialError(Exception):
+    """Raised when the requested destination is one of the account's own
+    Twilio numbers (pool numbers or numbers with an inbound voice URL). Twilio
+    refuses to terminate to its own number without a working inbound handler,
+    so this surfaces as a confusing 603/busy unless caught before dialing."""
+
+
+_owned_numbers_cache = None
+_owned_numbers_loaded_at = 0.0
+_OWNED_NUMBERS_TTL = 300.0  # re-query Twilio every 5 minutes
+
+
+def owned_twilio_numbers() -> set:
+    """All E.164 numbers owned by this Twilio account (cached 5 min).
+
+    Includes the proxy pool plus any numbers with an inbound voice URL, so both
+    self-dial failure modes are covered.
+    """
+    global _owned_numbers_cache, _owned_numbers_loaded_at
+    import time as _time
+    now = _time.time()
+    if _owned_numbers_cache is not None and (now - _owned_numbers_loaded_at) < _OWNED_NUMBERS_TTL:
+        return _owned_numbers_cache
+    numbers = set()
+    client = get_twilio_client()
+    try:
+        if client:
+            for pn in client.incoming_phone_numbers.list(limit=100):
+                num = (getattr(pn, "phone_number", "") or "").strip()
+                if num:
+                    numbers.add(num)
+    except Exception as exc:
+        logger.warning("[OWNED_NUMBERS] could not load from Twilio: %s", exc)
+    numbers.update(PROXY_POOL)
+    _owned_numbers_cache = numbers
+    _owned_numbers_loaded_at = now
+    return numbers
+
+
+def ensure_external_destination(to: Optional[str]) -> None:
+    """Raise :class:`SelfDialError` if ``to`` is one of the account's own numbers.
+
+    Prevents dialing a Twilio-owned number (pool number / inbound-enabled line)
+    which would otherwise fail with a misleading SIP 603 'busy'.
+    """
+    if not to:
+        return
+    number = str(to).strip()
+    if number in owned_twilio_numbers():
+        raise SelfDialError(
+            f"Destination {number} is one of this bot's own Twilio numbers. "
+            "Pick an external phone number to call (pool numbers and "
+            "inbound-enabled lines are caller IDs only)."
+        )
 
 
 def _vapi_inline_number_ref(from_number: Optional[str]) -> Optional[dict]:
@@ -168,6 +224,8 @@ def place_ai_call(
     """
     from services.vapi_service import create_call_bypass
 
+    ensure_external_destination(to)
+
     pool_number = None
     acquired_default = False
     if should_use_pool(from_number):
@@ -279,6 +337,7 @@ def make_call(to: str, from_number: str = None, caller_id: str = None,
               webhook_url: str = None, user_id: str = "",
               record: bool = True,
               **kwargs) -> Optional[str]:
+    ensure_external_destination(to)
     from models.call_metadata import CallMetadata, TargetInfo, CompanyInfo, OTPConfig, AIBehavior
     from services.prompt_builder import PromptBuilder
     from services.voice_identity import select_agent_name
