@@ -8393,7 +8393,11 @@ def _save_notify_ledger(ledger: Dict[str, Any]) -> None:
 
 
 def _send_premium_expiring_notice(user_id: str, end_dt: datetime) -> None:
-    """Warn a user that their premium expires within 24 hours."""
+    """Warn a user that their premium expires soon (5 hours or less).
+
+    Message is intended to be sent once per subscription lifecycle when the
+    remaining time drops below the configured threshold.
+    """
     try:
         chat_id = int(user_id)
         msg = (
@@ -8423,37 +8427,56 @@ def _send_premium_expired_notice(user_id: str) -> None:
 
 
 def _subscription_expiry_scan() -> None:
-    """Warn users expiring within 24h and notify users who just expired.
+    """Warn users when 5 hours (configurable) remain and notify users who just expired.
 
-    Ledger-backed (once per user per day for warnings, once ever for expiry),
-    so users are never spammed on every hourly pass.
+    Ledger-backed: we store a per-user `warned_for` value equal to the
+    subscription `subscription_end` ISO timestamp we already warned about. This
+    ensures we only warn once per subscription lifecycle. When a user renews
+    and the `subscription_end` changes, a new warning will be sent again when
+    the new expiry crosses the threshold.
     """
-    today = datetime.now().date().isoformat()
     ledger = _load_notify_ledger()
     changed = False
+    now = datetime.now()
+    WARN_HOURS = 5
 
     for info in get_active_premium_users():
         user_id = info["user_id"]
         if is_privileged_user(user_id):
             continue
+
         entry = dict(ledger.get(user_id, {}))
 
+        # Expired handling: notify once when user just expired
         if not info["is_active"]:
-            # Just expired (still flagged premium until the reset demotes them).
+            # Still flagged premium until reset; ensure we notify only once per expiry
             if not entry.get("expired_notified"):
                 _send_premium_expired_notice(user_id)
-                entry["expired_notified"] = today
+                entry["expired_notified"] = now.date().isoformat()
                 changed = True
-        else:
-            end_dt = info["subscription_end"]
-            if end_dt is None:
-                continue  # Unlimited premium — nothing to warn about.
-            days_left = (end_dt - datetime.now()).days
-            if 0 <= days_left <= 1 and entry.get("last_warned") != today:
-                _send_premium_expiring_notice(user_id, end_dt)
-                entry["last_warned"] = today
-                changed = True
+            if entry:
+                ledger[user_id] = entry
+            continue
 
+        # Active subscription: maybe warn at WARN_HOURS remaining
+        end_dt = info.get("subscription_end")
+        if end_dt is None:
+            # Unlimited premium — nothing to warn about.
+            continue
+
+        seconds_left = (end_dt - now).total_seconds()
+        hours_left = seconds_left / 3600.0
+
+        # If within the warning window and we haven't warned for this exact expiry
+        # timestamp yet, send the single notification and remember the expiry we warned for.
+        warned_for = entry.get("warned_for")
+        end_iso = end_dt.isoformat()
+        if 0 < hours_left <= WARN_HOURS and warned_for != end_iso:
+            _send_premium_expiring_notice(user_id, end_dt)
+            entry["warned_for"] = end_iso
+            changed = True
+
+        # Persist entry if any markers are present
         if entry:
             ledger[user_id] = entry
 
