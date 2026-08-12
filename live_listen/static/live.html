@@ -1,111 +1,587 @@
 ﻿<!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Live Listen</title>
   <style>
-    body { font-family: Arial, sans-serif; padding: 20px }
-    #status { font-size: 18px; margin-bottom: 10px }
-    button { padding: 8px 12px; font-size: 16px }
+    :root {
+      color-scheme: dark;
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #050813;
+      color: #f8fafc;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body { padding: 18px; background: radial-gradient(circle at top left, rgba(59, 130, 246, 0.12), transparent 22%), radial-gradient(circle at bottom right, rgba(16, 185, 129, 0.10), transparent 28%), linear-gradient(180deg, #070b16 0%, #0b1222 100%); }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+    .app-shell { max-width: 1080px; margin: 0 auto; display: grid; gap: 18px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 20px 24px; border-radius: 24px; background: rgba(8, 14, 25, 0.92); border: 1px solid rgba(148, 163, 184, 0.10); }
+    .topbar .title-group { display: grid; gap: 6px; }
+    .topbar h1 { margin: 0; font-size: 1.25rem; letter-spacing: 0.04em; }
+    .topbar .subtitle { margin: 0; color: #94a3b8; font-size: 0.95rem; }
+    .topbar .version { color: #94a3b8; font-size: 0.95rem; }
+    .header-state { display: flex; align-items: center; gap: 12px; }
+    .status-indicator { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 999px; font-size: 0.85rem; }
+    .status-disconnected { background: #f87171; color: #fee2e2; }
+    .status-connected { background: #34d399; color: #d1fae5; }
+    .status-active { background: #a78bfa; color: #ede9fe; }
+    .header-text { display: grid; line-height: 1.2; }
+    .header-text strong { display: block; font-size: 0.98rem; }
+    .header-text span { color: #94a3b8; font-size: 0.88rem; }
+    .panel { border-radius: 28px; padding: 24px; background: rgba(8, 14, 25, 0.94); border: 1px solid rgba(148, 163, 184, 0.10); box-shadow: 0 24px 72px rgba(0, 0, 0, 0.20); }
+    .panel-title { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
+    .panel-title .eyebrow { margin: 0 0 8px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.18em; font-size: 0.78rem; }
+    .panel-title h2 { margin: 0; font-size: 1.7rem; line-height: 1.1; }
+    .panel-title p { margin: 0; color: #94a3b8; font-size: 0.96rem; max-width: 660px; }
+    .primary-button { min-width: 170px; padding: 14px 22px; border-radius: 18px; border: none; background: linear-gradient(135deg, #22c55e, #14b8a6); color: #08131e; font-weight: 700; box-shadow: 0 18px 38px rgba(34, 197, 94, 0.24); transition: transform 0.2s ease; }
+    .primary-button:hover:not(:disabled) { transform: translateY(-1px); }
+    .secondary-button { min-width: 140px; padding: 13px 20px; border-radius: 18px; border: 1px solid rgba(148, 163, 184, 0.16); background: rgba(255, 255, 255, 0.06); color: #f8fafc; }
+    .secondary-button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.12); }
+    .info-strip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 20px; }
+    .info-card { padding: 18px 20px; border-radius: 22px; background: rgba(15, 23, 42, 0.88); border: 1px solid rgba(148, 163, 184, 0.10); }
+    .info-card .label { display: block; color: #94a3b8; font-size: 0.78rem; letter-spacing: 0.12em; text-transform: uppercase; }
+    .info-card .value { margin-top: 10px; font-size: 1.1rem; font-weight: 700; color: #f8fafc; }
+    .call-info { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-bottom: 20px; }
+    .call-field { padding: 18px 20px; border-radius: 22px; background: rgba(15, 23, 42, 0.88); border: 1px solid rgba(148, 163, 184, 0.10); }
+    .field-label { display: block; color: #94a3b8; font-size: 0.78rem; letter-spacing: 0.1em; text-transform: uppercase; }
+    .field-value { margin-top: 10px; color: #f8fafc; font-size: 1rem; font-weight: 700; word-break: break-all; }
+    .waveform-panel { position: relative; height: 238px; border-radius: 28px; overflow: hidden; background: radial-gradient(circle at 15% 35%, rgba(34, 197, 94, 0.14), transparent 20%), linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(15, 23, 42, 0.84)); border: 1px solid rgba(148, 163, 184, 0.12); }
+    .waveform-panel canvas { width: 100%; height: 100%; display: block; }
+    .waveform-state { position: absolute; left: 24px; bottom: 18px; padding: 10px 14px; border-radius: 16px; background: rgba(7, 11, 20, 0.76); color: #94a3b8; font-size: 0.88rem; }
+    .controls-row { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; margin-top: 18px; }
+    .volume-label { display: grid; gap: 8px; color: #94a3b8; font-size: 0.9rem; }
+    .volume-row { display: flex; align-items: center; gap: 12px; }
+    .volume-row span { color: #f8fafc; font-weight: 700; }
+    .volume-slider { width: 100%; accent-color: #22c55e; }
+    .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-top: 20px; }
+    .metric-card { padding: 18px 20px; border-radius: 22px; background: rgba(15, 23, 42, 0.88); border: 1px solid rgba(148, 163, 184, 0.10); }
+    .metric-title { color: #94a3b8; font-size: 0.78rem; letter-spacing: 0.12em; text-transform: uppercase; }
+    .metric-value { margin-top: 10px; color: #f8fafc; font-size: 1.08rem; font-weight: 700; }
+    .footer-note { margin-top: 16px; color: #94a3b8; font-size: 0.88rem; }
+    .error-banner { margin-top: 16px; padding: 16px 18px; border-radius: 20px; background: rgba(248, 113, 113, 0.14); border: 1px solid rgba(248, 113, 113, 0.24); color: #fecaca; display: none; }
+    .error-banner.visible { display: block; }
+    @media (max-width: 820px) {
+      .topbar { flex-direction: column; align-items: flex-start; }
+      .panel-title { flex-direction: column; align-items: stretch; }
+      .info-strip, .call-info, .controls-row, .metrics-grid { grid-template-columns: 1fr; }
+      .controls-row { align-items: stretch; }
+    }
   </style>
 </head>
 <body>
-  <div id="status">Status: <span id="state">🔴 Disconnected</span></div>
-  <div>Call ID: <span id="call_id"></span></div>
-  <button id="connect">Connect</button>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="title-group">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <h1>Live Listen</h1>
+          <span class="version">v1.0</span>
+        </div>
+        <p class="subtitle">Listen to an active call audio stream in real time.</p>
+      </div>
+      <div class="header-state">
+        <span class="status-indicator status-disconnected" id="headerIndicator">●</span>
+        <div class="header-text">
+          <strong id="headerStateText">Disconnected</strong>
+          <span id="headerStateSubtext">No active stream</span>
+        </div>
+      </div>
+    </header>
+
+    <section class="panel">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">Live Call Stream</p>
+          <h2>Listen to the call in real time</h2>
+          <p class="subtitle">This interface is dedicated to a single active live call. Connect only when a call is available.</p>
+        </div>
+        <button class="primary-button" id="connectButton">Connect</button>
+      </div>
+
+      <div class="info-strip">
+        <div class="info-card">
+          <span class="label">Connection</span>
+          <span class="value" id="connectionValue">Disconnected</span>
+        </div>
+        <div class="info-card">
+          <span class="label">Call timer</span>
+          <span class="value" id="callTimer">00:00</span>
+        </div>
+        <div class="info-card">
+          <span class="label">Latency</span>
+          <span class="value" id="latencyValue">Unavailable</span>
+        </div>
+      </div>
+
+      <div class="call-info">
+        <div class="call-field">
+          <span class="field-label">Call ID</span>
+          <span class="field-value" id="callIdValue">Unavailable</span>
+        </div>
+        <div class="call-field" id="callSidField" style="display:none;">
+          <span class="field-label">Call SID</span>
+          <span class="field-value" id="callSidValue">Unavailable</span>
+        </div>
+      </div>
+
+      <div class="waveform-panel">
+        <canvas id="waveformCanvas"></canvas>
+        <div class="waveform-state" id="waveformState">No audio yet</div>
+      </div>
+
+      <div class="controls-row">
+        <label class="volume-label">
+          <span>Volume <strong id="volumePercent">100%</strong></span>
+          <input type="range" id="volumeSlider" class="volume-slider" min="0" max="100" value="100">
+        </label>
+        <button class="secondary-button" id="copyButton">Copy Call ID</button>
+      </div>
+
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-title">Audio quality</div>
+          <div class="metric-value" id="qualityValue">Unavailable</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-title">Bitrate</div>
+          <div class="metric-value" id="bitrateValue">Unavailable</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-title">Packet loss</div>
+          <div class="metric-value" id="packetLossValue">Unavailable</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-title">Jitter</div>
+          <div class="metric-value" id="jitterValue">Unavailable</div>
+        </div>
+      </div>
+
+      <div class="footer-note">Live audio is relayed through the backend WebSocket. Telemetry is shown only when the transport provides it.</div>
+      <div class="error-banner" id="errorBanner"></div>
+    </section>
+  </div>
+
   <script>
-    // Simple player assuming 16-bit PCM 8000Hz mono from server
-    let ws;
-    let callId = new URLSearchParams(window.location.search).get('call_id');
-    document.getElementById('call_id').innerText = callId || '(none)';
-    const stateEl = document.getElementById('state');
-    const btn = document.getElementById('connect');
+    const params = new URLSearchParams(window.location.search);
+    const queryCallId = params.get('call_id');
+    const callIdField = document.getElementById('callIdValue');
+    const callSidField = document.getElementById('callSidField');
+    const callSidValue = document.getElementById('callSidValue');
+    const connectionValue = document.getElementById('connectionValue');
+    const callTimer = document.getElementById('callTimer');
+    const latencyValue = document.getElementById('latencyValue');
+    const qualityValue = document.getElementById('qualityValue');
+    const bitrateValue = document.getElementById('bitrateValue');
+    const packetLossValue = document.getElementById('packetLossValue');
+    const jitterValue = document.getElementById('jitterValue');
+    const waveformState = document.getElementById('waveformState');
+    const headerIndicator = document.getElementById('headerIndicator');
+    const headerText = document.getElementById('headerStateText');
+    const headerSubtext = document.getElementById('headerStateSubtext');
+    const connectButton = document.getElementById('connectButton');
+    const copyButton = document.getElementById('copyButton');
+    const volumeSlider = document.getElementById('volumeSlider');
+    const volumePercent = document.getElementById('volumePercent');
+    const errorBanner = document.getElementById('errorBanner');
+    const waveformCanvas = document.getElementById('waveformCanvas');
+    const canvasCtx = waveformCanvas.getContext('2d');
 
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    let sourceNode;
-    let liveFrames = 0;
-    let liveBytes = 0;
+    let callId = queryCallId || null;
+    let callSid = null;
+    let ws = null;
+    let audioCtx = null;
+    let gainNode = null;
+    let nextAudioTime = 0;
+    let lastAudioAt = 0;
+    let startedAt = 0;
+    let audioBytes = 0;
+    let latencyHistory = [];
+    let streamState = 'disconnected';
+    let intentionallyClosed = false;
+    let reconnectTimer = null;
+    let pingTimer = null;
+    let pingStartedAt = 0;
+    let waveformSamples = new Float32Array(240).fill(0);
+    const unavailableText = 'Unavailable';
 
-    function pcm16ToFloat32(buffer) {
-      const l = buffer.length / 2;
-      const floats = new Float32Array(l);
-      for (let i = 0; i < l; i++) {
-        const int = buffer[2*i] | (buffer[2*i+1] << 8);
-        const val = int < 0 ? int / 32768 : int / 32767;
-        floats[i] = val;
+    const formatDuration = (seconds) => {
+      const minutes = String(Math.floor(seconds / 60)).padStart(2, '0');
+      const secs = String(Math.floor(seconds % 60)).padStart(2, '0');
+      return `${minutes}:${secs}`;
+    };
+
+    const setHeaderStatus = (state, subtext, className) => {
+      headerIndicator.className = `status-indicator ${className}`;
+      headerText.textContent = state;
+      headerSubtext.textContent = subtext;
+      connectionValue.textContent = state;
+      document.title = `Live Listen — ${state}`;
+    };
+
+    const setStreamState = (state) => {
+      streamState = state;
+      switch (state) {
+        case 'connecting':
+          setHeaderStatus('Connecting...', 'Waiting for backend session', 'status-active');
+          connectButton.textContent = 'Connecting...';
+          connectButton.disabled = true;
+          break;
+        case 'connected':
+          setHeaderStatus('Connected', 'Session attached, waiting for audio', 'status-connected');
+          connectButton.textContent = 'Disconnect';
+          connectButton.disabled = false;
+          break;
+        case 'waiting':
+          setHeaderStatus('Connected', 'Waiting for audio', 'status-active');
+          connectButton.textContent = 'Disconnect';
+          connectButton.disabled = false;
+          break;
+        case 'live':
+          setHeaderStatus('Live', 'Audio is actively streaming', 'status-connected');
+          connectButton.textContent = 'Disconnect';
+          connectButton.disabled = false;
+          break;
+        case 'reconnecting':
+          setHeaderStatus('Reconnecting...', 'Attempting to recover', 'status-active');
+          connectButton.textContent = 'Reconnecting...';
+          connectButton.disabled = true;
+          break;
+        case 'disconnecting':
+          setHeaderStatus('Disconnecting...', 'Closing live session', 'status-disconnected');
+          connectButton.textContent = 'Disconnecting...';
+          connectButton.disabled = true;
+          break;
+        default:
+          setHeaderStatus('Disconnected', 'No active stream', 'status-disconnected');
+          connectButton.textContent = 'Connect';
+          connectButton.disabled = !callId;
       }
-      return floats;
-    }
+      waveformState.textContent = state === 'live' ? 'Live audio detected' : state === 'waiting' ? 'Connected — waiting for audio' : state === 'connecting' ? 'Connecting to backend' : state === 'reconnecting' ? 'Attempting recovery' : 'No audio yet';
+    };
 
-    function playPCM16(bytes) {
-      const floats = pcm16ToFloat32(bytes);
-      const buf = audioCtx.createBuffer(1, floats.length, 8000);
-      buf.getChannelData(0).set(floats);
-      const src = audioCtx.createBufferSource();
-      src.buffer = buf;
-      src.connect(audioCtx.destination);
-      src.start();
-    }
+    const renderCallInfo = () => {
+      callIdField.textContent = callId || unavailableText;
+      if (callSid && callSid !== callId) {
+        callSidField.style.display = 'block';
+        callSidValue.textContent = callSid;
+      } else {
+        callSidField.style.display = 'none';
+      }
+    };
 
-    async function connect() {
-      if (!callId) {
-        alert('Missing call_id in URL');
+    const showError = (message) => {
+      errorBanner.textContent = message;
+      errorBanner.classList.add('visible');
+    };
+
+    const hideError = () => {
+      errorBanner.textContent = '';
+      errorBanner.classList.remove('visible');
+    };
+
+    const resizeCanvas = () => {
+      const ratio = window.devicePixelRatio || 1;
+      waveformCanvas.width = waveformCanvas.clientWidth * ratio;
+      waveformCanvas.height = waveformCanvas.clientHeight * ratio;
+    };
+
+    const drawWaveform = () => {
+      resizeCanvas();
+      const width = waveformCanvas.width;
+      const height = waveformCanvas.height;
+      canvasCtx.clearRect(0, 0, width, height);
+      const bg = canvasCtx.createLinearGradient(0, 0, 0, height);
+      bg.addColorStop(0, 'rgba(15, 23, 42, 0.98)');
+      bg.addColorStop(1, 'rgba(15, 23, 42, 0.92)');
+      canvasCtx.fillStyle = bg;
+      canvasCtx.fillRect(0, 0, width, height);
+      canvasCtx.strokeStyle = 'rgba(34, 197, 94, 0.88)';
+      canvasCtx.lineWidth = 2 * (window.devicePixelRatio || 1);
+      canvasCtx.beginPath();
+      waveformSamples.forEach((level, index) => {
+        const x = (index / (waveformSamples.length - 1)) * width;
+        const y = height * 0.5 - level * (height * 0.42);
+        if (index === 0) {
+          canvasCtx.moveTo(x, y);
+        } else {
+          canvasCtx.lineTo(x, y);
+        }
+      });
+      canvasCtx.stroke();
+      if (streamState === 'disconnected' || streamState === 'reconnecting') {
+        canvasCtx.fillStyle = 'rgba(8, 14, 25, 0.84)';
+        canvasCtx.fillRect(0, 0, width, height);
+        canvasCtx.fillStyle = '#94a3b8';
+        canvasCtx.font = `${16 * (window.devicePixelRatio || 1)}px Inter, system-ui, sans-serif`;
+        canvasCtx.textAlign = 'center';
+        canvasCtx.textBaseline = 'middle';
+        canvasCtx.fillText('Stream unavailable', width / 2, height / 2);
+      }
+      requestAnimationFrame(drawWaveform);
+    };
+
+    const updateMetrics = () => {
+      if (!startedAt) {
+        callTimer.textContent = '00:00';
+        bitrateValue.textContent = unavailableText;
+        qualityValue.textContent = unavailableText;
         return;
       }
+      const elapsed = Math.max(0, (Date.now() - startedAt) / 1000);
+      callTimer.textContent = formatDuration(elapsed);
+      const kbps = Math.round((audioBytes * 8) / 1000 / Math.max(elapsed, 0.001));
+      bitrateValue.textContent = `${kbps} kbps`;
+      let quality;
+      if (streamState === 'disconnected') {
+        quality = 'Unavailable';
+      } else if (Date.now() - lastAudioAt > 3000) {
+        quality = 'Interrupted';
+      } else if (kbps >= 40) {
+        quality = 'Excellent';
+      } else if (kbps >= 28) {
+        quality = 'Good';
+      } else if (kbps >= 18) {
+        quality = 'Fair';
+      } else {
+        quality = 'Poor';
+      }
+      qualityValue.textContent = quality;
+      packetLossValue.textContent = unavailableText;
+      jitterValue.textContent = unavailableText;
+    };
+
+    const updateLatencyDisplay = () => {
+      if (!latencyHistory.length) {
+        latencyValue.textContent = unavailableText;
+        return;
+      }
+      const current = latencyHistory[latencyHistory.length - 1].value;
+      const previous = latencyHistory[latencyHistory.length - 2];
+      const indicator = previous ? (current > previous.value ? '↗' : current < previous.value ? '↘' : '') : '';
+      latencyValue.textContent = `${current} ms ${indicator}`.trim();
+    };
+
+    const addLatencySample = (value) => {
+      latencyHistory.push({ ts: Date.now(), value });
+      if (latencyHistory.length > 10) {
+        latencyHistory.shift();
+      }
+      updateLatencyDisplay();
+    };
+
+    const appendWaveformSample = (level) => {
+      waveformSamples.copyWithin(0, 1);
+      waveformSamples[waveformSamples.length - 1] = Math.min(1, Math.max(0, level));
+    };
+
+    const ensureAudioContext = async () => {
+      if (audioCtx) return;
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      gainNode = audioCtx.createGain();
+      gainNode.gain.value = parseInt(volumeSlider.value, 10) / 100;
+      gainNode.connect(audioCtx.destination);
+      nextAudioTime = audioCtx.currentTime;
       if (audioCtx.state === 'suspended') {
         await audioCtx.resume();
       }
-      const url = new URL(window.location.origin.replace(/^http/, 'ws') + '/ws/live');
-      url.searchParams.set('call_id', callId);
-      ws = new WebSocket(url.href);
-      ws.binaryType = 'arraybuffer';
-      ws.onopen = () => {
-        stateEl.innerText = '🟢 Connected (waiting for stream)';
-        console.info('[LIVE_CLIENT_CONNECTED] call_id=' + callId);
-        console.info('[LIVE_CLIENT_ATTACHED_TO_CALL] call_id=' + callId);
+    };
+
+    const playSamples = async (samples) => {
+      await ensureAudioContext();
+      const buffer = audioCtx.createBuffer(1, samples.length, 8000);
+      buffer.copyToChannel(samples, 0, 0);
+      const source = audioCtx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(gainNode);
+      const now = audioCtx.currentTime;
+      const startTime = Math.max(nextAudioTime, now + 0.01);
+      source.start(startTime);
+      nextAudioTime = startTime + buffer.duration;
+      source.onended = () => {
+        if (audioCtx.currentTime - nextAudioTime > 0.5) {
+          nextAudioTime = audioCtx.currentTime;
+        }
       };
-      ws.onmessage = (ev) => {
-        if (typeof ev.data === 'string') {
-          try {
-            const msg = JSON.parse(ev.data);
-            if (msg.type === 'session') {
-              const s = msg.data;
-              stateEl.innerText = s.state === 'in-progress' ? '🟢 Live Listen Active' : '🔴 ' + s.state;
+    };
+
+    const decodePCM16 = (arrayBuffer) => {
+      const view = new DataView(arrayBuffer);
+      const sampleCount = view.byteLength / 2;
+      const result = new Float32Array(sampleCount);
+      for (let i = 0; i < sampleCount; i += 1) {
+        result[i] = view.getInt16(i * 2, true) / 32768;
+      }
+      return result;
+    };
+
+    const processAudioFrame = async (buffer) => {
+      const samples = decodePCM16(buffer);
+      const peak = samples.reduce((max, value) => Math.max(max, Math.abs(value)), 0);
+      appendWaveformSample(peak);
+      audioBytes += buffer.byteLength;
+      lastAudioAt = Date.now();
+      if (!startedAt) {
+        startedAt = lastAudioAt;
+      }
+      await playSamples(samples);
+      updateMetrics();
+      if (streamState !== 'live') {
+        setStreamState('live');
+      }
+    };
+
+    const handleTextMessage = (payloadText) => {
+      try {
+        const message = JSON.parse(payloadText);
+        if (message.type === 'session' && message.data) {
+          const payload = message.data;
+          if (payload.call_id) callId = payload.call_id;
+          if (payload.call_sid) callSid = payload.call_sid;
+          renderCallInfo();
+          if (payload.state) {
+            if (['completed', 'failed', 'no-answer', 'canceled'].includes(payload.state)) {
+              setStreamState('disconnected');
+            } else if (payload.state === 'ringing') {
+              setStreamState('connecting');
+            } else if (payload.state === 'in-progress') {
+              if (startedAt) {
+                setStreamState('live');
+              } else {
+                setStreamState('waiting');
+              }
             }
-          } catch(e) {
-            console.warn('text message', ev.data);
           }
+        } else if (message.type === 'pong') {
+          if (pingStartedAt) {
+            addLatencySample(Math.round(Date.now() - pingStartedAt));
+            pingStartedAt = 0;
+          }
+        }
+      } catch (error) {
+        console.error('Invalid websocket payload', error);
+      }
+    };
+
+    const startPingLoop = () => {
+      stopPingLoop();
+      pingTimer = setInterval(() => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        pingStartedAt = Date.now();
+        ws.send(JSON.stringify({ type: 'ping' }));
+      }, 10000);
+    };
+
+    const stopPingLoop = () => {
+      if (pingTimer) {
+        clearInterval(pingTimer);
+        pingTimer = null;
+      }
+      pingStartedAt = 0;
+    };
+
+    const connectSocket = () => {
+      if (!callId) {
+        showError('Missing call_id in URL. Use ?call_id=<CALL_ID> to start.');
+        return;
+      }
+      hideError();
+      intentionallyClosed = false;
+      setStreamState('connecting');
+      const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = window.location.host;
+      const wsUrl = `${scheme}//${host}/ws/live?call_id=${encodeURIComponent(callId)}`;
+      ws = new WebSocket(wsUrl);
+      ws.binaryType = 'arraybuffer';
+      ws.addEventListener('open', () => {
+        setStreamState('connected');
+        startPingLoop();
+      });
+      ws.addEventListener('message', async (event) => {
+        if (typeof event.data === 'string') {
+          handleTextMessage(event.data);
           return;
         }
-        // binary audio frame
-        const bytes = new Uint8Array(ev.data);
-        liveFrames++;
-        liveBytes += bytes.length;
-        if (liveFrames % 20 === 0) {
-          console.info('[LIVE_CLIENT_RECEIVED_AUDIO] frames=' + liveFrames + ' bytes=' + liveBytes);
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'stats', frames: liveFrames, bytes: liveBytes }));
-          }
+        if (event.data instanceof ArrayBuffer) {
+          await processAudioFrame(event.data);
         }
-        playPCM16(bytes);
-      };
-      ws.onclose = () => {
-        stateEl.innerText = '🔴 Disconnected';
-        console.info('[LIVE_CLIENT_DISCONNECTED] call_id=' + callId);
-      };
-      ws.onerror = (e) => {
-        console.error(e);
-        stateEl.innerText = '🔴 Error';
-      };
-    }
+      });
+      ws.addEventListener('close', (event) => {
+        stopPingLoop();
+        ws = null;
+        if (intentionallyClosed || event.code === 1000) {
+          setStreamState('disconnected');
+          return;
+        }
+        setStreamState('reconnecting');
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(connectSocket, 2200);
+      });
+      ws.addEventListener('error', () => {
+        stopPingLoop();
+        if (ws) ws.close();
+      });
+    };
 
-    btn.addEventListener('click', () => {
+    const disconnectSocket = () => {
+      intentionallyClosed = true;
       if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.close();
-      } else {
-        connect();
+        setStreamState('disconnecting');
+        ws.close(1000, 'operator disconnected');
       }
+      stopPingLoop();
+      ws = null;
+      setStreamState('disconnected');
+    };
+
+    const copyCallIdentifier = async () => {
+      const text = callId || unavailableText;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        const input = document.createElement('textarea');
+        input.value = text;
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand('copy');
+        input.remove();
+      }
+    };
+
+    const init = () => {
+      renderCallInfo();
+      if (!callId) {
+        showError('Missing call_id in URL. Append ?call_id=<CALL_ID> to start live listen.');
+      }
+      connectButton.addEventListener('click', () => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          connectSocket();
+        } else {
+          disconnectSocket();
+        }
+      });
+      copyButton.addEventListener('click', copyCallIdentifier);
+      volumeSlider.addEventListener('input', async () => {
+        volumePercent.textContent = `${volumeSlider.value}%`;
+        await ensureAudioContext();
+        if (gainNode) gainNode.gain.value = parseInt(volumeSlider.value, 10) / 100;
+      });
+      setStreamState('disconnected');
+      drawWaveform();
+      setInterval(() => {
+        if (startedAt) updateMetrics();
+        if (streamState === 'live' && Date.now() - lastAudioAt > 2500) {
+          setStreamState('waiting');
+        }
+      }, 500);
+    };
+
+    window.addEventListener('beforeunload', () => {
+      intentionallyClosed = true;
+      if (ws) ws.close(1000, 'page unload');
     });
+
+    init();
   </script>
 </body>
 </html>
