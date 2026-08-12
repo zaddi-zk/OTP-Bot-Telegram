@@ -27,6 +27,7 @@ class LiveListenSession:
         self.clients = set()  # set of websocket objects
         self.state = 'disconnected'  # disconnected|ringing|in-progress|completed
         self.created_at = time.time()
+        self.started_at = None
         self.lock = asyncio.Lock()
         self.cleanup_task = None
         self.first_audio_frame_sent = False
@@ -37,6 +38,7 @@ class LiveListenSession:
             'call_id': self.call_id,
             'call_sid': self.call_sid,
             'chat_id': self.chat_id,
+            'started_at': int(self.started_at * 1000) if self.started_at else None,
             'state': self.state,
             'clients': len(self.clients)
         }
@@ -91,6 +93,8 @@ class SessionManager:
     async def set_state(self, call_id: str, state: str):
         s = await self.ensure_session(call_id)
         async with s.lock:
+            if state == 'in-progress' and s.started_at is None:
+                s.started_at = time.time()
             s.state = state
             # schedule auto-cleanup after terminal states
             if state in ('completed', 'failed', 'no-answer', 'canceled'):
