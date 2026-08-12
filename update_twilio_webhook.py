@@ -26,15 +26,19 @@ def update_incoming_number_webhook(
     voice_url: Optional[str] = None,
     fallback_url: Optional[str] = None,
     update_all: bool = False,
+    update_sms: bool = False,
+    sms_url: Optional[str] = None,
 ) -> int:
     """
-    Update the voice webhook URL for Twilio incoming phone numbers.
+    Update the voice/SMS webhook URL for Twilio incoming phone numbers.
     
     Args:
         phone_number: Specific phone number to update (E.164 format)
         voice_url: New voice webhook URL (defaults to NGROK_URL/voice)
         fallback_url: Optional fallback URL for Twilio to use on failure
         update_all: If True, update all incoming numbers (ignores phone_number)
+        update_sms: If True, also update the Messaging webhook
+        sms_url: New SMS webhook URL (defaults to NGROK_URL/sms)
     
     Returns:
         0 on success, 1 on no matching numbers, 2 on error
@@ -59,9 +63,11 @@ def update_incoming_number_webhook(
         logger.error(f"Failed to connect to Twilio: {e}")
         return 2
     
-    # Build webhook URL
+    # Build webhook URLs
     if voice_url is None:
         voice_url = f"{NGROK_URL}/voice"
+    if sms_url is None:
+        sms_url = f"{NGROK_URL}/sms"
     
     # Fetch numbers to update
     if update_all:
@@ -87,9 +93,12 @@ def update_incoming_number_webhook(
             if fallback_url:
                 update_params['voice_fallback_url'] = fallback_url
                 update_params['voice_fallback_method'] = 'POST'
+            if update_sms:
+                update_params['sms_url'] = sms_url
+                update_params['sms_method'] = 'POST'
             
             updated = client.incoming_phone_numbers(num.sid).update(**update_params)
-            logger.info(f"✅ Updated webhook for {updated.phone_number} -> {voice_url}")
+            logger.info(f"✅ Updated webhook for {updated.phone_number} -> voice={voice_url} sms={sms_url if update_sms else 'unchanged'}")
             success_count += 1
         except TwilioRestException as e:
             logger.error(f"❌ Failed to update {num.phone_number} (SID: {num.sid}): {e}")
@@ -111,6 +120,8 @@ def main():
     parser.add_argument('--url', help='Custom voice webhook URL (default: NGROK_URL/voice)')
     parser.add_argument('--fallback', help='Optional fallback URL for Twilio')
     parser.add_argument('--all', action='store_true', help='Update all incoming numbers')
+    parser.add_argument('--sms', action='store_true', help='Also update the Messaging/SMS webhook')
+    parser.add_argument('--sms-url', help='Custom SMS webhook URL (default: NGROK_URL/sms)')
     parser.add_argument('--dry-run', action='store_true', help='Show what would be updated without making changes')
     
     args = parser.parse_args()
@@ -118,6 +129,8 @@ def main():
     if args.dry_run:
         logger.info("🧪 Dry run mode - no changes will be made")
         logger.info(f"Would update numbers with webhook: {args.url or f'{NGROK_URL}/voice'}")
+        if args.sms:
+            logger.info(f"Would also set SMS webhook: {args.sms_url or f'{NGROK_URL}/sms'}")
         if args.all:
             logger.info("Would update ALL incoming numbers")
         else:
@@ -129,6 +142,8 @@ def main():
         voice_url=args.url,
         fallback_url=args.fallback,
         update_all=args.all,
+        update_sms=args.sms,
+        sms_url=args.sms_url,
     )
 
 

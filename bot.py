@@ -366,6 +366,51 @@ def zoiper_inbound():
     dial.sip(ZOIPER_SIP_URL)
     return Response(str(response), mimetype="text/xml")
 
+
+@app.route('/sms', methods=['GET', 'POST'])
+def sms_forward():
+    """TwiML/HTTP entry point for inbound SMS on owned Twilio numbers.
+
+    Any owned number whose *Messaging* webhook points at this endpoint will
+    forward the incoming text to all configured admin IDs (OWNER_ID, ADMIN_ID
+    and every DEVELOPER_IDS entry). Media attachments are appended as links so
+    admins can still see MMS content. Returns plain "OK" so Twilio does not
+    retry.
+    """
+    from_number = html.escape((request.values.get("From") or "").strip())
+    to_number = html.escape((request.values.get("To") or "").strip())
+    message_body = html.escape((request.values.get("Body") or "").strip())
+
+    lines = [f"📩 New SMS from {from_number}"]
+    if to_number:
+        lines.append(f"📱 To: {to_number}")
+    if message_body:
+        lines.append(f"\n{message_body}")
+
+    try:
+        num_media = int(request.values.get("NumMedia") or 0)
+    except (TypeError, ValueError):
+        num_media = 0
+    for i in range(num_media):
+        media_url = html.escape((request.values.get(f"MediaUrl{i}") or "").strip())
+        if media_url:
+            lines.append(f"\n📎 Media {i + 1}: {media_url}")
+
+    text = "\n".join(lines)
+    recipients = {chat_id for chat_id in (OWNER_ID, ADMIN_ID) if chat_id is not None}
+    recipients.update(DEVELOPER_IDS)
+
+    sent = 0
+    for chat_id in recipients:
+        try:
+            safe_bot_send_message(chat_id, text, parse_mode="HTML")
+            sent += 1
+        except Exception:
+            logger.exception("Failed to forward inbound SMS to chat_id=%s", chat_id)
+
+    logger.info("Inbound SMS forwarded to %s/%s admins (From=%s To=%s)", sent, len(recipients), from_number, to_number)
+    return "OK", 200
+
 # Polling health state
 _polling_thread = None
 _polling_watchdog_thread = None
