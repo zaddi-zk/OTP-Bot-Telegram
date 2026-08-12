@@ -109,6 +109,10 @@
           <span class="value" id="startedAtValue">Unavailable</span>
         </div>
         <div class="info-card">
+          <span class="label">Duration</span>
+          <span class="value" id="callDuration">0 s</span>
+        </div>
+        <div class="info-card">
           <span class="label">Latency</span>
           <span class="value" id="latencyValue">Unavailable</span>
         </div>
@@ -170,6 +174,7 @@
     const callSidValue = document.getElementById('callSidValue');
     const connectionValue = document.getElementById('connectionValue');
     const startedAtValue = document.getElementById('startedAtValue');
+    const callDuration = document.getElementById('callDuration');
     const latencyValue = document.getElementById('latencyValue');
     const qualityValue = document.getElementById('qualityValue');
     const bitrateValue = document.getElementById('bitrateValue');
@@ -326,9 +331,11 @@
       if (!startedAt) {
         bitrateValue.textContent = unavailableText;
         qualityValue.textContent = unavailableText;
+        if (callDuration) callDuration.textContent = '0 s';
         return;
       }
       const elapsed = Math.max(0, (Date.now() - startedAt) / 1000);
+      if (callDuration) callDuration.textContent = `${Math.floor(elapsed)} s`;
       const kbps = Math.round((audioBytes * 8) / 1000 / Math.max(elapsed, 0.001));
       bitrateValue.textContent = `${kbps} kbps`;
       let quality;
