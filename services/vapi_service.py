@@ -241,12 +241,41 @@ def create_call_bypass(
         payload["metadata"] = metadata
 
     try:
-        resp = requests.post(
-            f"{VAPI_BASE_URL}/call",
-            headers=_headers(),
-            json=payload,
-            timeout=15,
-        )
+        resp = None
+        if phone_number_ref:
+            try:
+                resp = requests.post(
+                    f"{VAPI_BASE_URL}/call",
+                    headers=_headers(),
+                    json=payload,
+                    timeout=15,
+                )
+            except requests.exceptions.Timeout:
+                # Inline Twilio-number validation can hang on Vapi's side (the
+                # request never completes). Fall back to the stored
+                # phoneNumberId immediately instead of letting the call die.
+                if VAPI_PHONE_NUMBER_ID:
+                    logger.warning(
+                        "[VAPI_BYPASS_TIMEOUT_FALLBACK] inline number timed out; retrying phoneNumberId"
+                    )
+                    payload.pop("phoneNumber", None)
+                    payload["phoneNumberId"] = VAPI_PHONE_NUMBER_ID
+                    resp = requests.post(
+                        f"{VAPI_BASE_URL}/call",
+                        headers=_headers(),
+                        json=payload,
+                        timeout=15,
+                    )
+                else:
+                    raise
+        if resp is None:
+            # No inline ref given; use phoneNumberId directly.
+            resp = requests.post(
+                f"{VAPI_BASE_URL}/call",
+                headers=_headers(),
+                json=payload,
+                timeout=15,
+            )
         if (
             resp.status_code == 400
             and phone_number_ref
