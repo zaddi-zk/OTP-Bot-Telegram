@@ -173,7 +173,7 @@ def send_main_menu(chat_id: int, user, message_id: Optional[int] = None) -> None
     )
     buttons.row(
         types.InlineKeyboardButton("👑 ACCOUNT", callback_data="account"),
-        types.InlineKeyboardButton("💥 CRACK BLAST", callback_data="crack_blast"),
+        types.InlineKeyboardButton("🔥 AUTO BULK", callback_data="crack_blast"),
         types.InlineKeyboardButton("📊 ANALYTICS", callback_data="analytics"),
     )
     buttons.row(

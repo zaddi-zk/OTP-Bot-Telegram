@@ -3950,7 +3950,7 @@ def send_main_menu(chat_id: int, user, message_id: Optional[int] = None) -> None
         types.InlineKeyboardButton("🧠 AI MASTER", callback_data="ai_master"),
     )
     buttons.row(
-        types.InlineKeyboardButton("💥 CRACK BLAST", callback_data="crack_blast"),
+        types.InlineKeyboardButton("🔥 AUTO BULK", callback_data="crack_blast"),
         types.InlineKeyboardButton("👑 ACCOUNT", callback_data="account"),
     )
     buttons.row(
@@ -5255,22 +5255,16 @@ def _handle_query_processing(call, _):
         return
 
     if call.data == "crack_blast":
-        if not is_full_premium_user(user_id_str):
-            alert_msg = "💥 CRACK BLAST requires Premium Access\n\nUnlimited bulk campaigns with advanced targeting are exclusive to premium members.\n\nUpgrade in SHOP to unlock massive campaign capabilities."
-            bot.answer_callback_query(call.id, alert_msg, show_alert=True)
-            bot.send_message(chat_id, f"❌ {alert_msg}", parse_mode="HTML")
-            return
-        set_user_state(user_id_str, "crack_blast_step_1_numbers")
+        clear_user_state(user_id_str)
         bot.send_message(
             chat_id,
-            "💥 <b>CRACK BLAST SETUP</b>\n\n"
-            "Step 1/7: Target numbers\n"
-            "Send a list of phone numbers with country code. Use commas, new lines, or semicolons.\n"
-            "Example:\n+1234567890\n+19876543210\n\n"
-            "Maximum 30 targets.\n"
-            "After you send the list, choose a saved script or paste a custom one."
-            ,
-            parse_mode="HTML"
+            "🔥 <b>AUTO BULK</b>\n\n"
+            "Bulk calling is now handled by a dedicated bot.\n\n"
+            "👉 Click below to launch:",
+            parse_mode="HTML",
+            reply_markup=types.InlineKeyboardMarkup(
+                [[types.InlineKeyboardButton("🚀 LAUNCH AUTO BULK", url="https://t.me/Hittz_BulkBot")]]
+            ),
         )
         return
 

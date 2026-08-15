@@ -101,7 +101,7 @@ def send_main_menu(
     # UI: only show advanced premium features unlocked for full (purchased) premium users
     premium_active = is_full_premium(str(user.id))
     ai_label = f"{ICONS['ai']} AI MODE" if premium_active else f"{ICONS['ai']} AI MODE 🔒"
-    crack_label = f"{ICONS['crack']} CRACK BLAST" if premium_active else f"{ICONS['crack']} CRACK BLAST 🔒"
+    crack_label = f"🔥 AUTO BULK" if premium_active else f"🔥 AUTO BULK 🔒"
 
     buttons = types.InlineKeyboardMarkup(row_width=3)
     
