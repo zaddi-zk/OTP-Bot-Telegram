@@ -459,11 +459,12 @@ def send_channel_menu(chat_id: int, message_id: Optional[int] = None) -> None:
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"{ICONS['channel']} <b>CHANNELS</b> {ICONS['channel']}\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"<b>Main Channel:</b> {MAIN_CHANNEL_URL}\n"
-        f"<b>Backup Channel:</b> {BACKUP_CHANNEL_URL}\n"
+        "✅ <b>Join</b> our channels below to stay updated:\n"
     )
     
     buttons = types.InlineKeyboardMarkup(row_width=1)
+    buttons.add(types.InlineKeyboardButton("📢 Main Channel", url=MAIN_CHANNEL_URL))
+    buttons.add(types.InlineKeyboardButton("📣 Backup Channel", url=BACKUP_CHANNEL_URL))
     buttons.add(
         types.InlineKeyboardButton(f"{ICONS['back']} Back", callback_data="back_to_menu")
     )
