@@ -4400,8 +4400,8 @@ def send_channel_gate_menu(chat_id: int, message_id: Optional[int] = None) -> No
         "📡 <b>CHANNEL ACCESS REQUIRED</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "🔒 You must join <b>both</b> channels below to unlock the bot:\n\n"
-        "1️⃣ Main Channel\n"
-        "2️⃣ Backup Channel\n\n"
+        "📢 <b>Main Channel</b>\n"
+        "📣 <b>Backup Channel</b>\n\n"
         "ℹ️ After joining, tap \"✅ I Joined\" to verify.\n"
     )
     buttons = types.InlineKeyboardMarkup(row_width=1)
