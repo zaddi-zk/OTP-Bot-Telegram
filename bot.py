@@ -4367,6 +4367,69 @@ def send_channel_menu(chat_id: int, message_id: Optional[int] = None) -> None:
     else:
         bot.send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
 
+
+CHANNEL_GATE_ACTIVE = True
+
+
+def check_channel_membership(user_id: str) -> dict:
+    """Check whether a user has joined the required channels.
+
+    Returns {"main": bool, "backup": bool}. Privileged/owner users always pass.
+    """
+    if is_privileged_user(user_id):
+        return {"main": True, "backup": True}
+    result = {"main": False, "backup": False}
+    try:
+        member = bot.get_chat_member(chat_id=MAIN_CHANNEL_ID, user_id=int(user_id))
+        result["main"] = member.status in ("member", "administrator", "creator")
+    except Exception as e:
+        logger.warning(f"Channel gate: main channel check failed for {user_id}: {e}")
+        result["main"] = True
+    try:
+        member = bot.get_chat_member(chat_id=BACKUP_CHANNEL_ID, user_id=int(user_id))
+        result["backup"] = member.status in ("member", "administrator", "creator")
+    except Exception as e:
+        logger.warning(f"Channel gate: backup channel check failed for {user_id}: {e}")
+        result["backup"] = True
+    return result
+
+
+def send_channel_gate_menu(chat_id: int, message_id: Optional[int] = None) -> None:
+    text = (
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "📡 <b>CHANNEL ACCESS REQUIRED</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🔒 You must join <b>both</b> channels below to unlock the bot:\n\n"
+        "1️⃣ Main Channel\n"
+        "2️⃣ Backup Channel\n\n"
+        "ℹ️ After joining, tap \"✅ I Joined\" to verify.\n"
+    )
+    buttons = types.InlineKeyboardMarkup(row_width=1)
+    buttons.add(types.InlineKeyboardButton("📢 Join Main Channel", url=MAIN_CHANNEL_URL))
+    buttons.add(types.InlineKeyboardButton("📣 Join Backup Channel", url=BACKUP_CHANNEL_URL))
+    buttons.add(types.InlineKeyboardButton("✅ I Joined — Verify", callback_data="verify_channels"))
+    if message_id:
+        try:
+            bot.edit_message_text(text, chat_id, message_id, reply_markup=buttons, parse_mode="HTML")
+        except:
+            bot.send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
+    else:
+        bot.send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
+
+
+def gate_user(user_id: str, chat_id: int, message_id: Optional[int] = None) -> bool:
+    """Enforce the channel gate. Returns True if the user passed (menu may proceed)."""
+    if not CHANNEL_GATE_ACTIVE:
+        return True
+    if is_privileged_user(user_id):
+        return True
+    status = check_channel_membership(user_id)
+    if status["main"] and status["backup"]:
+        return True
+    send_channel_gate_menu(chat_id, message_id)
+    return False
+
+
 def send_vouches_menu(chat_id: int, message_id: Optional[int] = None) -> None:
     text = (
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -4384,6 +4447,7 @@ def send_vouches_menu(chat_id: int, message_id: Optional[int] = None) -> None:
             bot.send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
     else:
         bot.send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
+
 
 def send_live_listen_panel(chat_id: int, user_id_str: str) -> None:
     sid = read_user_file(user_id_str, "call_sid.txt", "")
@@ -5479,6 +5543,18 @@ def _handle_query_processing(call, _):
     # --- Channel ---
     if call.data == "channel":
         send_channel_menu(chat_id, message_id)
+        return
+
+    # --- Channel Gate: Verify membership ---
+    if call.data == "verify_channels":
+        status = check_channel_membership(user_id_str)
+        missing = [name for name, joined in status.items() if not joined]
+        if missing:
+            bot.answer_callback_query(call.id, "❌ Not yet! Please join all channels first.", show_alert=True)
+            send_channel_gate_menu(chat_id, message_id)
+            return
+        bot.answer_callback_query(call.id, "✅ Membership verified! Welcome back.", show_alert=False)
+        send_main_menu(chat_id, call.from_user, message_id=message_id)
         return
 
     # --- Vouches ---
@@ -8021,6 +8097,8 @@ def start_handler(message):
 
     if not master_exists and not os.path.exists(user_conf_path(user_id_str) / "free_calls.txt") and check_subscription(user_id_str) != "ACTIVE":
         set_free_calls(user_id_str, FREE_TRIAL_TOTAL)
+    if not gate_user(user_id_str, message.chat.id):
+        return
     send_main_menu(message.chat.id, message.from_user)
 
 @bot.message_handler(commands=["help"])
