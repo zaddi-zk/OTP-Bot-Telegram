@@ -107,7 +107,7 @@ if DEVELOPER_IDS_STR:
             DEVELOPER_IDS.append(int(pid))
 
 # Free trial
-FREE_TRIAL_TOTAL = int(_get("FREE_TRIAL_CALLS", "5"))
+FREE_TRIAL_TOTAL = int(_get("FREE_TRIAL_CALLS", "3"))
 
 # Payment addresses
 PAYMENT_ADDRESSES = {

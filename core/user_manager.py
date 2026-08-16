@@ -41,7 +41,7 @@ class _SessionTransaction:
 from sqlalchemy import Column, Integer, String, Text, create_engine
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
-from config import CONF_DIR, DATABASE_URL
+from config import CONF_DIR, DATABASE_URL, FREE_TRIAL_TOTAL
 
 logger = logging.getLogger("OTP-Bot.user_manager")
 
@@ -58,6 +58,25 @@ class UserRecord(Base):
     last_activity = Column(String, nullable=False)
     role = Column(String, nullable=False, default="free", index=True)
     notes = Column(Text, nullable=True)
+    # Server-side entitlement balances. NULL free_calls == never seeded yet.
+    free_calls = Column(Integer, nullable=True)
+    purchase_count = Column(Integer, nullable=False, default=0)
+    loyalty_gift_count = Column(Integer, nullable=False, default=0)
+
+
+class PremiumKeyRecord(Base):
+    __tablename__ = "premium_keys"
+
+    token = Column(String, primary_key=True)
+    days = Column(Integer, nullable=False, default=0)
+    free_calls = Column(Integer, nullable=True)
+    created_by = Column(String, nullable=False, default="")
+    created_at = Column(String, nullable=False)
+    key_type = Column(String, nullable=False, default="premium")
+    used = Column(Integer, nullable=False, default=0)
+    used_by = Column(String, nullable=True)
+    used_at = Column(String, nullable=True)
+    claimed_by = Column(String, nullable=True)
 
 
 _engine = None
@@ -75,10 +94,40 @@ def _make_sqlite_fallback() -> Any:
     sqlite_url = f"sqlite:///{sqlite_path}"
     engine = create_engine(sqlite_url, future=True)
     Base.metadata.create_all(engine)
+    _ensure_schema(engine)
     _engine = engine
     _SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     _use_postgres = False
     return engine
+
+
+def _ensure_schema(engine: Any) -> None:
+    """Add entitlement columns to an existing `users` table and create tables.
+
+    `create_all` only creates missing tables — it never adds columns to a table
+    that already exists. This migrates existing deployments (Postgres and the
+    local SQLite fallback) by adding any missing columns with ALTER TABLE.
+    """
+    try:
+        from sqlalchemy import inspect as sa_inspect
+
+        if not sa_inspect(engine).has_table("users"):
+            return
+        existing = {c["name"] for c in sa_inspect(engine).get_columns("users")}
+        additions = []
+        if "free_calls" not in existing:
+            additions.append("free_calls INTEGER")
+        if "purchase_count" not in existing:
+            additions.append("purchase_count INTEGER NOT NULL DEFAULT 0")
+        if "loyalty_gift_count" not in existing:
+            additions.append("loyalty_gift_count INTEGER NOT NULL DEFAULT 0")
+        for ddl in additions:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE users ADD COLUMN {ddl}"))
+        if additions:
+            logger.info("✅ Added entitlement columns to users table: %s", ", ".join(additions))
+    except Exception as exc:
+        logger.warning("⚠️  Could not add entitlement columns to users table: %s", exc)
 
 
 def _try_postgres() -> bool:
@@ -98,6 +147,7 @@ def _try_postgres() -> bool:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         Base.metadata.create_all(engine)
+        _ensure_schema(engine)
         _engine = engine
         _SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
         _use_postgres = True
@@ -191,6 +241,7 @@ def init_user_db() -> None:
     try:
         Base.metadata.create_all(engine)
         migrate_legacy_json_users()
+        migrate_legacy_entitlements()
         if _use_postgres:
             logger.info("✅ PostgreSQL user database initialized")
         else:
@@ -374,6 +425,23 @@ def get_subscription_end_date(user_id: str) -> Optional[str]:
         return end_date.strftime("%d/%m/%Y %H:%M")
     except Exception as exc:
         logger.error(f"❌ Failed to get subscription end date for {user_id}: {exc}")
+        return None
+    finally:
+        session.close()
+
+
+def get_subscription_end_datetime(user_id: str) -> Optional[datetime]:
+    """Return the parsed subscription end datetime, or None."""
+    session = get_session()
+    if session is None:
+        return None
+    try:
+        user = session.get(UserRecord, str(user_id))
+        if not user or not user.subscription_end_date:
+            return None
+        return _parse_datetime(user.subscription_end_date)
+    except Exception as exc:
+        logger.error(f"❌ Failed to get subscription end datetime for {user_id}: {exc}")
         return None
     finally:
         session.close()
@@ -646,6 +714,593 @@ def migrate_legacy_json_users() -> int:
     if migrated:
         logger.info(f"🧬 Migrated {len(migrated)} legacy users into PostgreSQL")
     return len(migrated)
+
+
+def migrate_legacy_entitlements() -> int:
+    """One-time import of existing entitlement state into the database.
+
+    Only fills values that are still missing in the DB (never overwrites):
+      - per-user free_calls.txt / free_calls_master.json balances
+      - subs.txt expiries
+      - conf/premium_keys.json
+    This guarantees nothing already granted is lost while making Postgres the
+    only authority going forward.
+    """
+    if not DATABASE_URL:
+        return 0
+    imported = 0
+    try:
+        from core.files import (
+            _read_master_free_calls,
+            user_conf_path,
+            read_user_file,
+        )
+    except Exception as exc:
+        logger.warning("⚠️  Skipping legacy entitlement import: %s", exc)
+        return 0
+
+    # 1) Per-user free-call balances from the master JSON + per-user files.
+    try:
+        master = _read_master_free_calls() or {}
+        for uid, bal in master.items():
+            if seed_free_calls_once(str(uid), int(bal)):
+                imported += 1
+    except Exception as exc:
+        logger.warning("⚠️  Failed to import master free-call balances: %s", exc)
+
+    # Per-user files only when no master entry exists for them, honoring the
+    # file's actual balance (so exhausted users are not re-granted a trial).
+    try:
+        if CONF_DIR.exists():
+            for entry in CONF_DIR.iterdir():
+                if not (entry.is_dir() and entry.name.isdigit()):
+                    continue
+                uid = entry.name
+                if uid in master:
+                    continue
+                try:
+                    file_bal = int(read_user_file(uid, "free_calls.txt", "") or "")
+                except (TypeError, ValueError):
+                    file_bal = None
+                if file_bal is not None:
+                    if seed_free_calls_once(uid, file_bal):
+                        imported += 1
+                else:
+                    if seed_free_calls_once(uid, FREE_TRIAL_TOTAL):
+                        imported += 1
+    except Exception as exc:
+        logger.warning("⚠️  Failed to seed trial balances from legacy files: %s", exc)
+
+    # 2) subs.txt expiries -> DB subscription end dates.
+    try:
+        if CONF_DIR.exists():
+            for entry in CONF_DIR.iterdir():
+                if not (entry.is_dir() and entry.name.isdigit()):
+                    continue
+                uid = entry.name
+                sub = read_user_file(uid, "subs.txt", "")
+                if not sub or sub == "LIFETIME":
+                    continue
+                user = None
+                session = get_session()
+                if session is None:
+                    continue
+                try:
+                    user = session.get(UserRecord, str(uid))
+                finally:
+                    session.close()
+                if user is not None and user.subscription_end_date:
+                    continue
+                parsed = _parse_datetime(sub)
+                if parsed is None or parsed < datetime.now():
+                    continue
+                if set_user_subscription_end_date(str(uid), parsed, role="premium"):
+                    imported += 1
+    except Exception as exc:
+        logger.warning("⚠️  Failed to import subs.txt expiries: %s", exc)
+
+    # 3) Legacy premium keys JSON.
+    try:
+        keys_path = CONF_DIR / "premium_keys.json"
+        if keys_path.exists():
+            keys = json.loads(keys_path.read_text(encoding="utf-8"))
+            existing = set()
+            for key in list_premium_keys_db():
+                existing.add(key["token"])
+            for key in keys:
+                token = str(key.get("token", "")).upper()
+                if not token or token in existing:
+                    continue
+                rec = PremiumKeyRecord(
+                    token=token,
+                    days=int(key.get("days") or 0),
+                    free_calls=int(key["free_calls"]) if key.get("free_calls") is not None else None,
+                    created_by=str(key.get("created_by") or ""),
+                    created_at=str(key.get("created_at") or datetime.now().strftime("%d/%m/%Y %H:%M:%S")),
+                    key_type=str(key.get("type") or key.get("key_type") or "premium"),
+                    used=1 if key.get("used") else 0,
+                    used_by=str(key.get("used_by")) if key.get("used_by") else None,
+                    used_at=str(key.get("used_at")) if key.get("used_at") else None,
+                    claimed_by=str(key.get("claimed_by")) if key.get("claimed_by") else None,
+                )
+                session = get_session()
+                if session is None:
+                    continue
+                try:
+                    with _SessionTransaction(session):
+                        session.add(rec)
+                    imported += 1
+                finally:
+                    session.close()
+            logger.info("🔑 Imported legacy premium keys from premium_keys.json")
+    except Exception as exc:
+        logger.warning("⚠️  Failed to import legacy premium keys: %s", exc)
+
+    if imported:
+        logger.info(f"🧬 Imported {imported} legacy entitlement records into PostgreSQL")
+    return imported
+
+
+# ======================================================================
+# ENTITLEMENTS — server-side source of truth
+# ======================================================================
+# All values live in the database only. User-editable files (free_calls.txt,
+# subs.txt, premium_keys.json) are *never* consulted for grants. When the DB
+# is unavailable the helpers fail closed (return safe defaults + log).
+
+def _skip_or_mark(session: Session, user_id: str) -> None:
+    _ensure_user_exists(session, user_id)
+
+
+def _consult_db() -> bool:
+    """Return True when the authoritative DB is usable.
+
+    Fail-closed policy:
+      - On a deployment (DATABASE_URL set), Postgres must actually be adopted,
+        otherwise nothing is granted (a transient SQLite fallback would be
+        wiped on the next redeploy and could silently reset trials).
+      - In dev (no DATABASE_URL), the local SQLite engine is authoritative.
+    """
+    if DATABASE_URL:
+        if _use_postgres is not True:
+            _build_engine()  # retry adoption once
+        if _use_postgres is not True:
+            logger.error("⚠️  PostgreSQL unavailable — entitlement checks failing closed (granting nothing).")
+            return False
+    if get_session() is None:
+        logger.error("⚠️  Entitlement check failed: database unavailable. Failing closed (granting nothing).")
+        return False
+    return True
+
+
+# -- Free calls ---------------------------------------------------------
+def get_free_calls_db(user_id: str) -> Optional[int]:
+    """Return the user's seeded free-call balance, or None if never seeded."""
+    if not _consult_db():
+        return None
+    session = get_session()
+    if session is None:
+        return None
+    try:
+        user = session.get(UserRecord, str(user_id))
+        if user is None:
+            return None
+        return user.free_calls
+    except Exception as exc:
+        logger.error(f"❌ Failed to get free calls for {user_id}: {exc}")
+        return None
+    finally:
+        session.close()
+
+
+def set_free_calls_db(user_id: str, count: int) -> bool:
+    """Write the user's free-call balance. Returns False if DB unavailable."""
+    if not _consult_db():
+        return False
+    session = get_session()
+    if session is None:
+        return False
+    try:
+        with _SessionTransaction(session):
+            user = _ensure_user_exists(session, user_id)
+            user.free_calls = max(0, int(count))
+        return True
+    except Exception as exc:
+        logger.error(f"❌ Failed to set free calls for {user_id}: {exc}")
+        return False
+    finally:
+        session.close()
+
+
+def seed_free_calls_once(user_id: str, total: int) -> bool:
+    """Grant the free-trial allocation only when the account was never seeded.
+
+    Keyed by user_id in the database, so deleting the bot, clearing chat
+    history, or wiping local files can never re-harvest a trial.
+    """
+    if not _consult_db():
+        return False
+    session = get_session()
+    if session is None:
+        return False
+    try:
+        with _SessionTransaction(session):
+            user = _ensure_user_exists(session, user_id)
+            # Only skip seeding for users with an ACTIVE premium subscription.
+            # A lapsed premium user (column=1 but end date passed) still gets
+            # their trial, matching the previous /start behaviour.
+            if user.is_premium:
+                end_dt = _parse_datetime(user.subscription_end_date)
+                if end_dt is None or end_dt >= datetime.now():
+                    return False
+            if user.free_calls is None:
+                user.free_calls = max(0, int(total))
+                return True
+            return False
+    except Exception as exc:
+        logger.error(f"❌ Failed to seed free calls for {user_id}: {exc}")
+        return False
+    finally:
+        session.close()
+
+
+def decrement_free_call_db(user_id: str) -> int:
+    """Atomically decrement the free-call balance. Returns the new balance,
+    or -1 when the user has none left (or the DB is unavailable).
+
+    Single UPDATE with a guard — safe under concurrency (no double-spend).
+    """
+    if not _consult_db():
+        return -1
+    session = get_session()
+    if session is None:
+        return -1
+    is_pg = _use_postgres is True
+    try:
+        engine = _engine
+        dialect = getattr(engine.dialect, "name", "") if engine is not None else ""
+        with _SessionTransaction(session):
+            if dialect == "postgresql":
+                result = session.execute(
+                    text(
+                        "UPDATE users SET free_calls = free_calls - 1 "
+                        "WHERE user_id = :u AND free_calls IS NOT NULL AND free_calls > 0 "
+                        "RETURNING free_calls"
+                    ),
+                    {"u": str(user_id)},
+                )
+                row = result.first()
+                return int(row[0]) if row else -1
+            result = session.execute(
+                text(
+                    "UPDATE users SET free_calls = free_calls - 1 "
+                    "WHERE user_id = :u AND free_calls IS NOT NULL AND free_calls > 0"
+                ),
+                {"u": str(user_id)},
+            )
+            if not result.rowcount:
+                return -1
+            user = session.get(UserRecord, str(user_id))
+            return int(user.free_calls) if user is not None and user.free_calls is not None else -1
+    except Exception as exc:
+        logger.error(f"❌ Failed to decrement free call for {user_id}: {exc}")
+        session.rollback()
+        return -1
+    finally:
+        session.close()
+
+
+# -- Purchase / loyalty counters ----------------------------------------
+def get_purchase_count_db(user_id: str) -> int:
+    if not _consult_db():
+        return 0
+    session = get_session()
+    if session is None:
+        return 0
+    try:
+        user = session.get(UserRecord, str(user_id))
+        return int(user.purchase_count) if user is not None else 0
+    except Exception as exc:
+        logger.error(f"❌ Failed to get purchase count for {user_id}: {exc}")
+        return 0
+    finally:
+        session.close()
+
+
+def increment_purchase_count_db(user_id: str, amount: int = 1) -> int:
+    if not _consult_db():
+        return 0
+    session = get_session()
+    if session is None:
+        return 0
+    try:
+        with _SessionTransaction(session):
+            user = _ensure_user_exists(session, user_id)
+            user.purchase_count = int(user.purchase_count or 0) + int(amount)
+            return int(user.purchase_count)
+    except Exception as exc:
+        logger.error(f"❌ Failed to increment purchase count for {user_id}: {exc}")
+        return 0
+    finally:
+        session.close()
+
+
+def get_loyalty_gift_count_db(user_id: str) -> int:
+    if not _consult_db():
+        return 0
+    session = get_session()
+    if session is None:
+        return 0
+    try:
+        user = session.get(UserRecord, str(user_id))
+        return int(user.loyalty_gift_count) if user is not None else 0
+    except Exception as exc:
+        logger.error(f"❌ Failed to get loyalty gift count for {user_id}: {exc}")
+        return 0
+    finally:
+        session.close()
+
+
+def increment_loyalty_gift_count_db(user_id: str, amount: int = 1) -> int:
+    if not _consult_db():
+        return 0
+    session = get_session()
+    if session is None:
+        return 0
+    try:
+        with _SessionTransaction(session):
+            user = _ensure_user_exists(session, user_id)
+            user.loyalty_gift_count = int(user.loyalty_gift_count or 0) + int(amount)
+            return int(user.loyalty_gift_count)
+    except Exception as exc:
+        logger.error(f"❌ Failed to increment loyalty gift count for {user_id}: {exc}")
+        return 0
+    finally:
+        session.close()
+
+
+def reset_purchase_count_db(user_id: str) -> bool:
+    if not _consult_db():
+        return False
+    session = get_session()
+    if session is None:
+        return False
+    try:
+        with _SessionTransaction(session):
+            user = _ensure_user_exists(session, user_id)
+            user.purchase_count = 0
+        return True
+    except Exception as exc:
+        logger.error(f"❌ Failed to reset purchase count for {user_id}: {exc}")
+        return False
+    finally:
+        session.close()
+
+
+def set_purchase_count_db(user_id: str, count: int) -> bool:
+    """Set an exact purchase count (legacy compatibility API)."""
+    if not _consult_db():
+        return False
+    session = get_session()
+    if session is None:
+        return False
+    try:
+        with _SessionTransaction(session):
+            user = _ensure_user_exists(session, user_id)
+            user.purchase_count = max(0, int(count))
+        return True
+    except Exception as exc:
+        logger.error(f"❌ Failed to set purchase count for {user_id}: {exc}")
+        return False
+    finally:
+        session.close()
+
+
+# -- Premium keys -------------------------------------------------------
+def _key_row_to_dict(row: PremiumKeyRecord) -> dict:
+    return {
+        "token": row.token,
+        "days": int(row.days or 0),
+        "free_calls": int(row.free_calls) if row.free_calls is not None else None,
+        "created_by": row.created_by,
+        "created_at": row.created_at,
+        "key_type": row.key_type,
+        "used": bool(row.used),
+        "used_by": row.used_by,
+        "used_at": row.used_at,
+        "claimed_by": row.claimed_by,
+    }
+
+
+def create_premium_key_db(
+    days: int,
+    created_by: str,
+    key_type: str = "premium",
+    free_calls: Optional[int] = None,
+    claimed_by: Optional[str] = None,
+) -> Optional[dict]:
+    """Generate and persist a new premium key in the database."""
+    if not _consult_db():
+        return None
+    session = get_session()
+    if session is None:
+        return None
+    token = "".join(__import__("secrets").choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(12))
+    now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    try:
+        with _SessionTransaction(session):
+            row = PremiumKeyRecord(
+                token=token,
+                days=int(days or 0),
+                free_calls=int(free_calls) if free_calls is not None else None,
+                created_by=str(created_by or ""),
+                created_at=now,
+                key_type=key_type or "premium",
+                used=0,
+            )
+            session.add(row)
+        logger.info(f"🔑 Premium key generated by {created_by}: {token} ({days} days)")
+        return _key_row_to_dict(row)
+    except Exception as exc:
+        logger.error(f"❌ Failed to create premium key: {exc}")
+        session.rollback()
+        return None
+    finally:
+        session.close()
+
+
+def list_premium_keys_db() -> list:
+    if not _consult_db():
+        return []
+    session = get_session()
+    if session is None:
+        return []
+    try:
+        rows = session.query(PremiumKeyRecord).all()
+        return [_key_row_to_dict(r) for r in rows]
+    except Exception as exc:
+        logger.error(f"❌ Failed to list premium keys: {exc}")
+        return []
+    finally:
+        session.close()
+
+
+def get_unused_premium_keys_db() -> list:
+    if not _consult_db():
+        return []
+    session = get_session()
+    if session is None:
+        return []
+    try:
+        rows = session.query(PremiumKeyRecord).filter(PremiumKeyRecord.used == 0).all()
+        return [_key_row_to_dict(r) for r in rows]
+    except Exception as exc:
+        logger.error(f"❌ Failed to list unused premium keys: {exc}")
+        return []
+    finally:
+        session.close()
+
+
+def get_used_premium_keys_db() -> list:
+    if not _consult_db():
+        return []
+    session = get_session()
+    if session is None:
+        return []
+    try:
+        rows = session.query(PremiumKeyRecord).filter(PremiumKeyRecord.used == 1).all()
+        return [_key_row_to_dict(r) for r in rows]
+    except Exception as exc:
+        logger.error(f"❌ Failed to list used premium keys: {exc}")
+        return []
+    finally:
+        session.close()
+
+
+def find_premium_key_db(token: str) -> Optional[dict]:
+    if not _consult_db():
+        return None
+    session = get_session()
+    if session is None:
+        return None
+    try:
+        row = session.get(PremiumKeyRecord, token.strip().upper())
+        return _key_row_to_dict(row) if row is not None else None
+    except Exception as exc:
+        logger.error(f"❌ Failed to find premium key {token}: {exc}")
+        return None
+    finally:
+        session.close()
+
+
+def redeem_premium_key_db(user_id: str, token: str) -> tuple:
+    """Atomically claim a key. Returns (ok: bool, err_or_key: str|dict).
+
+    The UPDATE is guarded on `used = 0` and rowcount is checked, so two
+    concurrent redemptions can never both succeed (no JSON-file race).
+    """
+    token = token.strip().upper()
+    if not _consult_db():
+        return False, "Database unavailable. Try again in a moment."
+    session = get_session()
+    if session is None:
+        return False, "Database unavailable. Try again in a moment."
+    engine = _engine
+    dialect = getattr(engine.dialect, "name", "") if engine is not None else ""
+    try:
+        with _SessionTransaction(session):
+            if dialect == "postgresql":
+                result = session.execute(
+                    text(
+                        "UPDATE premium_keys SET used = 1, used_by = :u, used_at = :now "
+                        "WHERE token = :t AND used = 0 RETURNING token"
+                    ),
+                    {"u": str(user_id), "now": datetime.now().strftime("%d/%m/%Y %H:%M:%S"), "t": token},
+                )
+                claimed = result.first() is not None
+            else:
+                result = session.execute(
+                    text(
+                        "UPDATE premium_keys SET used = 1, used_by = :u, used_at = :now "
+                        "WHERE token = :t AND used = 0"
+                    ),
+                    {"u": str(user_id), "now": datetime.now().strftime("%d/%m/%Y %H:%M:%S"), "t": token},
+                )
+                claimed = bool(result.rowcount)
+            if not claimed:
+                existing = session.get(PremiumKeyRecord, token)
+                if existing is not None:
+                    return False, "This premium key has already been used."
+                return False, "Premium key not found. Please check your code and try again."
+            row = session.get(PremiumKeyRecord, token)
+            logger.info(f"✅ KEY REDEEMED: {token} by {user_id}")
+            return True, _key_row_to_dict(row)
+    except Exception as exc:
+        logger.error(f"❌ Failed to redeem premium key {token} for {user_id}: {exc}")
+        session.rollback()
+        return False, "Redeem failed. Please try again."
+    finally:
+        session.close()
+
+
+def get_key_stats_db() -> dict:
+    if not _consult_db():
+        return {"total": 0, "used": 0, "unused": 0, "generated_today": 0}
+    session = get_session()
+    if session is None:
+        return {"total": 0, "used": 0, "unused": 0, "generated_today": 0}
+    try:
+        rows = session.query(PremiumKeyRecord).all()
+        total = len(rows)
+        used = sum(1 for r in rows if r.used)
+        today = datetime.now().strftime("%d/%m/%Y")
+        generated_today = sum(1 for r in rows if r.created_at.startswith(today))
+        return {"total": total, "used": used, "unused": total - used, "generated_today": generated_today}
+    except Exception as exc:
+        logger.error(f"❌ Failed to get key stats: {exc}")
+        return {"total": 0, "used": 0, "unused": 0, "generated_today": 0}
+    finally:
+        session.close()
+
+
+def purge_redeemed_keys_db() -> int:
+    """Delete all used keys from the database. Returns number deleted."""
+    if not _consult_db():
+        return 0
+    session = get_session()
+    if session is None:
+        return 0
+    try:
+        result = session.execute(text("DELETE FROM premium_keys WHERE used = 1"))
+        session.commit()
+        logger.info(f"🧹 Purged {result.rowcount} redeemed premium keys")
+        return int(result.rowcount)
+    except Exception as exc:
+        logger.error(f"❌ Failed to purge redeemed keys: {exc}")
+        session.rollback()
+        return 0
+    finally:
+        session.close()
 
 
 # Initialize database on module load.

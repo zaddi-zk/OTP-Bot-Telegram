@@ -198,6 +198,7 @@ from core.user_manager import (
     reset_expired_subscriptions,
     init_user_db,
 )
+import core.entitlements as _ent
 
 # ======================================================================
 # GLOBAL CLIENTS
@@ -2252,20 +2253,9 @@ def apply_premium_subscription(target_user_id: str, duration_key: str) -> tuple[
     if purchase_count % 5 == 0:
         gift_count = increment_loyalty_gift_count(target_user_id, 1)
         loyalty_gift_awarded = True
-        loyalty_key = {
-            "token": secrets.token_urlsafe(16).upper(),
-            "days": 1,
-            "created_by": "PAYMENT_LOYALTY_SYSTEM",
-            "created_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-            "used": False,
-            "claimed_by": target_user_id,
-            "type": "LOYALTY_GIFT_AUTO",
-        }
-        keys = load_premium_keys()
-        keys.append(loyalty_key)
-        save_premium_keys(keys)
-        loyalty_key_token = loyalty_key["token"]
-        write_user_file(target_user_id, "purchase_count.txt", "0")
+        loyalty_key = generate_loyalty_key(target_user_id, 1)
+        loyalty_key_token = loyalty_key["token"] if loyalty_key else None
+        reset_purchase_count(target_user_id)
         logger.info(f"✅ Loyalty gift awarded to {target_user_id}: {gift_count} gifts | Auto key: {loyalty_key_token}")
 
     return True, expiry_str, display_duration, purchase_count, loyalty_gift_awarded, loyalty_key_token
@@ -2273,7 +2263,7 @@ def apply_premium_subscription(target_user_id: str, duration_key: str) -> tuple[
 
 def is_premium_user(user_id: str) -> bool:
     """Return True when the user has active premium access or is privileged."""
-    return check_subscription(user_id) == "ACTIVE"
+    return _ent.check_subscription(user_id) == "ACTIVE"
 
 
 def is_full_premium_user(user_id: str) -> bool:
@@ -2309,74 +2299,34 @@ def notify_premium_required(chat_id: int, message: str, callback_id: Optional[st
 
 
 def check_subscription(user_id: str) -> str:
-    """Check if user has active subscription (checks database first, then legacy files)."""
-    if is_privileged_user(user_id):
-        return "ACTIVE"
-    
-    # Check new database system first
-    if is_premium(user_id):
-        return "ACTIVE"
-    
-    # Fallback to legacy file-based system
-    expiry_str = read_user_file(user_id, "subs.txt", "")
-    if not expiry_str:
-        return "EXPIRED"
-    try:
-        expiry = datetime.strptime(expiry_str, "%d/%m/%Y")
-        return "ACTIVE" if expiry >= datetime.now() else "EXPIRED"
-    except:
-        return "EXPIRED"
-
-from core.files import get_master_free_calls, set_master_free_calls
+    """Check if the user has an active subscription (database authoritative)."""
+    return _ent.check_subscription(user_id)
 
 def get_free_calls(user_id: str) -> int:
-    try:
-        master = get_master_free_calls(user_id)
-        if master is not None:
-            return int(master)
-        return int(read_user_file(user_id, "free_calls.txt", "0"))
-    except:
-        return 0
+    return _ent.get_free_calls(user_id)
 
 def set_free_calls(user_id: str, count: int) -> None:
-    try:
-        set_master_free_calls(user_id, int(count))
-    except Exception:
-        pass
-    write_user_file(user_id, "free_calls.txt", str(int(count)))
+    _ent.set_free_calls(user_id, count)
 
 def decrement_free_call(user_id: str) -> int:
-    remaining = get_free_calls(user_id)
-    remaining = max(0, remaining - 1)
-    set_free_calls(user_id, remaining)
-    return remaining
+    return _ent.decrement_free_call(user_id)
 
 def get_purchase_count(user_id: str) -> int:
-    try:
-        return int(read_user_file(user_id, "purchase_count.txt", "0"))
-    except:
-        return 0
+    return _ent.get_purchase_count(user_id)
 
 def increment_purchase_count(user_id: str, amount: int = 1) -> int:
-    current = get_purchase_count(user_id)
-    new = max(0, current + amount)
-    write_user_file(user_id, "purchase_count.txt", str(new))
-    return new
+    return _ent.increment_purchase_count(user_id, amount)
+
+def reset_purchase_count(user_id: str) -> None:
+    _ent.reset_purchase_count(user_id)
 
 def get_loyalty_gift_count(user_id: str) -> int:
-    """Get admin-approved loyalty gift count (only incremented when admins approve users)"""
-    try:
-        return int(read_user_file(user_id, "loyalty_gift_count.txt", "0"))
-    except:
-        return 0
+    """Get admin-approved loyalty gift count (DB-backed)."""
+    return _ent.get_loyalty_gift_count(user_id)
 
 def increment_loyalty_gift_count(user_id: str, amount: int = 1) -> int:
     """Increment loyalty gift count (ONLY ADMINS can trigger this via user approval)"""
-    current = get_loyalty_gift_count(user_id)
-    new = max(0, current + amount)
-    write_user_file(user_id, "loyalty_gift_count.txt", str(new))
-    logger.info(f"✅ Loyalty gift awarded to user {user_id}: {new} total gifts")
-    return new
+    return _ent.increment_loyalty_gift_count(user_id, amount)
 
 def get_user_role_text(user_id: str) -> str:
     uid = int(user_id)
@@ -2405,11 +2355,10 @@ def get_panel_status_text(user_id: str) -> str:
     logger.debug(f"📊 Premium check for {user_id}: {sub_status}")
     
     if sub_status == "ACTIVE":
-        # Get subscription end date from database (new system)
+        # Read expiry from the authoritative database.
         expiry = get_subscription_end_date(user_id)
         if not expiry:
-            # Fallback to file-based system for legacy users
-            expiry = read_user_file(user_id, "subs.txt", "Unknown")
+            expiry = "Active"
         
         logger.info(f"✅ User {user_id} is PREMIUM - expires: {expiry}")
         return (
@@ -2435,75 +2384,59 @@ def get_panel_status_text(user_id: str) -> str:
     )
 
 # ======================================================================
-# PREMIUM KEY MANAGEMENT
+# PREMIUM KEY MANAGEMENT (database-authoritative)
 # ======================================================================
 def get_premium_key_store_path() -> Path:
     return Path("conf") / "premium_keys.json"
 
 def load_premium_keys() -> list:
-    path = get_premium_key_store_path()
-    if not path.exists():
-        return []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return []
+    """Legacy loader kept for compatibility — returns DB keys."""
+    return _ent.load_premium_keys()
 
 def save_premium_keys(keys: list) -> None:
-    with open(get_premium_key_store_path(), "w", encoding="utf-8") as f:
-        json.dump(keys, f, indent=2)
+    """Legacy shim — keys are managed atomically in the DB."""
+    logger.warning("🛑 save_premium_keys() is obsolete; keys live in the DB now. Write ignored.")
 
 def generate_premium_key(days: int, created_by: str) -> dict:
-    token = "".join(secrets.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(12))
-    key = {
-        "token": token,
-        "days": days,
-        "created_by": created_by,
-        "created_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-        "used": False,
-        "used_by": None,
-        "used_at": None,
-    }
-    keys = load_premium_keys()
-    keys.append(key)
-    save_premium_keys(keys)
+    key = _ent.generate_premium_key(days, created_by)
+    if key is None:
+        raise RuntimeError("Database unavailable — could not create premium key")
+    return key
+
+def generate_custom_duration_key(days: int, created_by: str) -> dict:
+    key = _ent.generate_custom_duration_key(days, created_by)
+    if key is None:
+        raise RuntimeError("Database unavailable — could not create custom key")
+    return key
+
+def generate_free_calls_key(count: int, created_by: str) -> dict:
+    key = _ent.generate_free_calls_key(count, created_by)
+    if key is None:
+        raise RuntimeError("Database unavailable — could not create free-calls key")
+    return key
+
+def generate_loyalty_key(user_id: str, days: int = 1) -> dict:
+    key = _ent.generate_loyalty_key(user_id, days)
+    if key is None:
+        raise RuntimeError("Database unavailable — could not create loyalty key")
     return key
 
 def find_premium_key(token: str) -> Optional[dict]:
-    token = token.strip().upper()
-    for key in load_premium_keys():
-        if key.get("token") == token:
-            return key
-    return None
+    return _ent.find_premium_key(token)
 
 def redeem_premium_key(user_id: str, token: str) -> tuple:
-    token = token.strip().upper()
-    keys = load_premium_keys()
-    for key in keys:
-        if key.get("token") == token:
-            if key.get("used"):
-                return False, "Key already used."
-            days = key.get("days", 0)
-            expiry = datetime.now()
-            if check_subscription(user_id) == "ACTIVE":
-                current_exp = read_user_file(user_id, "subs.txt", "")
-                try:
-                    current = datetime.strptime(current_exp, "%d/%m/%Y")
-                    expiry = max(expiry, current)
-                except:
-                    pass
-            expiry += timedelta(days=days)
-            write_user_file(user_id, "subs.txt", expiry.strftime("%d/%m/%Y"))
-            key["used"] = True
-            key["used_by"] = user_id
-            key["used_at"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-            save_premium_keys(keys)
-            return True, expiry.strftime("%d/%m/%Y")
-    return False, "Key not found."
+    """Atomically claim a key in the DB and apply its grant.
+
+    Returns (success: bool, message: str). The DB claim is guarded on used=0,
+    so a key can never be double-redeemed even under concurrency.
+    """
+    return _ent.redeem_premium_key(user_id, token)
 
 def get_unused_premium_keys() -> list:
-    return [k for k in load_premium_keys() if not k.get("used")]
+    return _ent.get_unused_premium_keys()
+
+def purge_redeemed_keys() -> int:
+    return _ent.purge_redeemed_keys()
 
 # ======================================================================
 # PROFESSIONAL SCRIPT BUILDER (PayPal-style with A/B testing)
@@ -7799,7 +7732,10 @@ def handle_stateful_text(message):
         success, result = redeem_premium_key(user_id_str, key_text)
         clear_user_state(user_id_str)
         if success:
-            bot.send_message(message.chat.id, f"✅ Premium key accepted! Expires: {result}", parse_mode="HTML")
+            if "free calls" in result:
+                bot.send_message(message.chat.id, f"✅ Premium key accepted! {result}", parse_mode="HTML")
+            else:
+                bot.send_message(message.chat.id, f"✅ Premium key accepted! Expires: {result}", parse_mode="HTML")
         else:
             bot.send_message(message.chat.id, f"❌ {result}")
         return
@@ -7876,17 +7812,7 @@ Confirm sending?"""
                 return
             
             # Generate the custom key
-            key = {
-                "token": secrets.token_urlsafe(16).upper(),
-                "days": days,
-                "created_by": user_id_str,
-                "created_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-                "used": False,
-                "type": "CUSTOM_DURATION"
-            }
-            keys = load_premium_keys()
-            keys.append(key)
-            save_premium_keys(keys)
+            key = generate_custom_duration_key(days, user_id_str)
             
             bot.send_message(
                 message.chat.id,
@@ -7915,17 +7841,7 @@ Confirm sending?"""
                 return
             
             # Generate the free calls key
-            free_calls_key = {
-                "token": secrets.token_urlsafe(16).upper(),
-                "free_calls": call_count,
-                "created_by": user_id_str,
-                "created_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-                "used": False,
-                "type": "FREE_CALLS"
-            }
-            keys = load_premium_keys()
-            keys.append(free_calls_key)
-            save_premium_keys(keys)
+            free_calls_key = generate_free_calls_key(call_count, user_id_str)
             
             bot.send_message(
                 message.chat.id,
@@ -8304,17 +8220,13 @@ def start_handler(message):
     if activity_updated is not False:  # None is success
         logger.info(f"   ✅ User {user_id_str} activity timestamp updated")
     
-    # Initialize free-trial allocation only when no server-side master entry
-    # and no per-user file exists. This prevents users from regaining trials
-    # by deleting local chat history or per-user conf files.
+    # Seed the free-trial allocation ONCE per user, keyed by user_id in the
+    # database. Deleting the bot, clearing history, or wiping conf files can
+    # never re-harvest a trial. Premium users are left untouched.
     try:
-        from core.files import get_master_free_calls
-        master_exists = get_master_free_calls(user_id_str) is not None
-    except Exception:
-        master_exists = False
-
-    if not master_exists and not os.path.exists(user_conf_path(user_id_str) / "free_calls.txt") and check_subscription(user_id_str) != "ACTIVE":
-        set_free_calls(user_id_str, FREE_TRIAL_TOTAL)
+        _ent.seed_free_trial_if_needed(user_id_str)
+    except Exception as exc:
+        logger.warning(f"⚠️  Failed to seed free trial for {user_id_str}: {exc}")
     if not gate_user(user_id_str, message.chat.id):
         return
     send_main_menu(message.chat.id, message.from_user)
@@ -8369,8 +8281,11 @@ def add_subs_handler(message):
         return
     new_exp = datetime.now() + timedelta(days=int(days))
     expiry_str = new_exp.strftime("%d/%m/%Y")
-    write_user_file(user_id, "subs.txt", expiry_str)
-    bot.send_message(message.chat.id, f"✅ Added {days} days to {user_id}. Expires: {expiry_str}")
+    ok = set_user_subscription_end_date(user_id, new_exp, role="premium")
+    if ok:
+        bot.send_message(message.chat.id, f"✅ Added {days} days to {user_id}. Expires: {expiry_str}")
+    else:
+        bot.send_message(message.chat.id, "❌ Failed to update subscription (database unavailable).")
 
 @bot.message_handler(commands=["clearset"])
 def clearset_handler(message):
