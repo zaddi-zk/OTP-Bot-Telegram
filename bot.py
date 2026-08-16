@@ -4371,13 +4371,32 @@ def send_channel_menu(chat_id: int, message_id: Optional[int] = None) -> None:
 CHANNEL_GATE_ACTIVE = True
 
 
-def check_channel_membership(user_id: str) -> dict:
+CHANNEL_GATE_CHECK_TTL = 20
+CHANNEL_GATE_SWEEP_INTERVAL = 45
+CHANNEL_GATE_SWEEP_STARTED = False
+CHANNEL_GATE_MENU_THROTTLE = 30
+_gate_cache: Dict[str, Dict[str, Any]] = {}
+_gate_verified: set = set()
+_gate_last_menu_sent: Dict[str, float] = {}
+_gate_lock = threading.RLock()
+
+
+def check_channel_membership(user_id: str, force: bool = False) -> dict:
     """Check whether a user has joined the required channels.
 
     Returns {"main": bool, "backup": bool}. Privileged/owner users always pass.
+
+    Results are cached per user for ``CHANNEL_GATE_CHECK_TTL`` seconds so a
+    flood of interactions does not hammer Telegram's API. Pass ``force=True``
+    to bypass the cache (used by the gate menu's Verify button and the sweeper).
     """
     if is_privileged_user(user_id):
         return {"main": True, "backup": True}
+    now = time.time()
+    if not force:
+        cached = _gate_cache.get(user_id)
+        if cached and (now - cached["ts"]) < CHANNEL_GATE_CHECK_TTL:
+            return {"main": cached["ok"], "backup": cached["ok"]}
     result = {"main": False, "backup": False}
     try:
         member = bot.get_chat_member(chat_id=MAIN_CHANNEL_ID, user_id=int(user_id))
@@ -4391,6 +4410,8 @@ def check_channel_membership(user_id: str) -> dict:
     except Exception as e:
         logger.warning(f"Channel gate: backup channel check failed for {user_id}: {e}")
         result["backup"] = True
+    with _gate_lock:
+        _gate_cache[user_id] = {"ts": now, "ok": result["main"] and result["backup"]}
     return result
 
 
@@ -4417,17 +4438,157 @@ def send_channel_gate_menu(chat_id: int, message_id: Optional[int] = None) -> No
         bot.send_message(chat_id, text, reply_markup=buttons, parse_mode="HTML")
 
 
-def gate_user(user_id: str, chat_id: int, message_id: Optional[int] = None) -> bool:
-    """Enforce the channel gate. Returns True if the user passed (menu may proceed)."""
+def gate_user(
+    user_id: str,
+    chat_id: int,
+    message_id: Optional[int] = None,
+    force: bool = False,
+) -> bool:
+    """Enforce the channel gate. Returns True if the user passed (menu may proceed).
+
+    Cached ``force=False`` lets every interaction re-verify cheaply; the Verify
+    button and the background sweeper pass ``force=True`` for a live check.
+    """
     if not CHANNEL_GATE_ACTIVE:
         return True
     if is_privileged_user(user_id):
         return True
-    status = check_channel_membership(user_id)
+    status = check_channel_membership(user_id, force=force)
     if status["main"] and status["backup"]:
+        with _gate_lock:
+            prev = _gate_cache.setdefault(user_id, {})
+            prev["ok"] = True
+            prev["ts"] = time.time()
+            prev["chat_id"] = chat_id
+            _gate_verified.add(user_id)
         return True
-    send_channel_gate_menu(chat_id, message_id)
+    with _gate_lock:
+        _gate_verified.discard(user_id)
+    now = time.time()
+    last_sent = _gate_last_menu_sent.get(user_id, 0.0)
+    if (now - last_sent) >= CHANNEL_GATE_MENU_THROTTLE:
+        _gate_last_menu_sent[user_id] = now
+        send_channel_gate_menu(chat_id, message_id)
     return False
+
+
+def start_channel_gate_sweeper() -> None:
+    """Periodically re-verify users who previously passed the gate.
+
+    If a user leaves a channel, the sweeper catches them even when idle and
+    re-locks their access by sending the gate menu to their last chat.
+    """
+    global CHANNEL_GATE_SWEEP_STARTED
+    if CHANNEL_GATE_SWEEP_STARTED:
+        return
+    CHANNEL_GATE_SWEEP_STARTED = True
+
+    def _sweep() -> None:
+        while True:
+            time.sleep(CHANNEL_GATE_SWEEP_INTERVAL)
+            if not CHANNEL_GATE_ACTIVE:
+                continue
+            try:
+                with _gate_lock:
+                    ids = list(_gate_verified)
+                    last_chats = {
+                        uid: (info.get("chat_id") if isinstance(info.get("chat_id"), int) else 0)
+                        for uid, info in _gate_cache.items()
+                        if isinstance(info, dict)
+                    }
+                    last_seen = {
+                        uid: (info.get("ts", 0.0) if isinstance(info, dict) else 0.0)
+                        for uid, info in _gate_cache.items()
+                    }
+                for uid in ids:
+                    chat_id = last_chats.get(uid)
+                    if not chat_id:
+                        continue
+                    # Respect the cache TTL so the sweeper never re-checks a user
+                    # more than ~once per sweep interval (protects Telegram API).
+                    if (time.time() - last_seen.get(uid, 0.0)) < CHANNEL_GATE_SWEEP_INTERVAL:
+                        continue
+                    if gate_user(uid, chat_id, force=True):
+                        continue
+                    logger.info(f"Channel gate: user {uid} left a channel; access locked")
+            except Exception as e:
+                logger.exception(f"Channel gate sweeper error: {e}")
+
+    threading.Thread(target=_sweep, daemon=True, name="channel-gate-sweeper").start()
+
+
+def _install_channel_gate_filter() -> None:
+    """Wrap ``bot.process_new_updates`` so every Telegram update (any handler,
+    any module) passes the channel gate before being dispatched.
+
+    - Regular messages (including commands/photos/documents) that fail the gate
+      are dropped here; ``gate_user`` already sent the gate menu.
+    - Callback queries fail the gate except the gate menu's own ``verify_channels``.
+    - Other update types (chat_member, inline, etc.) pass through untouched.
+    """
+    if bot is None or CHANNEL_GATE_ACTIVE is not True:
+        return
+    if getattr(bot, "_channel_gate_filtered", False):
+        return
+    bot._channel_gate_filtered = True
+    _orig_process_new_updates = bot.process_new_updates
+
+    def _gated_process_new_updates(updates):
+        allowed = []
+        for update in updates:
+            if not CHANNEL_GATE_ACTIVE:
+                allowed.append(update)
+                continue
+            try:
+                dropped = False
+                is_callback = getattr(update, "callback_query", None) is not None
+                msg = getattr(update, "message", None)
+                if msg is not None and getattr(msg, "from_user", None) and getattr(msg, "chat", None):
+                    uid = str(msg.from_user.id)
+                    if is_privileged_user(uid):
+                        allowed.append(update)
+                        continue
+                    if gate_user(uid, msg.chat.id):
+                        allowed.append(update)
+                    else:
+                        dropped = True
+                elif is_callback:
+                    cq = update.callback_query
+                    uid = str(cq.from_user.id)
+                    data = getattr(cq, "data", "") or ""
+                    if data == "verify_channels" or is_privileged_user(uid):
+                        allowed.append(update)
+                        continue
+                    chat = getattr(cq, "message", None)
+                    chat_id = getattr(chat, "chat", None)
+                    chat_id = getattr(chat_id, "id", None)
+                    if chat_id and gate_user(uid, chat_id, getattr(chat, "message_id", None)):
+                        allowed.append(update)
+                    else:
+                        dropped = True
+                else:
+                    allowed.append(update)
+                    continue
+                if dropped and is_callback:
+                    try:
+                        bot.answer_callback_query(
+                            getattr(update.callback_query, "id", ""),
+                            "🔒 Channel access required",
+                            show_alert=False,
+                        )
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.exception(f"Channel gate filter error: {e}")
+                allowed.append(update)
+        if allowed:
+            _orig_process_new_updates(allowed)
+
+    bot.process_new_updates = _gated_process_new_updates
+    logger.info("Channel gate filter installed on process_new_updates.")
+
+
+_install_channel_gate_filter()
 
 
 def send_vouches_menu(chat_id: int, message_id: Optional[int] = None) -> None:
@@ -4531,6 +4692,13 @@ def _handle_query_processing(call, _):
     user_id_str = str(call.from_user.id)
     chat_id = call.message.chat.id
     message_id = call.message.message_id
+
+    # --- Channel Gate: hard enforcement on every callback ---
+    # The gate menu's own callbacks must stay reachable for a locked user.
+    _gate_exempt = {"verify_channels"}
+    if call.data not in _gate_exempt:
+        if not gate_user(user_id_str, chat_id, message_id):
+            return
 
     # --- Navigation (all async to avoid blocking) ---
     if call.data == "back_to_menu":
@@ -5547,12 +5715,18 @@ def _handle_query_processing(call, _):
 
     # --- Channel Gate: Verify membership ---
     if call.data == "verify_channels":
-        status = check_channel_membership(user_id_str)
+        status = check_channel_membership(user_id_str, force=True)
         missing = [name for name, joined in status.items() if not joined]
         if missing:
             bot.answer_callback_query(call.id, "❌ Not yet! Please join all channels first.", show_alert=True)
             send_channel_gate_menu(chat_id, message_id)
             return
+        with _gate_lock:
+            prev = _gate_cache.setdefault(user_id_str, {})
+            prev["ok"] = True
+            prev["ts"] = time.time()
+            prev["chat_id"] = chat_id
+            _gate_verified.add(user_id_str)
         bot.answer_callback_query(call.id, "✅ Membership verified! Welcome back.", show_alert=False)
         send_main_menu(chat_id, call.from_user, message_id=message_id)
         return
@@ -6699,6 +6873,10 @@ def handle_stateful_text(message):
     user_id_str = str(message.from_user.id)
     state = get_user_state(user_id_str)
     text = (message.text or "").strip()
+
+    # --- Channel Gate: hard enforcement on every text interaction ---
+    if not gate_user(user_id_str, message.chat.id):
+        return
 
     # Normal call steps (delegated to handlers/call_flow.py)
     import threading
@@ -8627,6 +8805,11 @@ def start_subscription_maintenance(interval: int = 3600) -> None:
 def start_background_threads():
     start_rate_limiter_cleanup()
     start_scheduler()
+    # Start channel-gate membership sweeper (revokes access for users who left)
+    try:
+        start_channel_gate_sweeper()
+    except Exception:
+        logger.exception("Failed to start channel gate sweeper")
     # Start subscription expiry maintenance (demote expired users + notify)
     try:
         start_subscription_maintenance()
