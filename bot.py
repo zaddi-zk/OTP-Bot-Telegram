@@ -4680,17 +4680,70 @@ def handle_query(call):
             logger.debug(f"Failed to answer restricted callback: {e}")
         return
 
-    # For the channel-gate Verify button, do NOT answer here: Telegram only
-    # allows one answerCallbackQuery per query, and the background handler
-    # must own that single answer (so its ✓/✗ result actually displays).
-    # Skipping the ack keeps the button spinning until verification completes.
-    if call.data != "verify_channels":
-        try:
-            bot.answer_callback_query(call.id, "", show_alert=False, cache_time=1)
-        except Exception as e:
-            logger.debug(f"Failed to acknowledge callback: {e}")
+    # --- Channel Gate: Verify membership (handled INLINE, synchronously). ---
+    # This must never ride the shared background executor: if that queue is
+    # busy (bulk calls, other callbacks) the button would spin/queue forever
+    # (feels like a dead click). Inline handling answers the query exactly
+    # once, always, and immediately — no stuck, works for member & non-member.
+    if call.data == "verify_channels":
+        _handle_verify_channels_inline(call)
+        return
+
+    try:
+        bot.answer_callback_query(call.id, "", show_alert=False, cache_time=1)
+    except Exception as e:
+        logger.debug(f"Failed to acknowledge callback: {e}")
 
     run_callback_async(_handle_query_processing, call, None)
+
+
+def _handle_verify_channels_inline(call) -> None:
+    """Synchronous, single-answer verification for the channel-gate Verify button.
+    Always produces exactly one answerCallbackQuery (Telegram allows one per
+    query), always shows a visible ✓/✗ result, and never touches the executor.
+    """
+    user_id_str = str(call.from_user.id)
+    try:
+        chat_id = call.message.chat.id
+        message_id = call.message.message_id
+    except Exception:
+        chat_id = getattr(getattr(call, "message", None), "chat", None)
+        chat_id = getattr(chat_id, "id", None)
+        message_id = getattr(getattr(call, "message", None), "message_id", None)
+    try:
+        status = check_channel_membership(user_id_str, force=True)
+    except Exception as e:
+        logger.exception(f"verify_channels membership check error: {e}")
+        status = {"main": False, "backup": False}
+    missing = [name for name, joined in status.items() if not joined]
+    if not missing:
+        with _gate_lock:
+            prev = _gate_cache.setdefault(user_id_str, {})
+            prev["ok"] = True
+            prev["ts"] = time.time()
+            prev["chat_id"] = chat_id
+            _gate_verified.add(user_id_str)
+        try:
+            bot.answer_callback_query(call.id, "✅ Access unlocked! Welcome back.", show_alert=True)
+        except Exception as e:
+            logger.debug(f"verify_channels success answer error: {e}")
+        if chat_id and message_id:
+            send_main_menu(chat_id, call.from_user, message_id=message_id)
+        elif chat_id:
+            send_main_menu(chat_id, call.from_user)
+        return
+    try:
+        bot.answer_callback_query(
+            call.id,
+            "❌ Not yet! Please join ALL channels above, then tap Verify again.",
+            show_alert=True,
+        )
+    except Exception as e:
+        logger.debug(f"verify_channels fail answer error: {e}")
+    if chat_id and message_id:
+        send_channel_gate_menu(chat_id, message_id)
+    elif chat_id:
+        send_channel_gate_menu(chat_id)
 
 def _handle_query_processing(call, _):
     """The actual callback processing - runs in background."""
@@ -5716,30 +5769,6 @@ def _handle_query_processing(call, _):
     # --- Channel ---
     if call.data == "channel":
         send_channel_menu(chat_id, message_id)
-        return
-
-    # --- Channel Gate: Verify membership ---
-    if call.data == "verify_channels":
-        status = check_channel_membership(user_id_str, force=True)
-        missing = [name for name, joined in status.items() if not joined]
-        if missing:
-            try:
-                bot.answer_callback_query(call.id, "❌ Not yet! Please join all channels first.", show_alert=True)
-            except Exception as e:
-                logger.debug(f"verify_channels fail answer error: {e}")
-            send_channel_gate_menu(chat_id, message_id)
-            return
-        with _gate_lock:
-            prev = _gate_cache.setdefault(user_id_str, {})
-            prev["ok"] = True
-            prev["ts"] = time.time()
-            prev["chat_id"] = chat_id
-            _gate_verified.add(user_id_str)
-        try:
-            bot.answer_callback_query(call.id, "✅ Membership verified! Welcome back.", show_alert=False)
-        except Exception as e:
-            logger.debug(f"verify_channels success answer error: {e}")
-        send_main_menu(chat_id, call.from_user, message_id=message_id)
         return
 
     # --- Vouches ---
