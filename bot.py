@@ -4680,10 +4680,15 @@ def handle_query(call):
             logger.debug(f"Failed to answer restricted callback: {e}")
         return
 
-    try:
-        bot.answer_callback_query(call.id, "", show_alert=False, cache_time=1)
-    except Exception as e:
-        logger.debug(f"Failed to acknowledge callback: {e}")
+    # For the channel-gate Verify button, do NOT answer here: Telegram only
+    # allows one answerCallbackQuery per query, and the background handler
+    # must own that single answer (so its ✓/✗ result actually displays).
+    # Skipping the ack keeps the button spinning until verification completes.
+    if call.data != "verify_channels":
+        try:
+            bot.answer_callback_query(call.id, "", show_alert=False, cache_time=1)
+        except Exception as e:
+            logger.debug(f"Failed to acknowledge callback: {e}")
 
     run_callback_async(_handle_query_processing, call, None)
 
@@ -5718,7 +5723,10 @@ def _handle_query_processing(call, _):
         status = check_channel_membership(user_id_str, force=True)
         missing = [name for name, joined in status.items() if not joined]
         if missing:
-            bot.answer_callback_query(call.id, "❌ Not yet! Please join all channels first.", show_alert=True)
+            try:
+                bot.answer_callback_query(call.id, "❌ Not yet! Please join all channels first.", show_alert=True)
+            except Exception as e:
+                logger.debug(f"verify_channels fail answer error: {e}")
             send_channel_gate_menu(chat_id, message_id)
             return
         with _gate_lock:
@@ -5727,7 +5735,10 @@ def _handle_query_processing(call, _):
             prev["ts"] = time.time()
             prev["chat_id"] = chat_id
             _gate_verified.add(user_id_str)
-        bot.answer_callback_query(call.id, "✅ Membership verified! Welcome back.", show_alert=False)
+        try:
+            bot.answer_callback_query(call.id, "✅ Membership verified! Welcome back.", show_alert=False)
+        except Exception as e:
+            logger.debug(f"verify_channels success answer error: {e}")
         send_main_menu(chat_id, call.from_user, message_id=message_id)
         return
 
