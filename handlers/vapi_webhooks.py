@@ -475,7 +475,10 @@ def handle_vapi_webhook(request) -> Response:
 
         event_type = payload.get("type") or payload.get("event") or payload.get("message", {}).get("type")
         message_body = payload.get("message") or payload
-        call_data = payload.get("call") or message_body.get("call", {})
+        # `dict.get(key, default)` only substitutes the default when the key is
+        # MISSING; a key present-but-null (Vapi sends `"call": null`) yields None.
+        # Normalize with `or {}` so every downstream `.get` is safe.
+        call_data = payload.get("call") or message_body.get("call") or {}
         vapi_call_id = call_data.get("id") or payload.get("callId") or message_body.get("callId")
         # The call is keyed by the Vapi call id; fall back so session/OTP/hangup
         # lookups work.
@@ -804,53 +807,83 @@ def _handle_transcript(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
 
 
 def _extract_recording_url(payload: dict, call_data: Optional[dict] = None) -> Optional[str]:
-    sources = [
-        lambda: (call_data or {}).get("recordingUrl"),
-        lambda: (call_data or {}).get("artifact", {}).get("recordingUrl"),
-        lambda: payload.get("recordingUrl"),
-        lambda: payload.get("message", {}).get("recordingUrl"),
-        lambda: payload.get("call", {}).get("recordingUrl"),
-        lambda: payload.get("call", {}).get("artifact", {}).get("recordingUrl"),
-        lambda: payload.get("message", {}).get("call", {}).get("recordingUrl"),
-        lambda: payload.get("message", {}).get("call", {}).get("artifact", {}).get("recordingUrl"),
-    ]
-    for src in sources:
-        url = src()
+    """Pull the recording URL from whichever nesting Vapi used.
+
+    Vapi nests it on the call object / artifact, sometimes under the top-level
+    ``message`` wrapper, and sometimes ``call``/``artifact``/``message`` keys
+    are present-but-null. This walks every candidate dict None-safely.
+    """
+
+    def _url_from(obj) -> Optional[str]:
+        if not isinstance(obj, dict):
+            return None
+        url = obj.get("recordingUrl")
         if url:
             return url
-    return None
+        artifact = obj.get("artifact")
+        if isinstance(artifact, dict) and artifact.get("recordingUrl"):
+            return artifact["recordingUrl"]
+        return None
+
+    def _scan(*objs) -> Optional[str]:
+        for obj in objs:
+            url = _url_from(obj)
+            if url:
+                return url
+            if isinstance(obj, dict):
+                nested_call = obj.get("call")
+                if isinstance(nested_call, dict):
+                    url = _url_from(nested_call)
+                    if url:
+                        return url
+        return None
+
+    message = payload.get("message")
+    return _scan(call_data, payload, message, payload.get("call"))
 
 
 def _download_recording_file(recording_url: str, vapi_call_id: Optional[str] = None) -> Optional[bytes]:
+    """Download the call recording, retrying with backoff.
+
+    Vapi artifacts are written asynchronously, so the first GET can 404/400
+    while the object is still landing. Each attempt uses a fresh presigned URL
+    because R2 presigned links expire.
+    """
+    audio = _try_download_url(recording_url)
+    if audio or not vapi_call_id:
+        return audio
+
     try:
-        resp = requests.get(recording_url, timeout=120)
-        if resp.status_code == 200 and len(resp.content) > 1024:
-            logger.info("[VAPI_RECORDING] download OK size=%s", len(resp.content))
-            return resp.content
-        logger.info("[VAPI_RECORDING] download status=%s size=%s (url=%s)",
-                     resp.status_code, len(resp.content or b""), recording_url[:60])
+        from services.vapi_service import get_call
+        call_data = get_call(vapi_call_id)
+        fresh_url = None
+        if call_data:
+            fresh_url = (
+                call_data.get("recordingUrl")
+                or (call_data.get("artifact") or {}).get("recordingUrl")
+            )
+        if fresh_url and fresh_url != recording_url:
+            logger.info("[VAPI_RECORDING] fresh URL from API, retrying download")
+            return _try_download_url(fresh_url)
     except Exception as e:
-        logger.warning("[VAPI_RECORDING] download error=%s (url=%s)", e, recording_url[:60])
+        logger.warning("[VAPI_RECORDING] API fallback error=%s", e)
 
-    if vapi_call_id:
+    return None
+
+
+def _try_download_url(url: str) -> Optional[bytes]:
+    for attempt in range(1, 4):
         try:
-            from services.vapi_service import get_call
-            call_data = get_call(vapi_call_id)
-            if call_data:
-                fresh_url = (
-                    call_data.get("recordingUrl")
-                    or call_data.get("artifact", {}).get("recordingUrl")
-                )
-                if fresh_url and fresh_url != recording_url:
-                    logger.info("[VAPI_RECORDING] fresh URL from API, retrying download")
-                    resp = requests.get(fresh_url, timeout=120)
-                    if resp.status_code == 200 and len(resp.content) > 1024:
-                        return resp.content
-                    logger.info("[VAPI_RECORDING] fresh URL download status=%s size=%s",
-                                 resp.status_code, len(resp.content or b""))
+            resp = requests.get(url, timeout=120)
+            if resp.status_code == 200 and len(resp.content) > 1024:
+                logger.info("[VAPI_RECORDING] download OK size=%s attempt=%s", len(resp.content), attempt)
+                return resp.content
+            logger.info("[VAPI_RECORDING] download status=%s size=%s attempt=%s (url=%s)",
+                         resp.status_code, len(resp.content or b""), attempt, url[:60])
         except Exception as e:
-            logger.warning("[VAPI_RECORDING] API fallback error=%s", e)
-
+            logger.warning("[VAPI_RECORDING] download error=%s attempt=%s (url=%s)", e, attempt, url[:60])
+        if attempt < 3:
+            time.sleep(5)
     return None
 
 
@@ -907,7 +940,9 @@ def _resolve_chat_id(payload: dict, call_sid: Optional[str], vapi_call_id: Optio
 
 def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Optional[str], call_data: Optional[dict] = None) -> Response:
     try:
-        cd = call_data or payload.get("call", payload)
+        # `payload.get("call", payload)` returns None when the key exists with
+        # a null value; normalize so every `.get` below is safe.
+        cd = call_data or payload.get("call") or payload
         message_body = payload.get("message") or payload
         # Vapi reports endedReason/durationMs on message.endedReason /
         # message.call.endedReason in status-update("ended") payloads; read both.
@@ -921,6 +956,11 @@ def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
         if session and session.get("call_ended_processed"):
             logger.info("[VAPI_CALL_ENDED] already processed for call_sid=%s, skipping duplicate", call_sid)
             return Response("OK")
+        # Flag early: Vapi fires end-of-call-report and status-update("ended")
+        # concurrently; without this the second event reprocesses and re-sends
+        # the completion menu + recording.
+        if session:
+            session["call_ended_processed"] = True
 
         if status == "queued":
             if session and session.get("call_was_in_progress"):
@@ -1009,9 +1049,6 @@ def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
             else:
                 logger.info("[VAPI_CALL_ENDED] no recording url and no vapi_call_id to fetch")
 
-        if session:
-            session["call_ended_processed"] = True
-
         return Response("OK")
     except Exception as e:
         logger.error("[VAPI_CALL_ENDED_ERROR] %s", e)
@@ -1033,7 +1070,7 @@ def _fetch_and_send_recording_via_api(vapi_call_id: str, call_sid: Optional[str]
             return
         recording_url = (
             call_data.get("recordingUrl")
-            or call_data.get("artifact", {}).get("recordingUrl")
+            or (call_data.get("artifact") or {}).get("recordingUrl")
         )
         if not recording_url:
             logger.warning("[VAPI_RECORDING_API] no recordingUrl in fetched call data for %s", vapi_call_id)
@@ -1070,8 +1107,13 @@ def _download_and_send_recording(recording_url: str, call_sid: Optional[str], va
         try:
             from core.files import ensure_user_path, user_conf_path
             ensure_user_path(user_id)
-            file_path = str(user_conf_path(user_id) / f"recording{ext}")
+            # `record.mp3` is what the Live Listen panel / Download Recording
+            # button looks for; write both so legacy paths keep working.
+            file_path = str(user_conf_path(user_id) / f"record{ext}")
             with open(file_path, "wb") as f:
+                f.write(audio_data)
+            legacy_path = str(user_conf_path(user_id) / f"recording{ext}")
+            with open(legacy_path, "wb") as f:
                 f.write(audio_data)
             logger.info("[VAPI_RECORDING] saved to %s", file_path)
         except Exception as e:
