@@ -61,7 +61,6 @@ try:
         "type": "transcript",
         "call": {
             "id": "test-vapi-webhook-001",
-            "twilioCallSid": "test-call-webhook-001"
         },
         "message": {
             "role": "customer",

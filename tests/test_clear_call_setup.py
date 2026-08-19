@@ -38,7 +38,6 @@ def test_clear_on_initiate_and_cleanup(monkeypatch, tmp_path):
 
     # Import bot module after creating the conf dir
     import bot
-    # Monkeypatch the async executor and twilio call to be synchronous and deterministic
 
     monkeypatch.setattr(bot, "run_callback_async", lambda f, *a, **k: f(*a, **k))
 
@@ -55,8 +54,8 @@ def test_clear_on_initiate_and_cleanup(monkeypatch, tmp_path):
             return None
     monkeypatch.setattr(bot, "bot", DummyBot())
 
-    # Replace make_call_and_store_async to return a concrete SID string
-    import services.twilio_service as ts
+    # Replace make_call_and_store_async to return a concrete call id
+    import services.call_service as cs
 
     class DummyFuture:
         def result(self, timeout=None):
@@ -67,7 +66,7 @@ def test_clear_on_initiate_and_cleanup(monkeypatch, tmp_path):
             except Exception:
                 pass
 
-    monkeypatch.setattr(ts, "make_call_and_store_async", lambda **kw: DummyFuture())
+    monkeypatch.setattr(cs, "make_call_and_store_async", lambda **kw: DummyFuture())
 
     # Directly test the helper to ensure it clears the files
     bot.clear_user_call_setup(test_user)

@@ -46,7 +46,7 @@ initiate_normal_call(user_id)
     └─ Build /ai_start webhook with all params:
         /ai_start?user_id=123&voice_id=EXAVITQu4vr4xnSDxMaL&name=John&company=ABC+Bank&code_length=6&emotion=neutral
     ↓
-Twilio calls target phone
+Vapi calls target phone
     ↓
 /ai_start endpoint receives webhook
     ├─ Extract all query parameters (voice_id, name, company, emotion, etc)
@@ -60,7 +60,7 @@ Twilio calls target phone
     └─ Start Media Stream WebSocket
     ↓
 WebSocket Audio Loop (on each customer message)
-    ├─ Receive audio from Twilio (µ-law)
+    ├─ Receive audio from Vapi (µ-law)
     ├─ Transcribe via Whisper (ASR)
     ├─ Send to Groq LLM with system prompt:
     │   System prompt includes:
@@ -74,7 +74,7 @@ WebSocket Audio Loop (on each customer message)
     ├─ Extract OTP from speech:
     │   extract_otp(text, code_length=session.code_length)  ← USER-SET CODE LENGTH
     ├─ Store OTP in session
-    └─ Send audio back to Twilio → customer hears it
+    └─ Send audio back to Vapi → customer hears it
     ↓
 Call completes
     ├─ OTP sent to vouch channel

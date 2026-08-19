@@ -9,7 +9,7 @@ Step 1: User Clicks "Normal Call"
 └─ Function: initiate_normal_call()
    • Validates user has trial calls or premium
    • Gets target phone number from user settings
-   • Creates Twilio call with webhook: /amd_hold
+   • Creates Vapi call with webhook: /amd_hold
    • Sends "Starting Normal Call. Live listen will be available shortly."
 
 Step 2: Call Connects - AMD HOLD (Pause)
@@ -67,9 +67,9 @@ Step 5: CAPTURE OTP
 
 Step 6: RECORDING SAVED
 └─ Endpoint: /recording_callback
-   • Twilio sends completed recording from /focus_listen_flow
-   • Recording includes: Greeting + Urgency + Prompt + User's digit entry
-   • Downloads MP3 from Twilio
+• Vapi sends completed recording from /focus_listen_flow
+• Recording includes: Greeting + Urgency + Prompt + User's digit entry
+• Downloads MP3 from Vapi
    • Saves to: conf/[user_id]/record.mp3
    • Forwards to Telegram chat
 

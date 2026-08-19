@@ -65,13 +65,13 @@
 - [ ] Model loaded: llama3.1:8b
 - [ ] Bot running (`python run_bot.py`)
 - [ ] NGROK tunnel active
-- [ ] Twilio webhook configured
+- [ ] Vapi webhook configured (VAPI_API_KEY + VAPI_SIP_PHONE_NUMBER_ID)
 - [ ] Live Listen server ready
 
 ### Success Criteria
 - [ ] All 9 fields collected in correct order
 - [ ] All 9 fields passed to /ai_start
-- [ ] Twilio call connects
+- [ ] Vapi call connects
 - [ ] AI responds with correct voice
 - [ ] OTP extracted on first attempt
 - [ ] OTP delivered within 1 second

@@ -21,7 +21,7 @@ def notify_otp_captured(
     user_id: str = "unknown",
     vapi_call_id: Optional[str] = None,
 ):
-    from bot import send_call_stage_status, store_otp_timer, get_call_session, register_call_session, get_twilio_client, get_call_voice_info, post_vouch_to_channel, log_otp
+    from bot import send_call_stage_status, store_otp_timer, get_call_session, register_call_session, get_call_voice_info, post_vouch_to_channel, log_otp
     from services.vapi_service import end_call as vapi_end_call
 
     session = get_call_session(call_sid)
@@ -100,17 +100,10 @@ def notify_otp_captured(
             except Exception as e:
                 logger.debug(f"Vapi end_call failed: {e}")
 
-    def _hangup_twilio():
-        from services.twilio_service import end_call as twilio_end_call
-        try:
-            twilio_end_call(call_sid)
-        except Exception as e:
-            logger.debug(f"Twilio end_call failed: {e}")
-
     def _auto_accept():
         if not call_sid:
             return
-        from bot import get_call_session, VoiceResponse, get_twilio_client
+        from bot import get_call_session
         session_local = get_call_session(call_sid)
         if not session_local or session_local.get("otp_status") != "pending":
             return
@@ -129,7 +122,6 @@ def notify_otp_captured(
                     time.sleep(2)
                 except Exception as e:
                     logger.debug(f"Vapi say on auto-accept: {e}")
-            _hangup_twilio()
             _end_vapi_call()
             if chat_id and _bot_instance:
                 try:

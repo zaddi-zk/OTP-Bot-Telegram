@@ -129,46 +129,13 @@ def _detect_ivr_in_transcript(text: str) -> Optional[str]:
     return None
 
 
-def _resolve_real_twilio_sid(vapi_call_id: Optional[str], twilio_sid: Optional[str]) -> Optional[str]:
-    """Return a real Twilio Call SID (CA...) for this call, if one is known.
+def _hangup_call(vapi_call_id: Optional[str], call_sid: Optional[str]) -> None:
+    """Force-end the call to stop credit usage immediately.
 
-    Vapi sends bypass/Twilio calls with NO ``twilioCallSid`` in webhooks, so the
-    ``call_sid`` that reaches us often IS the Vapi UUID. The actual outbound
-    phone leg is placed by Twilio and its real SID lives in the session (keyed
-    by the SID and aliased under the Vapi id). Resolve it here so the Twilio
-    hangup targets the real call instead of a junk UUID.
+    The Vapi session is the only telephony leg: ending it tears the call down
+    (Vapi sends BYE to Asterisk, which drops the SpoofGlobal leg).
     """
-    candidate_approved = twilio_sid and str(twilio_sid).startswith("CA")
-    if candidate_approved:
-        return str(twilio_sid)
-    try:
-        from bot import get_call_session
-        session = (
-            get_call_session(vapi_call_id)
-            if vapi_call_id
-            else (get_call_session(twilio_sid) if twilio_sid else None)
-        )
-        if session:
-            sess_sid = session.get("call_sid") or session.get("twilio_call_sid")
-            if sess_sid and str(sess_sid).startswith("CA"):
-                return str(sess_sid)
-            if twilio_sid and str(twilio_sid).startswith("CA"):
-                return str(twilio_sid)
-    except Exception as e:
-        logger.warning("[VAPI_HANGUP_RESOLVE] could not resolve Twilio sid: %s", e)
-    return twilio_sid
-
-
-def _hangup_call(vapi_call_id: Optional[str], twilio_sid: Optional[str]) -> None:
-    """Force-end the call on both legs to stop credit usage immediately.
-
-    Both the Vapi session AND the real Twilio phone leg are torn down. The Twilio
-    SID is re-resolved from the session because Vapi bypass webhooks do not send
-    ``twilioCallSid`` (and ``call_sid`` here is often just the Vapi UUID).
-    """
-    real_twilio_sid = _resolve_real_twilio_sid(vapi_call_id, twilio_sid)
-    logger.info("[VAPI_HANGUP] vapi_call_id=%s twilio_sid=%s real_twilio_sid=%s",
-                vapi_call_id, twilio_sid, real_twilio_sid)
+    logger.info("[VAPI_HANGUP] vapi_call_id=%s call_sid=%s", vapi_call_id, call_sid)
     if vapi_call_id:
         try:
             from services.vapi_service import end_call as vapi_end_call
@@ -176,15 +143,6 @@ def _hangup_call(vapi_call_id: Optional[str], twilio_sid: Optional[str]) -> None
             logger.info("[VAPI_HANGUP] vapi end_call ok=%s id=%s", ok, vapi_call_id)
         except Exception as e:
             logger.warning("[VAPI_HANGUP_ERROR] vapi side: %s", e)
-    if real_twilio_sid:
-        try:
-            from services.twilio_service import end_call as twilio_end_call
-            ok = twilio_end_call(real_twilio_sid)
-            logger.info("[VAPI_HANGUP] twilio end_call ok=%s sid=%s", ok, real_twilio_sid)
-            if not ok:
-                logger.warning("[VAPI_HANGUP] twilio end_call returned failure sid=%s", real_twilio_sid)
-        except Exception as e:
-            logger.warning("[VAPI_HANGUP_ERROR] twilio side: %s", e)
 
 
 def _stamp_call_connected(session) -> None:
@@ -461,8 +419,7 @@ def _human_or_machine_label(ended_reason: Optional[str]) -> Optional[str]:
 def _build_live_control_keyboard(sid: str):
     """Live-call action controls (single row, two actions).
 
-    ``sid`` must be the real Twilio CallSid so the hangup callback can tear
-    down the actual carrier leg (Vapi's UUID alone would miss it).
+    ``sid`` is the Vapi call UUID — the only identifier used for hangup/status.
 
     Two equally-weighted actions in one row — the pro pattern used by the OTP
     accept/decline controls — so the operator can stream or hang instantly
@@ -478,9 +435,8 @@ def _build_live_control_keyboard(sid: str):
 def _notify_call_live(payload: dict, call_sid: Optional[str], vapi_call_id: Optional[str], call_data: Optional[dict]) -> None:
     """Send one 'Call is live' Telegram message with live controls.
 
-    This is a Vapi-side notification (added alongside, not replacing, Twilio's
-    own status handling). It fires once per call thanks to the session flag.
-    The buttons let the operator listen in or force-hang the call instantly.
+    Fires once per call thanks to the session flag. The buttons let the operator
+    listen in or force-hang the call instantly via the Vapi call UUID.
     """
     try:
         from bot import get_call_session
@@ -492,11 +448,10 @@ def _notify_call_live(payload: dict, call_sid: Optional[str], vapi_call_id: Opti
             return
         if session:
             session["call_live_notified"] = True
-        real_sid = _resolve_real_twilio_sid(vapi_call_id, call_sid)
         _send_live_status(
             chat_id,
             "🔵 Call is live. Call in progress.",
-            reply_markup=_build_live_control_keyboard(real_sid or call_sid or "unknown"),
+            reply_markup=_build_live_control_keyboard(vapi_call_id or call_sid or "unknown"),
         )
     except Exception as e:
         logger.warning("[VAPI_CALL_LIVE_ERROR] %s", e)
@@ -522,13 +477,9 @@ def handle_vapi_webhook(request) -> Response:
         message_body = payload.get("message") or payload
         call_data = payload.get("call") or message_body.get("call", {})
         vapi_call_id = call_data.get("id") or payload.get("callId") or message_body.get("callId")
-        # Vapi does NOT send twilioCallSid in webhooks — the call is keyed by the
-        # Vapi call id. Fall back so session/OTP/hangup lookups work.
-        call_sid = (
-            call_data.get("twilioCallSid")
-            or call_data.get("phoneCallProviderId")
-            or vapi_call_id
-        )
+        # The call is keyed by the Vapi call id; fall back so session/OTP/hangup
+        # lookups work.
+        call_sid = call_data.get("phoneCallProviderId") or vapi_call_id
 
         metadata = _extract_metadata(payload, call_data)
         chat_id = metadata.get("chat_id")
@@ -584,8 +535,7 @@ def handle_vapi_webhook(request) -> Response:
             return _handle_transcript(payload, call_sid, vapi_call_id, call_data)
 
         if event_type == "status-update":
-            # The authoritative call status lives on message.status, NOT
-            # message.call.status (which stays "queued" in Vapi bypass/twilio).
+            # The authoritative call status lives on message.status.
             call_status = message_body.get("status")
             if not call_status:
                 call_status = call_data.get("status", "")
@@ -1001,8 +951,8 @@ def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
         user_id = metadata.get("user_id")
 
         # Vapi AMD / voicemail detection results are surfaced via the machine
-        # handler below; human/no-answer/busy notices are already covered by
-        # the Twilio status feed, so nothing extra is posted from here.
+        # handler below; human/no-answer/busy notices are covered by the status
+        # updates, so nothing extra is posted from here.
         if session:
             session["answered_by"] = ended_reason or session.get("answered_by")
         is_machine_end = bool(ended_reason) and ended_reason.lower() in _MACHINE_ENDED_REASONS
@@ -1061,21 +1011,6 @@ def _handle_call_ended(payload: dict, call_sid: Optional[str], vapi_call_id: Opt
 
         if session:
             session["call_ended_processed"] = True
-
-        # Number-pool cleanup: release the pooled number as soon as the calling
-        # leg ends. Resolve the real Twilio SID (CA...) because Vapi bypass
-        # webhooks key on the Vapi UUID.
-        try:
-            from services.proxy_pool import proxy_pool
-            twilio_sid = (session or {}).get("call_sid") or call_sid
-            if not str(twilio_sid).startswith("CA"):
-                twilio_sid = _resolve_real_twilio_sid(vapi_call_id, twilio_sid or call_sid)
-            if twilio_sid and str(twilio_sid).startswith("CA"):
-                released = proxy_pool.release_by_sid(str(twilio_sid))
-                if released:
-                    logger.info("[NUMBER_POOL] freed number for ended call %s", twilio_sid)
-        except Exception as release_exc:
-            logger.warning("[NUMBER_POOL] vapi end release failed: %s", release_exc)
 
         return Response("OK")
     except Exception as e:

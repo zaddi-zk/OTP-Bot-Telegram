@@ -5,7 +5,7 @@ Session manager for live-call streaming and websocket broadcasting.
 Core responsibilities:
 - Track active call sessions (call_id / call_sid)
 - Store connected websocket clients for each session
-- Relay media frames from Twilio Media Streams to connected clients
+- Relay media frames from the live-call audio stream to connected clients
 - Manage state transitions and cleanup timers
 """
 import asyncio
@@ -132,7 +132,7 @@ class SessionManager:
             if not s.first_audio_frame_sent:
                 s.first_audio_frame_sent = True
                 logger.info(
-                    "[CALL_MILESTONE] FIRST_AUDIO_FRAME_SENT_TO_TWILIO bytes=%d call_sid=%s sequence=%s",
+                    "[CALL_MILESTONE] FIRST_AUDIO_FRAME_SENT bytes=%d call_sid=%s sequence=%s",
                     len(payload),
                     s.call_sid or call_id,
                     sequence or "unknown",

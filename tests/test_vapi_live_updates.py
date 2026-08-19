@@ -26,19 +26,18 @@ def test_vapi_webhook_sends_live_updates(monkeypatch):
 
     payload = {
         "type": "call.answered",
-        "call": {"id": "call_123", "twilioCallSid": "CA123"},
+        "call": {"id": "call_123"},
         "metadata": {"chat_id": "42"},
     }
     response = vapi_webhooks.handle_vapi_webhook(FakeRequest(payload))
     assert response.status_code == 200
-    # Twilio already reports call status and recordings; the Vapi "Call is
-    # live" notice is a second confirmation that the AI session is running.
+    # The Vapi "Call is live" notice confirms the AI session is running.
     assert any("Call is live" in text for _, text, _ in sent)
 
     payload = {
         "type": "transcript",
         "message": {"role": "customer", "transcript": "My code is 482931"},
-        "call": {"id": "call_123", "twilioCallSid": "CA123"},
+        "call": {"id": "call_123"},
         "metadata": {"chat_id": "42", "code_length": 6},
     }
     response = vapi_webhooks.handle_vapi_webhook(FakeRequest(payload))
@@ -74,67 +73,45 @@ def test_vapi_create_call_does_not_send_webhook_url(monkeypatch):
     assert "webhookUrl" not in captured["json"]
 
 
-def test_bypass_prefers_inline_phone_number_ref(monkeypatch):
+def test_vapi_create_call_uses_sip_phone_number_id(monkeypatch):
     import services.vapi_service as vapi_service
 
     captured = {}
 
     def fake_post(url, headers=None, json=None, timeout=15):
         captured["json"] = json
-        return _fake_bypass_response()
+        return _fake_call_response()
 
     monkeypatch.setattr(vapi_service.requests, "post", fake_post)
     monkeypatch.setattr(vapi_service, "VAPI_API_KEY", "test")
     monkeypatch.setattr(vapi_service, "VAPI_ASSISTANT_ID", "assistant")
     monkeypatch.setattr(vapi_service, "VAPI_PHONE_NUMBER_ID", "phone-123")
 
-    ref = {
-        "twilioPhoneNumber": "+19852848980",
-        "twilioAccountSid": "ACxxxx",
-        "twilioAuthToken": "tok",
-    }
-    result = vapi_service.create_call_bypass(
-        "+15550001111", "Jane", phone_number_ref=ref
-    )
+    vapi_service.create_call("+15550001111", "Jane", phone_number_id="sip-phone-9")
 
-    assert result is not None
-    assert captured["json"]["phoneNumber"] == ref
-    assert "phoneNumberId" not in captured["json"]
+    assert captured["json"]["phoneNumberId"] == "sip-phone-9"
 
 
-def test_bypass_falls_back_to_phone_number_id_when_inline_rejected(monkeypatch):
+def test_vapi_create_call_falls_back_to_sip_phone_number_id(monkeypatch):
     import services.vapi_service as vapi_service
 
-    calls = []
+    captured = {}
 
     def fake_post(url, headers=None, json=None, timeout=15):
-        calls.append(dict(json))
-        if len(calls) == 1:
-            return _fake_bypass_response(status=400, text="phoneNumber rejected")
-        return _fake_bypass_response()
+        captured["json"] = json
+        return _fake_call_response()
 
     monkeypatch.setattr(vapi_service.requests, "post", fake_post)
     monkeypatch.setattr(vapi_service, "VAPI_API_KEY", "test")
     monkeypatch.setattr(vapi_service, "VAPI_ASSISTANT_ID", "assistant")
     monkeypatch.setattr(vapi_service, "VAPI_PHONE_NUMBER_ID", "phone-123")
 
-    ref = {
-        "twilioPhoneNumber": "+19852848980",
-        "twilioAccountSid": "ACxxxx",
-        "twilioAuthToken": "tok",
-    }
-    result = vapi_service.create_call_bypass(
-        "+15550001111", "Jane", phone_number_ref=ref
-    )
+    vapi_service.create_call("+15550001111", "Jane")
 
-    assert result is not None
-    assert len(calls) == 2
-    assert "phoneNumber" in calls[0]
-    assert calls[1]["phoneNumberId"] == "phone-123"
-    assert "phoneNumber" not in calls[1]
+    assert captured["json"]["phoneNumberId"] == "phone-123"
 
 
-def _fake_bypass_response(status=201, text="ok"):
+def _fake_call_response(status=201, text="ok"):
     class _Resp:
         def __init__(self):
             self.status_code = status
@@ -144,9 +121,7 @@ def _fake_bypass_response(status=201, text="ok"):
             if self.status_code == 201:
                 return {
                     "id": "vapi_call_123",
-                    "phoneCallProviderDetails": {
-                        "twiml": "<Response><Connect><Stream url='wss://x'/></Connect></Response>"
-                    },
+                    "status": "queued",
                 }
             return {"message": self.text, "statusCode": self.status_code}
 

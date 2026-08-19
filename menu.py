@@ -28,7 +28,7 @@ from core.auth import (
 from core.user_manager import is_full_premium
 from core.files import read_user_file, user_conf_path
 from premium import get_unused_premium_keys, get_key_stats
-from services.twilio_service import get_call_status
+from services.call_service import get_call_status
 
 logger = logging.getLogger("OTP-Bot.menu")
 

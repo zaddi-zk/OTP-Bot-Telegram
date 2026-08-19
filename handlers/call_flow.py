@@ -34,7 +34,7 @@ except Exception:
     ConversationHandler = None
     PTB_AVAILABLE = False
 
-from config import TWILIO_PHONE_NUMBER, NGROK_URL, USE_AI_FLOW, build_public_base_url, DEFAULT_VOICE_ID
+from config import NGROK_URL, USE_AI_FLOW, build_public_base_url, DEFAULT_VOICE_ID
 from urllib.parse import quote_plus
 from core.files import (
     read_user_file, write_user_file, set_user_state, get_user_state,
@@ -44,8 +44,9 @@ from core.auth import (
     check_subscription, is_privileged_user, decrement_free_call,
     get_free_calls
 )
-from services.twilio_service import make_call, make_call_and_store_async, store_call_metadata, get_twilio_client
-from services.proxy_pool import AllLinesBusyError
+from services.call_service import (
+    make_call, make_call_and_store_async, store_call_metadata, CallerIdRequiredError,
+)
 
 # ======================================================================
 # SCENARIOS & URGENCY (drives PromptBuilder Stage 2 reason + tone)
@@ -190,7 +191,7 @@ def select_normal_urgency(call, user_id: str, chat_id: int, message_id: int):
     name = read_user_file(user_id, "Name.txt", "Customer")
     _telebot_instance.send_message(
         chat_id,
-        f"💠 Step 5/11: Caller ID (Optional)\n\n👤 Name: {name}\n⚡ Urgency: {URGENCIES[urgency_key]}\n\nEnter caller ID number:\n— Example: +1234567890\n— Or send /skip to use the default Twilio number",
+        f"💠 Step 5/11: Caller ID (required)\n\n👤 Name: {name}\n⚡ Urgency: {URGENCIES[urgency_key]}\n\nEnter caller ID number:\n— Example: +1234567890",
     )
 
 
@@ -272,25 +273,23 @@ def handle_normal_step(chat_id: int, user_id: str, state: str, text: str):
         write_user_file(user_id, "urgency.txt", key)
         set_user_state(user_id, "normal_call_step_4_callerid")
         name = read_user_file(user_id, "Name.txt", "Customer")
-        _telebot_instance.send_message(chat_id, f"💠 Step 5/11: Caller ID (Optional)\n\n👤 Name: {name}\n⚡ Urgency: {URGENCIES[key]}\n\nEnter caller ID number:\n— Example: +1234567890\n— Or send /skip to use the default Twilio number")
+        _telebot_instance.send_message(chat_id, f"💠 Step 5/11: Caller ID (required)\n\n👤 Name: {name}\n⚡ Urgency: {URGENCIES[key]}\n\nEnter caller ID number:\n— Example: +1234567890")
         return True
 
     if state == "normal_call_step_4_callerid":
         caller_input = text.strip()
-        # accept leading slash commands like '/skip' by normalizing
-        normalized = caller_input.lstrip('/').strip()
-        if normalized.lower() in ("skip", ""):
-            caller = ""
-            _telebot_instance.send_message(chat_id, f"ℹ️ Caller ID set to default: {TWILIO_PHONE_NUMBER}")
-        else:
-            caller = format_phone(caller_input)
-            if not validate_caller_id(caller):
-                _telebot_instance.send_message(chat_id, "❌ Invalid caller ID format. Send +1234567890 or /skip")
-                return False
+        caller = format_phone(caller_input.lstrip('/').strip())
+        if not caller or not validate_caller_id(caller):
+            _telebot_instance.send_message(
+                chat_id,
+                "❌ Caller ID is required for every call.\n"
+                "Send a real caller ID in E.164 format, e.g. `+1234567890`.",
+            )
+            return False
         write_user_file(user_id, "Caller ID.txt", caller)
         set_user_state(user_id, "normal_call_step_5_fromname")
         name = read_user_file(user_id, "Name.txt", "Customer")
-        _telebot_instance.send_message(chat_id, f"💠 Step 6/11: Display Name\n\n👤 Name: {name}\n📞 Caller ID: {caller or TWILIO_PHONE_NUMBER}\n\nEnter display name (shown on caller ID):\n— Example: Support Team")
+        _telebot_instance.send_message(chat_id, f"💠 Step 6/11: Display Name\n\n👤 Name: {name}\n📞 Caller ID: {caller}\n\nEnter display name (shown on caller ID):\n— Example: Support Team")
         return True
 
     if state == "normal_call_step_5_fromname":
@@ -635,44 +634,36 @@ async def normal_urgency(update: Update, context: ContextTypes.DEFAULT_TYPE):
     set_user_state(user_id, "normal_call_step_4_callerid")
     name = read_user_file(user_id, "Name.txt", "Customer")
     await msg.reply_text(
-        f"💠 Step 5/11: Caller ID (Optional)\n\n"
+        f"💠 Step 5/11: Caller ID\n\n"
         f"👤 Name: *{name}*\n"
         f"⚡ Urgency: *{URGENCIES[key]}*\n"
-        f"Enter caller ID number:\n"
-        f"— Example: +1234567890\n"
-        f"— Or send /skip to use the default Twilio number",
+        f"Enter the caller ID number to display (required):\n"
+        f"— Example: +1234567890",
         parse_mode="Markdown"
     )
     return NORMAL_CALLER_ID
 
 
 async def normal_caller_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Step 5/11: Caller ID, ask for display name."""
+    """Step 5/11: Caller ID (mandatory), ask for display name."""
     user_id = str(update.effective_user.id)
     text = update.message.text.strip()
-    if text.lower() == '/skip' or not text:
-        caller_id = ""
+    caller_id = format_phone(text.lstrip('/').strip())
+    if not caller_id or not validate_caller_id(caller_id):
         await update.message.reply_text(
-            f"ℹ️ Caller ID set to default: `{TWILIO_PHONE_NUMBER}`",
+            "❌ Caller ID is required for every call.\n"
+            "Send a real caller ID in E.164 format:\n"
+            "`+1234567890`",
             parse_mode="Markdown"
         )
-    else:
-        caller_id = format_phone(text)
-        if not validate_caller_id(caller_id):
-            await update.message.reply_text(
-                "❌ Invalid caller ID format. Use E.164 format:\n"
-                "`+1234567890`\n"
-                "Or send /skip to use default.",
-                parse_mode="Markdown"
-            )
-            return NORMAL_CALLER_ID
+        return NORMAL_CALLER_ID
     write_user_file(user_id, "Caller ID.txt", caller_id)
     set_user_state(user_id, "normal_call_step_5_fromname")
     name = read_user_file(user_id, "Name.txt", "Customer")
     await update.message.reply_text(
         f"💠 Step 6/11: Display Name\n\n"
         f"👤 Name: *{name}*\n"
-        f"📞 Caller ID: `{caller_id or TWILIO_PHONE_NUMBER}`\n"
+        f"📞 Caller ID: `{caller_id}`\n"
         f"Enter display name (shown on caller ID):\n"
         f"— Example: Support Team",
         parse_mode="Markdown"
@@ -895,19 +886,24 @@ async def initiate_call_from_query(query, user_id: str):
     company = read_user_file(user_id, "Company Name.txt", "your bank")
     digits = read_user_file(user_id, "Digits.txt", "6")
     phone = read_user_file(user_id, "phonenum.txt", "")
-    caller_id = read_user_file(user_id, "Caller ID.txt", TWILIO_PHONE_NUMBER)
+    caller_id = read_user_file(user_id, "Caller ID.txt", "")
 
     try:
+        if not caller_id or not validate_caller_id(caller_id):
+            await query.edit_message_text(
+                "❌ Caller ID is required. Set a caller ID before starting the call."
+            )
+            return
         import asyncio
         future = make_call_and_store_async(
             user_id=user_id,
             to=phone,
-            from_number=TWILIO_PHONE_NUMBER,
+            from_number=caller_id,
             caller_id=caller_id,
             chat_id=chat_id,
         )
         if not future:
-            await query.edit_message_text("❌ Call failed to dispatch. Check Twilio configuration.")
+            await query.edit_message_text("❌ Call failed to dispatch.")
             return
         sid = await asyncio.wrap_future(future)
         if sid:
@@ -948,9 +944,9 @@ async def initiate_call_from_query(query, user_id: str):
                 parse_mode="Markdown"
             )
         else:
-            await query.edit_message_text("❌ Call failed to initiate. Check Twilio configuration.")
-    except AllLinesBusyError:
-        await query.edit_message_text("⚠️ <b>ALL LINES BUSY</b>\n\nAll numbers are currently active on other calls. Please try again in a moment.", parse_mode="HTML")
+            await query.edit_message_text("❌ Call failed to initiate. Check Asterisk/Vapi configuration.")
+    except CallerIdRequiredError as e:
+        await query.edit_message_text(f"❌ Caller ID required.\n\n{str(e)}")
     except Exception as e:
         logger.error(f"Call initiation error: {e}", exc_info=True)
         await query.edit_message_text(f"❌ Error: {str(e)}")

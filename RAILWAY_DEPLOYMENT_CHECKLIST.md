@@ -33,10 +33,12 @@ Navigate to **Project → Settings → Variables** and add:
 - [ ] `BOT_TOKEN` = Your token from @BotFather
 - [ ] `USE_WEBHOOK` = `false` (polling is more reliable on Railway)
 
-#### Twilio Integration (Required for calls)
-- [ ] `TWILIO_ACCOUNT_SID` = Your SID (starts with AC)
-- [ ] `TWILIO_AUTH_TOKEN` = Your auth token (64 chars)
-- [ ] `TWILIO_PHONE_NUMBER` = Your Twilio number (+1...)
+#### Vapi Integration (Required for calls)
+- [ ] `VAPI_API_KEY` = Your key from the Vapi dashboard
+- [ ] `VAPI_SIP_PHONE_NUMBER_ID` = Your Vapi SIP phone number ID
+- [ ] `USE_ASTERISK` = `true`
+- [ ] `ASTERISK_TRUNK` = Your Asterisk trunk name
+- [ ] `ASTERISK_CLI_DIR` = `conf/asterisk_cli`
 - [ ] `NGROK_URL` = Your webhook URL (see below)
 
 #### Webhook URL Setup
@@ -47,12 +49,12 @@ Choose ONE:
 - [ ] Run: `ngrok http 5000`
 - [ ] Copy HTTPS URL: `https://abc123.ngrok-free.dev`
 - [ ] Set `NGROK_URL` = this URL
-- [ ] In Twilio console, set webhooks to `{NGROK_URL}/voice` and `{NGROK_URL}/twilio/status`
+- [ ] In the Vapi dashboard, set the webhook to `{NGROK_URL}/vapi/webhook`
 
 **Option B: Use Railway domain (recommended)**
 - [ ] Get your Railway domain from deployment URL
 - [ ] Set `NGROK_URL` = `https://your-otp-bot-production.up.railway.app`
-- [ ] In Twilio console, set webhooks to same domain + endpoints
+- [ ] In the Vapi dashboard, set the webhook to same domain + endpoint
 
 #### Telegram Channels (Optional but recommended)
 - [ ] `MAIN_CHANNEL_URL` = Your channel URL
@@ -113,9 +115,9 @@ Choose ONE:
 - [ ] Logs show message processing
 - [ ] Can execute bot commands
 
-**Twilio Calls** (if enabled)
+**Vapi Calls** (if enabled)
 - [ ] Initiate a test call from bot
-- [ ] Twilio receives webhook
+- [ ] Vapi sends webhook callbacks
 - [ ] Call connects and plays audio
 - [ ] Call recording captured
 - [ ] Logs show call events
@@ -152,14 +154,14 @@ Choose ONE:
 |-------|----------|
 | "Cannot bind to port 5000" | Check PORT variable, Railway will assign one |
 | "BOT_TOKEN not configured" | Verify BOT_TOKEN is set in Variables |
-| "Twilio auth failed" | Verify TWILIO_ACCOUNT_SID and AUTH_TOKEN |
+| "Vapi auth failed" | Verify VAPI_API_KEY is set correctly |
 | App crashes on startup | Check logs for exact error, run preflight locally |
 
 ### Features Not Working
 | Feature | Check |
 |---------|-------|
 | Telegram bot silent | BOT_TOKEN correct, logs show "Telegram polling active" |
-| Twilio calls fail | NGROK_URL reachable, Twilio webhooks configured |
+| Vapi calls fail | NGROK_URL reachable, Vapi webhook configured |
 | Voice not working | ELEVENLABS_API_KEY valid, quota available |
 | Live Listen down | FASTAPI_PORT set, live_listen/server.py error-free |
 
@@ -173,13 +175,13 @@ Choose ONE:
 - [ ] Logs show normal operation (no repeated errors)
 
 ### Weekly Checks
-- [ ] Test each major feature (Telegram, Twilio, Voice)
+- [ ] Test each major feature (Telegram, Vapi, Voice)
 - [ ] Check CPU/Memory usage is reasonable
 - [ ] Verify scheduled tasks run on time
 - [ ] Check error rate in logs
 
 ### Monthly Checks
-- [ ] Review API quotas (ElevenLabs, Twilio, etc.)
+- [ ] Review API quotas (ElevenLabs, Vapi, etc.)
 - [ ] Check for any deprecation warnings
 - [ ] Verify all features still working
 - [ ] Update dependencies if needed
@@ -221,7 +223,7 @@ Railway will:
 
 ✅ You're done when:
 - Telegram bot responds to `/start` message
-- Twilio calls are made successfully
+- Vapi calls are made successfully
 - Voice synthesis works
 - Scheduled calls execute
 - LiveListen monitors calls

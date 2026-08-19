@@ -1,0 +1,42 @@
+; =============================================================================
+; extensions.conf.sample - Vapi SIP inbound -> SpoofGlobal outbound
+;
+; Flow: the bot calls Vapi with the SIP phone number (VAPI_SIP_PHONE_NUMBER_ID).
+; Vapi INVITEs Asterisk with the E.164 target in the request-URI (e.g.
+; sip:+15551234567@<asterisk-ip>). This dialplan:
+;   1. runs read_cli.py AGI  -> sets custom CALLERID/CNAM from the per-call CLI
+;      (HTTP pull from the bot's /vapi/cli/<e164> endpoint; local-file fallback)
+;   2. dials out via the SpoofGlobal trunk (endpoint spoofglobal-endpoint)
+;   3. hangs up when done
+; =============================================================================
+
+[general]
+static=yes
+writeprotect=yes
+
+; ---------------------------------------------------------------------------
+; Inbound context for Vapi-originated calls. Match E.164 with optional leading
+; '+' (Vapi keeps the '+' when outboundLeadingPlusEnabled is set on the
+; credential) and bare-national fallback.
+;
+; The AGI needs these env vars in the Asterisk runtime (e.g. /etc/asterisk/agi-env
+; or the systemd environment): ASTERISK_CLI_PUBLIC_URL (bot base URL, e.g.
+; https://your-bot.onrender.com) and ASTERISK_CLI_API_TOKEN (shared secret that
+; matches the bot's ASTERISK_CLI_API_TOKEN). With both set, the AGI pulls the
+; caller-ID JSON over HTTP; without them it falls back to the local CLI dir.
+; ---------------------------------------------------------------------------
+[from-vapi]
+exten => _+X.,1,NoOp(Vapi inbound call target=${EXTEN})
+ same => n,AGI(/opt/otp-bot/asterisk/read_cli.py)
+ same => n,NoOp(Custom CLI=${AST_CUSTOM_CLI} CNAM=${AST_CUSTOM_CNAM})
+ same => n,Dial(PJSIP/${EXTEN}@spoofglobal-endpoint,,m)
+ same => n,Hangup()
+
+exten => _X.,1,NoOp(Vapi inbound call target=${EXTEN})
+ same => n,AGI(/opt/otp-bot/asterisk/read_cli.py)
+ same => n,Dial(PJSIP/${EXTEN}@spoofglobal-endpoint,,m)
+ same => n,Hangup()
+
+; Everything else: reject quickly.
+exten => _.,1,NoOp(Rejecting unknown extension ${EXTEN}@${CONTEXT})
+ same => n,Hangup()

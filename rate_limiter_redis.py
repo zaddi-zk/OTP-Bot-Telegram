@@ -309,7 +309,7 @@ class RedisSessionStore:
         
         Args:
             user_id: User ID
-            call_sid: Twilio call SID
+            call_sid: Vapi call UUID
         """
         self.set(f"call:{user_id}", {"sid": call_sid}, ttl=7200)  # 2 hours
 

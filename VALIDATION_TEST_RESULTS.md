@@ -44,7 +44,7 @@
 ✅ OLLAMA_MODEL: llama3.1:8b
 ✅ DEFAULT_VOICE_ID: EXAVITQu4vr4xnSDxMaL
 ✅ VOUCH_CHANNEL_ID: -1004364877298
-✅ TWILIO_PHONE_NUMBER: +18559171761
+✅ VAPI_SIP_PHONE_NUMBER_ID: <vapi-sip-phone-number-id>
 ```
 
 **Status**: ✅ PASS - All 6 configuration checks passed
@@ -224,7 +224,7 @@ call_type: normal
 
 **Checks**:
 ```
-✅ @app.websocket('/twilio/media') endpoint defined
+✅ @app.websocket('/media') endpoint defined
 ✅ Passes emotion= parameter to LLM
 ✅ Passes call_type= parameter to LLM
 ✅ Calls extract_otp() with code_length

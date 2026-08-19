@@ -228,11 +228,11 @@ def test_real_vapi_camelcase_events_stamp_connected(monkeypatch):
     monkeypatch.setattr(vw, "_send_live_status", lambda c, t, **k: None)
 
     for event in ("call.inProgress", "call.assistantStarted"):
-        session = {"call_sid": "sid_" + event}
-        store["sid_" + event] = session
+        session = {"call_sid": "vapi_" + event}
+        store["vapi_" + event] = session
         payload = {
             "type": event,
-            "call": {"id": "vapi_" + event, "twilioCallSid": "sid_" + event},
+            "call": {"id": "vapi_" + event},
             "metadata": {"chat_id": "42"},
         }
         vw.handle_vapi_webhook(mock.Mock(get_json=lambda *a, **k: payload))
@@ -374,7 +374,7 @@ def test_human_call_never_hangs_up_and_runs_to_otp(monkeypatch):
     vw.handle_vapi_webhook(mock.Mock(
         get_json=lambda *a, **k: {
             "type": "end-of-call-report",
-            "call": {"id": "vapi_human", "twilioCallSid": sid},
+            "call": {"id": "vapi_human"},
             "metadata": {"chat_id": "42"},
         }
     ))
@@ -433,17 +433,17 @@ def test_live_notify_sends_with_reply_markup(monkeypatch):
         {"metadata": {"chat_id": "42"}},
         "CA_REAL",
         "vapi_x",
-        {"twilioCallSid": "CA_REAL"},
+        {},
     )
     assert sent.get("text") == "🔵 Call is live. Call in progress."
     assert sent.get("markup") is not None
 
 
-def test_live_notify_uses_real_sid_for_hangup_button(monkeypatch):
-    """When call_sid is a Vapi UUID but the session holds the real CA... SID,
-    the hangup button must carry the real Twilio SID."""
+def test_live_notify_uses_vapi_call_uuid_for_hangup_button(monkeypatch):
+    """The Vapi call UUID (the only identifier Vapi uses) must be carried by
+    the hangup button so the force-hangup callback ends the Vapi call."""
     import bot as bot_mod
-    store = {"vapi_uuid": {"call_sid": "CA_LEGIT", "vapi_call_id": "vapi_uuid"}}
+    store = {"vapi_uuid": {"call_sid": "vapi_uuid", "vapi_call_id": "vapi_uuid"}}
     monkeypatch.setattr(bot_mod, "get_call_session", store.get)
     monkeypatch.setattr(vw, "_resolve_chat_id", lambda *a, **k: 1)
     captured = {}
@@ -460,4 +460,4 @@ def test_live_notify_uses_real_sid_for_hangup_button(monkeypatch):
         {},
     )
     data = [btn.callback_data for row in captured["markup"].keyboard for btn in row]
-    assert "force_hangup_CA_LEGIT" in data
+    assert "force_hangup_vapi_uuid" in data

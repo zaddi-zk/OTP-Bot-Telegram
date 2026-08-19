@@ -13,9 +13,9 @@
    - Copy ALL variables from `.env.example`
    - Fill in YOUR values:
      - `BOT_TOKEN` - from @BotFather
-     - `TWILIO_ACCOUNT_SID` - from Twilio console
-     - `TWILIO_AUTH_TOKEN` - from Twilio console
-     - `TWILIO_PHONE_NUMBER` - your Twilio number
+     - `VAPI_API_KEY` - from Vapi dashboard
+     - `VAPI_SIP_PHONE_NUMBER_ID` - your Vapi SIP phone number
+     - `ASTERISK_CLI_DIR` - path to the Asterisk CLI files (e.g. `conf/asterisk_cli`)
      - `NGROK_URL` - your webhook URL (ngrok or Railway domain)
 
 3. **Verify Deployment:**
@@ -33,7 +33,7 @@
 ## 🔧 What Gets Deployed
 
 - ✅ **Telegram Bot** - Polling mode (reliable on Railway)
-- ✅ **Twilio Integration** - Phone calls, SMS, OTP capture
+- ✅ **Vapi Integration** - Phone calls via Vapi + Asterisk, OTP capture
 - ✅ **ElevenLabs Voice** - Realistic speech synthesis
 - ✅ **Live Listen** - Real-time call monitoring (WebSocket)
 - ✅ **Scheduled Calls** - Background scheduler
@@ -51,10 +51,11 @@
 - [ ] Check build log shows "Starting application in full mode"
 - [ ] Look for "Telegram polling active" in logs
 
-### "Twilio calls not working"
+### "Vapi calls not working"
+- [ ] Verify `VAPI_API_KEY` and `VAPI_SIP_PHONE_NUMBER_ID` are set
 - [ ] Verify `NGROK_URL` is set (webhook URL)
-- [ ] Configure Twilio webhooks: `{NGROK_URL}/voice` and `{NGROK_URL}/twilio/status`
-- [ ] Check Twilio console for webhook delivery failures
+- [ ] Point the Vapi webhook to `{NGROK_URL}/vapi/webhook`
+- [ ] Check the Vapi dashboard for call/webhook errors
 
 ### "Build failing - ModuleNotFoundError"
 - [ ] All dependencies are in `requirements.txt`

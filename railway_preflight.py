@@ -11,12 +11,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import (
-    BOT_TOKEN, ACCOUNT_SID, AUTH_TOKEN, TWILIO_PHONE_NUMBER,
+    BOT_TOKEN, VAPI_API_KEY, VAPI_SIP_PHONE_NUMBER_ID, ASTERISK_TRUNK, ASTERISK_CLI_DIR,
     NGROK_URL, MAIN_CHANNEL_ID, BACKUP_CHANNEL_ID, OWNER_ID,
     LIVE_LISTEN_SECRET
 )
-
-TWILIO_ACCOUNT_SID = ACCOUNT_SID
 
 def check_critical_vars():
     """Check that critical environment variables are set."""
@@ -26,9 +24,10 @@ def check_critical_vars():
     
     checks = {
         "BOT_TOKEN": BOT_TOKEN,
-        "TWILIO_ACCOUNT_SID": TWILIO_ACCOUNT_SID,
-        "TWILIO_AUTH_TOKEN": AUTH_TOKEN,
-        "TWILIO_PHONE_NUMBER": TWILIO_PHONE_NUMBER,
+        "VAPI_API_KEY": VAPI_API_KEY,
+        "VAPI_SIP_PHONE_NUMBER_ID": VAPI_SIP_PHONE_NUMBER_ID,
+        "ASTERISK_TRUNK": ASTERISK_TRUNK,
+        "ASTERISK_CLI_DIR": ASTERISK_CLI_DIR,
         "NGROK_URL": NGROK_URL,
     }
     
@@ -79,10 +78,11 @@ def check_critical_vars():
         print("="*70)
         print("\n⚠️  Set these in Railway → Settings → Variables:")
         print("  1. BOT_TOKEN")
-        print("  2. TWILIO_ACCOUNT_SID")
-        print("  3. TWILIO_AUTH_TOKEN")
-        print("  4. TWILIO_PHONE_NUMBER")
-        print("  5. NGROK_URL")
+        print("  2. VAPI_API_KEY")
+        print("  3. VAPI_SIP_PHONE_NUMBER_ID")
+        print("  4. ASTERISK_TRUNK")
+        print("  5. ASTERISK_CLI_DIR")
+        print("  6. NGROK_URL")
         print("\n")
         # Allow deployments to continue unless explicit strict mode is enabled
         strict = os.getenv("RAILWAY_STRICT", "0") in ("1", "true", "yes")

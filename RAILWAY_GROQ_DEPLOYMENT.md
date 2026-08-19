@@ -6,7 +6,7 @@ This guide walks through deploying the OTP Bot with:
 - **ElevenLabs** for human-like voice synthesis
 - **PostgreSQL** for user persistence (Railway)
 - **Telegram Bot** for user interactions
-- **Twilio** for phone call handling
+- **Vapi** for phone call handling (via Asterisk + SpoofGlobal)
 
 ---
 
@@ -55,11 +55,13 @@ BACKUP_CHANNEL_ID=@backup_channel
 BACKUP_CHANNEL_URL=https://t.me/backup_channel
 ```
 
-### **Twilio**
+### **Vapi & Asterisk**
 ```
-TWILIO_ACCOUNT_SID=<your-account-sid>
-TWILIO_AUTH_TOKEN=<your-auth-token>
-TWILIO_PHONE_NUMBER=+1234567890
+VAPI_API_KEY=<your-vapi-api-key>
+VAPI_SIP_PHONE_NUMBER_ID=<your-vapi-sip-phone-number-id>
+USE_ASTERISK=true
+ASTERISK_TRUNK=<asterisk-trunk-name>
+ASTERISK_CLI_DIR=conf/asterisk_cli
 NGROK_URL=https://your-ngrok-url.ngrok-free.dev
 ```
 
@@ -109,7 +111,7 @@ python scripts/test_groq_normal_call.py
 ### Production Test (After Deployment)
 1. Start the Telegram bot
 2. Click "Start Call" → Normal Call
-3. Bot initiates call to your phone via Twilio
+3. Bot initiates call to your phone via Vapi
 4. Groq generates response → ElevenLabs speaks it
 5. Whisper transcribes your response
 6. Loop continues until OTP is verified
@@ -123,9 +125,9 @@ python scripts/test_groq_normal_call.py
 | `GROQ_API_KEY` | ✅ | https://console.groq.com | (none) |
 | `ELEVENLABS_API_KEY` | ✅ | https://elevenlabs.io | (none) |
 | `BOT_TOKEN` | ✅ | @BotFather on Telegram | (none) |
-| `TWILIO_ACCOUNT_SID` | ✅ | https://www.twilio.com | (none) |
-| `TWILIO_AUTH_TOKEN` | ✅ | https://www.twilio.com | (none) |
-| `TWILIO_PHONE_NUMBER` | ✅ | Twilio Console | (none) |
+| `VAPI_API_KEY` | ✅ | https://dashboard.vapi.ai | (none) |
+| `VAPI_SIP_PHONE_NUMBER_ID` | ✅ | Vapi Dashboard | (none) |
+| `ASTERISK_CLI_DIR` | ⚠️ | Config | `conf/asterisk_cli` |
 | `DATABASE_URL` | ✅ | Railway PostgreSQL | (none) |
 | `NGROK_URL` | ✅ | https://ngrok.com | (none) |
 | `DEFAULT_ELEVENLABS_VOICE_ID` | ⚠️ | ElevenLabs Console | "21m00Tcm4TlvDq8ikWAM" |
@@ -154,10 +156,10 @@ python scripts/test_groq_normal_call.py
 
 **Solution**: Add PostgreSQL from Railway marketplace.
 
-### Twilio Calls Not Receiving
+### Vapi Calls Not Receiving
 - Webhook not registering
 
-**Solution**: Check `NGROK_URL` is public and set in Twilio console.
+**Solution**: Check `NGROK_URL` is public and set in the Vapi webhook URL.
 
 ---
 
@@ -171,7 +173,7 @@ python scripts/test_groq_normal_call.py
 ✅ Never breaks character  
 ✅ PostgreSQL user persistence  
 ✅ Telegram bot integration  
-✅ Twilio media stream integration  
+✅ Vapi live-call media stream integration  
 ✅ Whisper transcription  
 
 ---
@@ -192,7 +194,7 @@ python scripts/test_groq_normal_call.py
 | Railway (bot + DB) | $10-20 |
 | Groq API | Free tier (10k tokens/min) or $0.50-1/mo |
 | ElevenLabs | ~$5-10 (1k characters/mo included) |
-| Twilio | $1-3 (depends on call volume) |
+| Vapi (SIP trunk + calls) | $2-8 (depends on call volume) |
 | NGROK | Free tier or $7-13 |
 | **TOTAL** | **$25-50/month** |
 

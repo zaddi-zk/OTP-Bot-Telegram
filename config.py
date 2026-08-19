@@ -45,35 +45,7 @@ def _get(key: str, default=None) -> Any:
 # Telegram
 BOT_TOKEN = _get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 
-# Twilio
-ACCOUNT_SID = _get("TWILIO_ACCOUNT_SID", "YOUR_TWILIO_SID_HERE")
-TWILIO_ACCOUNT_SID = ACCOUNT_SID
-AUTH_TOKEN = _get("TWILIO_AUTH_TOKEN", "YOUR_TWILIO_AUTH_TOKEN_HERE")
-TWILIO_AUTH_TOKEN = AUTH_TOKEN
-TWILIO_PHONE_NUMBER = _get("TWILIO_PHONE_NUMBER", "+1234567890")
-# Separate outbound caller ID: toll-free numbers (+1855, +1888, +1800) are often
-# blocked by carriers for outbound calls. Set OUTBOUND_CALLER_ID to a local
-# (non-toll-free) Twilio number to bypass carrier spam filters. Falls back to
-# TWILIO_PHONE_NUMBER if not set.
-OUTBOUND_CALLER_ID = _get("OUTBOUND_CALLER_ID", "").strip() or TWILIO_PHONE_NUMBER
 NGROK_URL = _get("NGROK_URL", "https://your-ngrok-url.ngrok-free.dev")
-
-# =============================================================================
-# Twilio Proxy number pool (multi-number concurrency)
-# =============================================================================
-# The Proxy Service SID is the authoritative pool registry. PROXY_POOL_NUMBERS
-# is the comma-separated E.164 fallback list used when the Proxy Service is not
-# reachable/configured.
-PROXY_SERVICE_SID = _get("PROXY_SERVICE_SID", "").strip()
-PROXY_POOL_NUMBERS = _get("PROXY_POOL_NUMBERS", "")
-PROXY_POOL = [n.strip() for n in PROXY_POOL_NUMBERS.split(",") if n.strip()]
-_pool_configured = bool(PROXY_SERVICE_SID or PROXY_POOL)
-PROXY_POOL_ENABLED = _get(
-    "PROXY_POOL_ENABLED", "true" if _pool_configured else "false"
-).strip().lower() in ("true", "1", "yes", "on")
-PROXY_LEASE_TTL_SECONDS = int(_get("PROXY_LEASE_TTL_SECONDS", "3600"))
-PROXY_QUEUE_TTL_SECONDS = int(_get("PROXY_QUEUE_TTL_SECONDS", "120"))
-NGROK_TOKEN = _get("NGROK_TOKEN", "")
 
 # Channels
 MAIN_CHANNEL_URL = _get("MAIN_CHANNEL_URL", "https://t.me/your_main_channel")
@@ -82,6 +54,7 @@ VOUCH_CHANNEL_URL = _get("VOUCH_CHANNEL_URL", "https://t.me/your_vouch_channel")
 MAIN_CHANNEL_ID = _get("MAIN_CHANNEL_ID", "")
 BACKUP_CHANNEL_ID = _get("BACKUP_CHANNEL_ID", "")
 VOUCH_CHANNEL_ID = _get("VOUCH_CHANNEL_ID", "-1004364877298")
+NGROK_TOKEN = _get("NGROK_TOKEN", "")
 
 # Admins
 OWNER_ID = _get("OWNER_ID")
@@ -138,9 +111,6 @@ RATE_LIMIT_BAN_ESCALATION_FACTOR = float(_get("RATE_LIMIT_BAN_ESCALATION_FACTOR"
 FLASK_HOST = _get("FLASK_HOST", "0.0.0.0")
 FLASK_PORT = int(_get("FLASK_PORT", 5000))
 DEBUG = _get("DEBUG", "false").lower() in ("true", "1", "yes")
-
-# Twilio validation override (default: disabled for development)
-DISABLE_TWILIO_VALIDATION = _get("DISABLE_TWILIO_VALIDATION", "false").lower() in ("true", "1", "yes")
 
 # Disable DummyBot fallback
 DISABLE_DUMMY_BOT = _get("DISABLE_DUMMY_BOT", "false").lower() in ("true", "1", "yes")
@@ -214,11 +184,13 @@ def build_public_base_url() -> str:
     """Return one canonical public base URL for webhooks and media stream endpoints."""
     candidates = [
         ("PUBLIC_URL (os.environ)", os.getenv("PUBLIC_URL")),
+        ("RENDER_EXTERNAL_URL (os.environ)", os.getenv("RENDER_EXTERNAL_URL")),
         ("BASE_URL (os.environ)", os.getenv("BASE_URL")),
         ("WEBHOOK_URL (os.environ)", os.getenv("WEBHOOK_URL")),
         ("NGROK_URL (os.environ)", os.getenv("NGROK_URL")),
         ("LIVE_LISTEN_URL (os.environ)", os.getenv("LIVE_LISTEN_URL")),
         ("_get PUBLIC_URL", _get("PUBLIC_URL", "")),
+        ("_get RENDER_EXTERNAL_URL", _get("RENDER_EXTERNAL_URL", "")),
         ("_get BASE_URL", _get("BASE_URL", "")),
         ("_get WEBHOOK_URL", _get("WEBHOOK_URL", "")),
         ("_get NGROK_URL", _get("NGROK_URL", "")),
@@ -243,18 +215,6 @@ def build_public_base_url() -> str:
     return ""
 
 
-def is_twilio_configured() -> bool:
-    """Check if Twilio credentials are properly set."""
-    if not ACCOUNT_SID or "YOUR_" in ACCOUNT_SID:
-        return False
-    if not AUTH_TOKEN or "YOUR_" in AUTH_TOKEN:
-        return False
-    if not TWILIO_PHONE_NUMBER or "1234567890" in TWILIO_PHONE_NUMBER:
-        return False
-    if not NGROK_URL or "your-ngrok-url" in NGROK_URL:
-        return False
-    return NGROK_URL.startswith("http")
-
 def is_privileged_user(user_id: str) -> bool:
     uid = int(user_id)
     if OWNER_ID is not None and uid == OWNER_ID:
@@ -264,8 +224,8 @@ def is_privileged_user(user_id: str) -> bool:
     if uid in DEVELOPER_IDS:
         return True
     return False
-# SMS provider settings
-SMS_PROVIDER = _get("SMS_PROVIDER", "twilio")  # 'twilio' or 'generic'
+# SMS provider settings (generic HTTP API gateway)
+SMS_PROVIDER = _get("SMS_PROVIDER", "generic")  # 'generic'
 SMS_API_URL = _get("SMS_API_URL", "")
 SMS_API_KEY = _get("SMS_API_KEY", "")
 
@@ -308,14 +268,31 @@ VAPI_MODEL_PROVIDER = _get("VAPI_MODEL_PROVIDER", "groq")
 VAPI_MODEL_NAME = _get("VAPI_MODEL_NAME", "llama-3.1-8b-instant")
 
 # =============================================================================
-# ZOIPER / SIP INBOUND (receive calls on your own number via SIP)
+# ASTERISK OUTBOUND (Vapi SIP -> Asterisk -> SpoofGlobal trunk)
 # =============================================================================
-# Owned Twilio numbers that should ring a registered SIP endpoint (e.g. Zoiper)
-# are routed through a TwiML <Dial><Sip>. This is the target SIP URI.
-# NOTE: must include the registered username (e.g. zaddi008@domain) — a bare
-# domain gets an instant 404/failed SIP leg because Twilio can't route it to a
-# registered AoR. Dialing the username routes that account's registered device.
-ZOIPER_SIP_URL = _get("ZOIPER_SIP_URL", "sip:zaddi008@myzoiper008.sip.twilio.com")
+# All outbound dialing is routed through Asterisk: Vapi places the call using
+# the SIP phone number resource (VAPI_SIP_PHONE_NUMBER_ID), which INVITEs
+# Asterisk; Asterisk looks up the per-user caller ID from a JSON file keyed by
+# E.164 and dials the target out through the SpoofGlobal trunk with that
+# custom CLI. The caller ID is always operator-provided (no defaults/pool).
+USE_ASTERISK = _get("USE_ASTERISK", "true").strip().lower() in ("true", "1", "yes", "on")
+# The Vapi SIP phone number resource used for outbound SIP calls.
+VAPI_SIP_PHONE_NUMBER_ID = _get("VAPI_SIP_PHONE_NUMBER_ID", VAPI_PHONE_NUMBER_ID)
+# Asterisk PJSIP trunk used to dial the target number (the SpoofGlobal trunk).
+ASTERISK_TRUNK = _get("ASTERISK_TRUNK", "spoofglobal")
+# Directory where the bot writes per-call <E.164>.json caller-ID files for the
+# Asterisk AGI to consume (shared path visible to the Asterisk server).
+ASTERISK_CLI_DIR = _get("ASTERISK_CLI_DIR", str(CONF_DIR / "asterisk_cli"))
+# Shared secret the Asterisk AGI (asterisk/read_cli.py) must present when it
+# pulls the per-call caller-ID JSON from the bot's /vapi/cli/<e164> endpoint.
+# Multi-host deployments (bot on Render, Asterisk on a VPS) rely on this HTTP
+# pull because the AGI cannot see the bot's filesystem.
+ASTERISK_CLI_API_TOKEN = _get("ASTERISK_CLI_API_TOKEN", "")
+# Public base URL of the bot used by the AGI's HTTP pull. When unset the AGI
+# falls back to the local-file path (single-host deployments only).
+ASTERISK_CLI_PUBLIC_URL = _get("ASTERISK_CLI_PUBLIC_URL", "").strip()
+# Fallback caller ID (Display Name <number>) when no per-user file is found.
+ASTERISK_DEFAULT_CALLER_ID = _get("ASTERISK_DEFAULT_CALLER_ID", "OTP Bot <+12025550131>")
 # Optional mapping from legacy voice IDs -> Vapi voice IDs.
 # Fill with known mappings if you have Vapi voice IDs for existing legacy voices.
 LEGACY_VOICE_ID_MAP = {}

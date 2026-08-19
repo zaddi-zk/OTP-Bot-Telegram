@@ -1,0 +1,103 @@
+; =============================================================================
+; pjsip.conf.sample - PJSIP transport, Vapi inbound endpoint, SpoofGlobal trunk
+;
+; Replace all placeholders (<...>) and renumber ports to match your setup.
+; Keep the same region for Vapi API + SIP host:
+;   US -> api.vapi.ai + sip.vapi.ai   (signalling IPs 44.229.228.186, 44.238.177.138)
+;   EU -> api.eu.vapi.ai + sip.eu.vapi.ai (signalling IP 63.182.83.170)
+; Allow UDP RTP ports 40000-60000 for Vapi media.
+;
+; The dialplan context for Vapi-originated calls is [from-vapi] (see
+; extensions.conf.sample). Outbound dialing uses PJSIP/${EXTEN}@spoofglobal-endpoint.
+; =============================================================================
+
+[transport-udp]
+type=transport
+protocol=udp
+bind=0.0.0.0:5060
+allow=reload
+
+; Optional TLS (Vapi supports TLS on 5061) - uncomment and fill in certs.
+;[transport-tls]
+;type=transport
+;protocol=tls
+;bind=0.0.0.0:5061
+;cert_file=/etc/asterisk/keys/asterisk.pem
+;private_key=/etc/asterisk/keys/asterisk.key
+
+; ---------------------------------------------------------------------------
+; Inbound endpoint for Vapi-originated calls (Vapi -> Asterisk).
+; IP-based authentication using Vapi's static signalling addresses. Add both
+; US addresses if your organization is hosted in the US, or the EU address.
+; ---------------------------------------------------------------------------
+[endpoint-vapi-inbound]
+type=endpoint
+context=from-vapi
+disallow=all
+allow=ulaw,alaw,g722,opus
+direct_media=no
+trust_id_inbound=yes
+
+[aor-vapi-inbound]
+type=aor
+max_contacts=1
+
+[auth-vapi-inbound]
+type=auth
+auth_type=ip
+; Vapi US signalling IPs (see docs.vapi.ai/advanced/sip/sip-networking)
+; Vapi EU: use 63.182.83.170/32 instead
+endpoint=endpoint-vapi-inbound
+ip_address=44.229.228.186/32
+ip_address=44.238.177.138/32
+
+[identify-vapi-inbound]
+type=identify
+endpoint=endpoint-vapi-inbound
+match=44.229.228.186/32
+match=44.238.177.138/32
+
+; ---------------------------------------------------------------------------
+; SpoofGlobal outbound trunk (Asterisk -> SpoofGlobal).
+; Replace host/username/password with the credentials SpoofGlobal gives you.
+; Names MUST match the live deployment: registration + aor + endpoint + auth.
+; Dialplan references the endpoint as PJSIP/${EXTEN}@spoofglobal-endpoint.
+; ---------------------------------------------------------------------------
+[spoofglobal-registration]
+type=registration
+transport=transport-udp
+outbound_auth=spoofglobal-auth
+server_uri=sip:<host>:5060
+client_uri=sip:<username>@<host>:5060
+retry_interval=30
+auth_rejection_permanent=no
+max_retries=5
+
+[spoofglobal-aor]
+type=aor
+; No static contact: the trunk registers its dynamic contact. Qualify it so a
+; dead trunk is detected quickly instead of hanging calls.
+max_contacts=8
+remove_existing=yes
+qualify_frequency=60
+
+[spoofglobal-endpoint]
+type=endpoint
+context=from-pstn
+disallow=all
+allow=ulaw,alaw
+outbound_auth=spoofglobal-auth
+aors=spoofglobal-aor
+direct_media=no
+allow_transfer=no
+; When SpoofGlobal expects the leading '+' (E.164) on outbound:
+from_user=<username>
+from_domain=<host>
+
+[spoofglobal-auth]
+type=auth
+auth_type=userpass
+username=<username>
+password=<password>
+
+; Dial: Dial(PJSIP/${EXTEN}@spoofglobal-endpoint,,m)

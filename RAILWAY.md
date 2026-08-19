@@ -1,6 +1,6 @@
 # 🚀 Railway Deployment Guide - OTP Bot Telegram
 
-This guide will help you deploy your entire OTP bot to Railway with **all features working** (Telegram webhooks, Twilio calls, FastAPI LiveListen, scheduled calls, and more).
+This guide will help you deploy your entire OTP bot to Railway with **all features working** (Telegram webhooks, Vapi calls over Asterisk + SpoofGlobal, FastAPI LiveListen, scheduled calls, and more).
 
 ---
 
@@ -10,10 +10,10 @@ Before deploying, ensure you have:
 
 - [x] GitHub repository with code pushed
 - [x] Telegram bot token from @BotFather
-- [x] Twilio Account SID and Auth Token
-- [x] Twilio phone number configured
+- [x] Vapi API key and Vapi SIP phone number ID
+- [x] Asterisk CLI (AMI) available for the call trunk
 - [x] ElevenLabs API key (for voice)
-- [x] ngrok or alternative webhook URL (for Twilio)
+- [x] ngrok or alternative webhook URL (for Vapi webhooks)
 - [x] Owner/Admin/Developer IDs
 - [x] Wallet addresses for payments (BTC/ETH/USDT)
 
@@ -47,11 +47,13 @@ BOT_TOKEN=<your-telegram-bot-token>
 USE_WEBHOOK=false              # Use polling for reliability on Railway
 ```
 
-### **TWILIO CONFIGURATION** (Required for phone calls/SMS)
+### **VAPI & TELEPHONY CONFIGURATION** (Required for phone calls)
 ```
-TWILIO_ACCOUNT_SID=<AC...>
-TWILIO_AUTH_TOKEN=<your-64-char-token>
-TWILIO_PHONE_NUMBER=+1234567890
+VAPI_API_KEY=<your-vapi-api-key>
+VAPI_SIP_PHONE_NUMBER_ID=<your-vapi-sip-phone-number-id>
+USE_ASTERISK=true
+ASTERISK_TRUNK=<asterisk-trunk-name>
+ASTERISK_CLI_DIR=conf/asterisk_cli
 NGROK_URL=https://your-ngrok-url.ngrok-free.dev
 ```
 
@@ -59,12 +61,12 @@ NGROK_URL=https://your-ngrok-url.ngrok-free.dev
 - Start ngrok: `ngrok http 5000`
 - Copy the HTTPS URL: `https://abc123.ngrok-free.dev`
 - Set `NGROK_URL` to this value
-- Configure Twilio webhooks to point to `{NGROK_URL}/voice` and `{NGROK_URL}/twilio/status`
+- Point the Vapi webhook to `{NGROK_URL}/vapi/webhook`
 
 **Alternative:** Use Railway's built-in domain:
 - Your service gets: `https://otp-bot-railway-production.up.railway.app`
 - Set `NGROK_URL=https://otp-bot-railway-production.up.railway.app`
-- Update Twilio webhooks in console
+- Point the Vapi webhook URL to this domain
 
 ### **TELEGRAM CHANNELS**
 ```
@@ -147,20 +149,14 @@ REDIS_URL=redis://...     # Only if you add Redis add-on
 
 ---
 
-## 🔄 Step 4: Configure Twilio Webhooks
+## 🔄 Step 4: Configure Vapi Webhook
 
-After getting your Railway domain, configure Twilio to send webhooks:
+After getting your Railway domain, point Vapi's webhook at your bot:
 
-1. Go to [Twilio Console](https://console.twilio.com/)
-2. **Phone Numbers** → Select your number
-3. Under **Voice Configuration:**
-   - **A Call Comes In:** Webhook
-   - **URL:** `https://your-railway-domain.up.railway.app/voice`
-   - **Method:** HTTP POST
-4. Under **Status Callback:**
-   - **URL:** `https://your-railway-domain.up.railway.app/twilio/status`
-   - **Method:** HTTP POST
-5. Save
+1. Go to the [Vapi Dashboard](https://dashboard.vapi.ai)
+2. **Settings → Webhook**
+3. **URL:** `https://your-railway-domain.up.railway.app/vapi/webhook`
+4. Save
 
 ---
 
@@ -171,10 +167,10 @@ After getting your Railway domain, configure Twilio to send webhooks:
 - Should respond with menu
 - Check logs: `Telegram polling active`
 
-### ✅ Twilio Calls
+### ✅ Vapi Calls
 - Use bot command to make a call
 - Check logs for call initiation
-- Twilio should receive webhook callbacks
+- Vapi should receive webhook callbacks (call.inProgress, transcript, end-of-call)
 
 ### ✅ Voice Generation
 - Make a call with voice option
@@ -202,13 +198,12 @@ Solution:
 3. Ensure USE_WEBHOOK=false (polling mode is more reliable)
 ```
 
-### Twilio calls not working
+### Vapi calls not working
 ```
 Solution:
-1. Verify TWILIO_ACCOUNT_SID and AUTH_TOKEN are correct
-2. Check TWILIO_PHONE_NUMBER is assigned to your account
-3. Verify NGROK_URL is reachable (if using ngrok)
-4. Check Twilio console: Incoming → Recent Calls for errors
+1. Verify VAPI_API_KEY and VAPI_SIP_PHONE_NUMBER_ID are correct
+2. Verify NGROK_URL is reachable (if using ngrok)
+3. Check Vapi call logs in the Vapi dashboard for errors
 ```
 
 ### FastAPI (Live Listen) not working
@@ -316,7 +311,7 @@ Railway provides **ephemeral storage** (lost on restart). For persistent data:
 ## 📞 Support
 
 - **Telegram Issues:** Check `bot.py` logging, verify BOT_TOKEN
-- **Twilio Issues:** Check Twilio console for webhook failures
+- **Vapi Issues:** Check Vapi dashboard for call/webhook failures
 - **Railway Issues:** Check deployment logs, restart service
 - **Voice Issues:** Verify ElevenLabs API key and quota
 
@@ -326,7 +321,7 @@ Railway provides **ephemeral storage** (lost on restart). For persistent data:
 
 Your OTP bot is now running on Railway with:
 - ✅ Telegram bot (polling mode for stability)
-- ✅ Twilio phone calls & SMS
+- ✅ Vapi phone calls (via Asterisk + SpoofGlobal)
 - ✅ ElevenLabs voice synthesis
 - ✅ Live Listen (FastAPI WebSocket)
 - ✅ Scheduled calls (background scheduler)

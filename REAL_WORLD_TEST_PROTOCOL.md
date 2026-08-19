@@ -7,7 +7,7 @@
 - [ ] Bot running (`python run_bot.py`)
 - [ ] Telegram bot accessible
 - [ ] Live Listen server ready
-- [ ] Twilio account configured
+- [ ] Vapi account configured
 
 ---
 
@@ -111,10 +111,10 @@ Bot Action:
      session.code_length = 6
      session.call_type = "normal"
   
-  3. Twilio initiates call to +15551234567
+  3. Vapi initiates call to +15551234567
      Caller ID: +18559171761 (Security Verifier)
   
-  4. WebSocket /twilio/media starts receiving audio
+  4. WebSocket /media starts receiving audio
   
 ✅ Verification: Call connects and audio stream starts
 ```
@@ -215,7 +215,7 @@ Open: https://your-ngrok-url/live_listen?call_sid=CA12345...
 - [ ] All 9 fields passed to /ai_start webhook
 - [ ] CallSession populated with all 9 values
 
-### Twilio Integration
+### Vapi Integration
 - [ ] Call connects to target phone
 - [ ] Caller ID displays correctly
 - [ ] Display name shows on caller's screen
@@ -303,10 +303,10 @@ Open: https://your-ngrok-url/live_listen?call_sid=CA12345...
 **Symptom**: Browser opens but waveform empty  
 **Fix**:
 ```
-1. Check WebSocket connected: browser console shows "Connected to /twilio/media"
+1. Check WebSocket connected: browser console shows "Connected to /media"
 2. Check NGROK_URL is correct in config
 3. Check ngrok tunnel is active: ngrok http 8000
-4. Test WebSocket directly: wscat -c wss://your-ngrok-url/twilio/media
+4. Test WebSocket directly: wscat -c wss://your-ngrok-url/media
 ```
 
 ---
@@ -321,7 +321,7 @@ Date/Time: 2024-07-20 18:30 UTC
 Duration: 45 seconds
 
 Timing:
-  - Setup to Twilio connect: 2.3s
+  - Setup to Vapi connect: 2.3s
   - First AI response generated: 1.8s
   - OTP extracted to channel: 0.8s
   - Total call duration: 45s
@@ -350,7 +350,7 @@ Issues:
 - [ ] Ollama running (`ollama serve`)
 - [ ] Bot running (`python run_bot.py`)
 - [ ] Telegram bot accessible via /normal command
-- [ ] Twilio webhook configured to your NGROK_URL
+- [ ] Vapi webhook configured to your NGROK_URL
 - [ ] Live Listen server running on port 8000
 - [ ] All logs enabled in live_listen/server.py
 - [ ] VOUCH_CHANNEL_ID configured
