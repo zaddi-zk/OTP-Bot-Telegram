@@ -153,7 +153,13 @@ def _read_cli_file(exten: str, digits: str):
 
 
 def main() -> None:
-    exten = _read_variable("EXTEN") or ""
+    # Prefer the extension passed as an AGI argument (AGI(...,${EXTEN})). The
+    # stdin GET VARIABLE read is a fallback because some Asterisk versions/
+    # channel states return EXTEN unset to the AGI even though the dialplan
+    # sees it.
+    exten = (sys.argv[1] if len(sys.argv) > 1 else "").strip()
+    if not exten:
+        exten = _read_variable("EXTEN") or ""
     digits = PLUS_STRIP_RE.sub("", exten)
     _log_remote(
         f"AGI start exten={exten!r} digits={digits!r} "
