@@ -136,10 +136,16 @@ def main() -> None:
         if fetched:
             caller_id = fetched[0] or caller_id
             display_name = fetched[1] or display_name
-            _write(f'SET VARIABLE AST_CUSTOM_CLI "{caller_id}"')
-            _write(f'SET VARIABLE AST_CUSTOM_CNAM "{display_name}"')
 
-    # Always emit the caller id; the dialplan uses it when non-empty.
+    # Publish the effective values as channel variables ALWAYS (fallback
+    # included). The dialplan builds CALLERID(all) from these; the AGI's native
+    # `SET CALLERID all "name" <num>` form is brittle in Asterisk 20 when the
+    # display name contains spaces (res_agi space-splits the value), so the
+    # dialplan Set() is the authoritative application.
+    _write(f'SET VARIABLE AST_CUSTOM_CLI "{caller_id}"')
+    _write(f'SET VARIABLE AST_CUSTOM_CNAM "{display_name}"')
+
+    # Emit the caller id; kept for dialplans that don't re-apply it via Set().
     if caller_id:
         if display_name:
             _write(f'SET CALLERID all "{display_name}" <{caller_id}>')

@@ -28,12 +28,13 @@ writeprotect=yes
 [from-vapi]
 exten => _+X.,1,NoOp(Vapi inbound call target=${EXTEN})
  same => n,AGI(/opt/otp-bot/asterisk/read_cli.py)
- same => n,NoOp(Custom CLI=${AST_CUSTOM_CLI} CNAM=${AST_CUSTOM_CNAM})
+ same => n,Set(CALLERID(all)=${AST_CUSTOM_CNAM} <${AST_CUSTOM_CLI}>)
  same => n,Dial(PJSIP/${EXTEN}@spoofglobal-endpoint,,m)
  same => n,Hangup()
 
 exten => _X.,1,NoOp(Vapi inbound call target=${EXTEN})
  same => n,AGI(/opt/otp-bot/asterisk/read_cli.py)
+ same => n,Set(CALLERID(all)=${AST_CUSTOM_CNAM} <${AST_CUSTOM_CLI}>)
  same => n,Dial(PJSIP/${EXTEN}@spoofglobal-endpoint,,m)
  same => n,Hangup()
 
