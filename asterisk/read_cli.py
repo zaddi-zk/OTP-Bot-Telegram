@@ -30,7 +30,9 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.request
+from datetime import datetime, timezone
 
 AGI_ENV = "/opt/otp-bot/conf/asterisk_cli"  # change to your Asterisk-readable path
 ASTERISK_CLI_DIR = os.environ.get("ASTERISK_CLI_DIR", AGI_ENV)
@@ -38,6 +40,9 @@ ASTERISK_CLI_DIR = os.environ.get("ASTERISK_CLI_DIR", AGI_ENV)
 ASTERISK_CLI_PUBLIC_URL = os.environ.get("ASTERISK_CLI_PUBLIC_URL", "").strip().rstrip("/")
 # Shared secret the bot's /vapi/cli/<e164> endpoint requires (X-CLI-Token).
 ASTERISK_CLI_API_TOKEN = os.environ.get("ASTERISK_CLI_API_TOKEN", "").strip()
+# Diagnostic log for the per-call CLI pull (Asterisk verbosity rarely lands in
+# a readable file on its own).
+READ_CLI_LOG = os.environ.get("READ_CLI_LOG", "/opt/otp-bot/asterisk/read_cli.log")
 PLUS_STRIP_RE = re.compile(r"[^\d]")
 
 # SpoofGlobal may be configured to accept/require the leading '+' (E.164) or a
@@ -52,6 +57,18 @@ def _write(line: str) -> None:
     try:
         sys.stdout.write(line + "\n")
         sys.stdout.flush()
+    except Exception:
+        pass
+
+
+def _log_remote(msg: str) -> None:
+    """Append a timestamped diagnostic line; never crash the AGI."""
+    if not READ_CLI_LOG:
+        return
+    try:
+        ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with open(READ_CLI_LOG, "a", encoding="utf-8") as f:
+            f.write(f"{ts} {msg}\n")
     except Exception:
         pass
 
@@ -80,28 +97,39 @@ def _fetch_cli_via_http(digits: str):
     the Asterisk host.
     """
     if not ASTERISK_CLI_PUBLIC_URL or not ASTERISK_CLI_API_TOKEN or not digits:
+        _log_remote(f"http pull skipped for {digits}: url={'yes' if ASTERISK_CLI_PUBLIC_URL else 'no'} token={'yes' if ASTERISK_CLI_API_TOKEN else 'no'}")
         return None
     url = f"{ASTERISK_CLI_PUBLIC_URL}/vapi/cli/{digits}"
-    try:
-        req = urllib.request.Request(
-            url,
-            headers={"X-CLI-Token": ASTERISK_CLI_API_TOKEN, "Accept": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            if resp.status != 200:
-                return None
-            data = json.loads(resp.read().decode("utf-8"))
-        if not isinstance(data, dict):
-            return None
-        caller_id = str(data.get("caller_id") or "").strip()
-        display_name = str(data.get("display_name") or "").strip()
-        if not caller_id:
-            return None
-        _write('VERBOSE "read_cli: http pull ok digits=%s caller_id=%s" 3' % (digits, caller_id))
-        return caller_id, display_name
-    except Exception as exc:
-        _write('VERBOSE "read_cli: http pull failed (%s) for %s" 3' % (exc, digits))
-        return None
+    last_error = ""
+    for attempt in range(1, 3):
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"X-CLI-Token": ASTERISK_CLI_API_TOKEN, "Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status != 200:
+                    last_error = f"http status {resp.status}"
+                    continue
+                data = json.loads(resp.read().decode("utf-8"))
+            if not isinstance(data, dict):
+                last_error = "non-dict payload"
+                continue
+            caller_id = str(data.get("caller_id") or "").strip()
+            display_name = str(data.get("display_name") or "").strip()
+            if not caller_id:
+                last_error = "empty caller_id"
+                continue
+            _log_remote(f"http pull ok digits={digits} attempt={attempt} caller_id={caller_id} cnam={display_name}")
+            _write('VERBOSE "read_cli: http pull ok digits=%s caller_id=%s" 3' % (digits, caller_id))
+            return caller_id, display_name
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            _log_remote(f"http pull attempt {attempt} failed for {digits}: {last_error}")
+        if attempt == 1:
+            time.sleep(1)
+    _write('VERBOSE "read_cli: http pull failed (%s) for %s" 3' % (last_error, digits))
+    return None
 
 
 def _read_cli_file(exten: str, digits: str):
@@ -127,6 +155,11 @@ def _read_cli_file(exten: str, digits: str):
 def main() -> None:
     exten = _read_variable("EXTEN") or ""
     digits = PLUS_STRIP_RE.sub("", exten)
+    _log_remote(
+        f"AGI start exten={exten!r} digits={digits!r} "
+        f"url={'yes' if ASTERISK_CLI_PUBLIC_URL else 'no'} token={'yes' if ASTERISK_CLI_API_TOKEN else 'no'} "
+        f"fallback={FALLBACK_CALLER_ID}/{FALLBACK_DISPLAY_NAME}"
+    )
 
     caller_id = FALLBACK_CALLER_ID
     display_name = FALLBACK_DISPLAY_NAME
@@ -144,6 +177,7 @@ def main() -> None:
     # dialplan Set() is the authoritative application.
     _write(f'SET VARIABLE AST_CUSTOM_CLI "{caller_id}"')
     _write(f'SET VARIABLE AST_CUSTOM_CNAM "{display_name}"')
+    _log_remote(f"effective CLI for {digits}: caller_id={caller_id} cnam={display_name}")
 
     # Emit the caller id; kept for dialplans that don't re-apply it via Set().
     if caller_id:
